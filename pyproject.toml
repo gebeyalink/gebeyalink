@@ -1,0 +1,85 @@
+# Tooling + shared-distribution config for apps/api and packages/*.
+# Pure configuration — no application source code (Phase 0 skeleton only).
+# Tool selection is mandated by SPEC §19; coverage gates by SPEC §20.
+
+[project]
+name = "gebeyalink"
+version = "0.1.0"
+description = "GebeyaLink — agricultural marketplace (Ethiopia)"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# Placeholder until the first vertical slice lands. CI installs `.[dev]`.
+# SPEC §18 pins the stack: FastAPI, PostgreSQL 16 + PostGIS, Redis + Celery (or ARQ).
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.24",
+    "testcontainers[postgres]>=4.8",
+    "ruff>=0.6",
+    "black>=24.8",
+    "mypy>=1.11",
+]
+
+[tool.setuptools]
+# Explicit empty list: prevents setuptools flat-layout auto-discovery from scanning
+# apps/ and packages/ and failing with "multiple top-level packages discovered".
+# Populated as modules land.
+packages = []
+
+# ── SPEC §19: mypy strict on apps/api, packages/* ─────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+mypy_path = ["apps/api", "packages"]
+# No `packages = [...]` key: there are no __init__.py files yet (creating them is
+# source code, deferred). mypy is invoked as `mypy --strict apps/api packages`.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["apps/mobile", "apps/admin", "infra"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = "/(apps/mobile|apps/admin|infra)/"
+
+[tool.pytest.ini_options]
+testpaths = ["apps/api/tests"]
+asyncio_mode = "auto"
+# SPEC §20 test layers. Exactly these five; nothing else.
+markers = [
+    "unit: fast, no I/O (SPEC §20 unit layer)",
+    "integration: ephemeral Postgres + external fakes (SPEC §20 integration layer)",
+    "ussd: §14.3 journey harness + SMS parser matrix (SPEC §20 USSD/SMS E2E layer)",
+    "e2e: full journey specs in apps/api/tests/e2e (SPEC §20)",
+    "load: k6 scenarios (SPEC §20 load layer; NFR-01/02 verified in staging)",
+]
+
+[tool.coverage.run]
+source = ["apps/api", "packages"]
+branch = true
+# Test code is scaffolding, not product code; measuring it inflates the reported
+# percentage and would mask a genuinely uncovered service.
+omit = ["*/tests/*", "*/.gitkeep"]
+
+[tool.coverage.report]
+# SPEC §20: >=85% line coverage on services/ and packages/*; >=70% overall.
+# coverage.py accepts ONE scalar `fail_under`, so this file enforces the 70% aggregate
+# default. The 85% scoped gate (services/ + packages/*) is a separate CI step using
+# --cov-fail-under=85 over those scopes — see ci.yml "scoped gate".
+show_missing = true
+skip_covered = true
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

@@ -1,0 +1,20 @@
+# GebeyaLink API image — Phase 0 base. SPEC §18.2 docker-compose pilot environment.
+# No application COPY yet: apps/ holds only .gitkeep until the first vertical slice.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# SPEC §17.1 — never run as root.
+RUN groupadd --system --gid 1001 gebeyalink \
+ && useradd --system --uid 1001 --gid gebeyalink --no-create-home gebeyalink
+
+WORKDIR /app
+COPY pyproject.toml ./
+USER gebeyalink
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request as u,sys;sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)"
+# Entrypoint resolves with the first slice that creates apps/api/main.py.
+CMD ["python", "-m", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

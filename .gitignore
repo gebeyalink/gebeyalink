@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPORARY — documentation set held out of version control on purpose.
+#
+# Reason: SPEC.md / AGENT-BRIEF.md / traceability/ / docs/ are intentionally NOT
+# committed yet. They will be committed once the system is built.
+#
+# To commit the documentation set at that time:
+#   1. delete the "Documentation set" block below (and nothing else)
+#   2. git add -A && git commit
+#
+# Nothing is lost by ignoring: the files stay on disk and remain fully readable.
+# NOTE: SPEC.md is the single source of truth and must NOT drift. While it is
+# untracked there is no history to diff it against — keep your own backup.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Documentation set ───────────────────────────────────────────────────────
+/SPEC.md
+/AGENT-BRIEF.md
+/README.md
+/SESSION-HANDOFF.md
+/traceability/
+/docs/
+
+# ── Operating-system / editor noise ─────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.vscode/
+.idea/
+*.swp
+*~
