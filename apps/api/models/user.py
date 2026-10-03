@@ -20,6 +20,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.api.db.base import Base, TimestampMixin
+from apps.api.db.enums import stored_values
 from packages.shared.i18n.languages import Language
 
 
@@ -61,16 +62,6 @@ class AccountStatus(enum.StrEnum):
     FROZEN = "FROZEN"
     SUSPENDED = "SUSPENDED"
     CLOSED = "CLOSED"
-
-
-def stored_values(enum_class: type[enum.Enum]) -> list[str]:
-    """The values as they are written to the database.
-
-    By default an enum column stores each member's *name*, which for the languages happens
-    to be the uppercase spelling while the agreed values are lowercase. Writing the value
-    keeps the column contents identical to what the API sends and what the database checks.
-    """
-    return [str(member.value) for member in enum_class]
 
 
 class User(Base, TimestampMixin):

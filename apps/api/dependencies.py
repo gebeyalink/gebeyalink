@@ -14,13 +14,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.core.config import Settings
 from apps.api.core.redis_client import get_client
-from apps.api.core.security import TokenService
+from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, VerifiedToken
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.session_repository import SessionRepository
@@ -29,6 +29,7 @@ from apps.api.repositories.verification_code_repository import VerificationCodeR
 from apps.api.services.auth_service import AuthService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.rate_limit_service import RateLimitService
+from packages.shared.errors import ApiError, ErrorCode
 
 
 def get_settings(request: Request) -> Settings:
@@ -81,6 +82,17 @@ def get_otp_service(redis: redis_dep, settings: settings_dep, sms: sms_dep) -> O
 otp_service_dep = Annotated[OtpService, Depends(get_otp_service)]
 
 
+def _token_service(settings: Settings) -> TokenService:
+    """The signer/verifier this process reads its key material from."""
+    return TokenService(
+        private_key=settings.signing_private_key.get_secret_value(),
+        public_key=settings.signing_public_key.get_secret_value(),
+        key_id=settings.signing_key_id,
+        access_lifetime_seconds=settings.access_token_lifetime_seconds,
+        refresh_lifetime_seconds=settings.refresh_token_lifetime_seconds,
+    )
+
+
 def get_auth_service(
     db_session: db_session_dep,
     otp: otp_service_dep,
@@ -92,12 +104,28 @@ def get_auth_service(
         users=UserRepository(db_session),
         sessions=SessionRepository(redis),
         otp=otp,
-        tokens=TokenService(
-            private_key=settings.signing_private_key.get_secret_value(),
-            public_key=settings.signing_public_key.get_secret_value(),
-            key_id=settings.signing_key_id,
-            access_lifetime_seconds=settings.access_token_lifetime_seconds,
-            refresh_lifetime_seconds=settings.refresh_token_lifetime_seconds,
-        ),
+        tokens=_token_service(settings),
         settings=settings,
     )
+
+
+async def require_access_token(
+    settings: settings_dep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> VerifiedToken:
+    """Identify the signed-in caller from the bearer token on the request.
+
+    Reference data is only served to somebody already holding a session, so a request
+    without a usable access token is refused before any query runs.
+    """
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise ApiError(ErrorCode.AUTH_REQUIRED, details={"reason": "no_bearer_token"})
+    try:
+        return _token_service(settings).verify(token, ACCESS_TOKEN_KIND)
+    except TokenError as exc:
+        raise ApiError(ErrorCode.TOKEN_INVALID, details={"reason": "unreadable"}) from exc
+
+
+DbSessionDep = db_session_dep
+AccessTokenDep = Annotated[VerifiedToken, Depends(require_access_token)]

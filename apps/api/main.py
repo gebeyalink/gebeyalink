@@ -1,13 +1,4 @@
-"""The API process.
-
-Start-up wires the configured pieces together; shutdown lets go of everything that holds a
-connection. Nothing else happens here — routes live under ``routers``, rules under
-``services``, and both are reachable without importing this module.
-
-Every request is stamped with a trace id and a reading language before it reaches a route,
-so a failure can be tied back to a person's report and answered in their language without
-either fact being threaded through the call stack.
-"""
+﻿"""The API process."""
 
 from __future__ import annotations
 
@@ -25,6 +16,7 @@ from apps.api.core.trace import new_trace_id, set_language_from_header, set_trac
 from apps.api.db.session import dispose_engine, init_engine
 from apps.api.providers.sms import build_sms_provider
 from apps.api.routers import auth as auth_routes
+from apps.api.routers import reference as reference_routes
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -32,8 +24,6 @@ API_PREFIX = "/v1"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the application for a given configuration."""
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved = settings or get_settings()
@@ -56,17 +46,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     register_error_handlers(app)
     app.include_router(auth_routes.router, prefix=API_PREFIX)
+    app.include_router(reference_routes.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def stamp_request_context(
         request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        """Give every request an identifier and a language before any work happens."""
         trace_id = request.headers.get("x-trace-id") or new_trace_id()
         set_trace_id(trace_id)
         set_language_from_header(request.headers.get("accept-language"))
         response: Response = await call_next(request)
-        # Returned to the caller so a support request can quote it without reading logs.
         response.headers["X-Trace-Id"] = trace_id
         return response
 

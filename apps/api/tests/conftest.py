@@ -97,21 +97,24 @@ def postgres_url() -> Iterator[str]:
         "POSTGRES_DB=gebeyalink",
         "-p",
         f"{port}:5432",
-        "postgres:16-alpine",
+        # The PostGIS build, not the plain one: woredas hold a real geography column, and CI
+        # runs this same image for integration tests.
+        "postgis/postgis:16-3.4",
     )
     try:
+        sync_url = f"postgresql://postgres:gebeyalink-test@127.0.0.1:{port}/gebeyalink"
         deadline = time.monotonic() + 90
-        ready = False
-        while time.monotonic() < deadline:
-            probe = _docker(
-                "exec", name, "pg_isready", "-U", "postgres", "-d", "gebeyalink", check=False
-            )
-            if probe.returncode == 0:
-                ready = True
-                break
-            time.sleep(1)
-        if not ready:  # pragma: no cover - environment dependent
-            pytest.fail("the test database did not become ready")
+        while True:
+            # Readiness is probed from out here rather than from inside the container,
+            # because a container can be ready while the published port is not, and the
+            # first connection to arrive in that window is dropped rather than queued.
+            try:
+                with psycopg.connect(sync_url, connect_timeout=5):
+                    break
+            except psycopg.OperationalError:
+                if time.monotonic() > deadline:  # pragma: no cover - environment dependent
+                    pytest.fail("the test database did not become reachable")
+                time.sleep(1)
 
         yield f"postgresql+psycopg://postgres:gebeyalink-test@127.0.0.1:{port}/gebeyalink"
     finally:
