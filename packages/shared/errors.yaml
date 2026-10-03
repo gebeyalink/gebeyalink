@@ -1,0 +1,137 @@
+# Canonical error-code catalog for the whole platform.
+#
+# Every failure the API can return to a client is listed here exactly once. Services raise
+# errors by code; the HTTP layer turns a code into a status, a localized sentence, and a
+# trace id. Adding an error code means adding it here first, so the catalog cannot drift
+# away from what the API actually emits.
+#
+# Fields per entry:
+#   status  HTTP status the API answers with
+#   raises  whether a request failing this way is reported as a failure response.
+#           false marks a signal that rides along inside a successful response.
+#   message message key resolved through the locale catalogues in packages/shared/i18n.
+
+# The published catalog lists no code for "the server broke". Rather than reporting a bug
+# to a caller as one of the business failures above — which would tell them to fix
+# something that is not their fault — a fault gets its own code. Flagged for sign-off.
+INTERNAL_ERROR:
+  status: 500
+  raises: true
+  message: internal_error
+
+VALIDATION_ERROR:
+  status: 422
+  raises: true
+  message: validation_error
+
+AUTH_REQUIRED:
+  status: 401
+  raises: true
+  message: auth_required
+
+FORBIDDEN:
+  status: 403
+  raises: true
+  message: forbidden
+
+NOT_FOUND:
+  status: 404
+  raises: true
+  message: not_found
+
+RATE_LIMITED:
+  status: 429
+  raises: true
+  message: rate_limited
+
+OTP_LOCKED:
+  status: 429
+  raises: true
+  message: otp_locked
+
+OTP_EXPIRED:
+  status: 401
+  raises: true
+  message: otp_expired
+
+TOKEN_INVALID:
+  status: 401
+  raises: true
+  message: token_invalid
+
+CONCURRENT_MODIFICATION:
+  status: 409
+  raises: true
+  message: concurrent_modification
+
+ILLEGAL_STATE_TRANSITION:
+  status: 409
+  raises: true
+  message: illegal_state_transition
+
+OFFER_LIMIT:
+  status: 409
+  raises: true
+  message: offer_limit
+
+OFFER_CONFLICT:
+  status: 409
+  raises: true
+  message: offer_conflict
+
+OFFER_EXPIRED:
+  status: 409
+  raises: true
+  message: offer_expired
+
+LIMIT_EXCEEDED:
+  status: 422
+  raises: true
+  message: limit_exceeded
+
+INSUFFICIENT_KYC:
+  status: 403
+  raises: true
+  message: insufficient_kyc
+
+PAYMENT_FAILED:
+  status: 402
+  raises: true
+  message: payment_failed
+
+PAYMENT_EXPIRED:
+  status: 409
+  raises: true
+  message: payment_expired
+
+DISPUTE_EXISTS:
+  status: 409
+  raises: true
+  message: dispute_exists
+
+KYC_PENDING:
+  status: 409
+  raises: true
+  message: kyc_pending
+
+LISTING_NOT_ACTIVE:
+  status: 409
+  raises: true
+  message: listing_not_active
+
+GATEWAY_SIGNATURE_INVALID:
+  status: 401
+  raises: true
+  message: gateway_signature_invalid
+
+PAYMENT_ATTEMPTS_EXCEEDED:
+  status: 422
+  raises: true
+  message: payment_attempts_exceeded
+
+# Signals, not failures. They travel inside a normal response body and never turn a
+# request into an error, so they carry no failing status.
+PRICE_OUTLIER_INFO:
+  status: 200
+  raises: false
+  message: price_outlier_info

@@ -1,0 +1,409 @@
+"""Test fixtures.
+
+Tests run against a real PostgreSQL and a real Redis, both started fresh for this run and
+torn down afterwards. Nothing here is stubbed: the account table is created by running the
+actual migration, verification codes are written to and read back from a live Redis, and
+sign-in goes in through the same application object that runs in production.
+
+The one substitution is the messaging backend. No messages leave the machine, so the
+backend records them instead — which is also how a test reads the code it needs to submit.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import httpx
+import psycopg
+import psycopg.rows
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+from redis import Redis as SyncRedis
+
+from apps.api.core.config import Settings
+from apps.api.main import create_app
+from apps.api.providers.sms import RecordingSmsProvider
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+CONTAINER_PREFIX = "gebeyalink-test"
+
+TERMS_VERSION = "2026-01-01"
+
+if sys.platform == "win32":  # pragma: no cover - platform specific
+    # The database driver waits on ordinary sockets, and Windows' default loop cannot.
+    # TestClient builds its loop from the policy, so setting it here covers every request
+    # a test makes without any test needing to know about it.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+def _free_port() -> int:
+    """Ask the operating system for a port nothing is listening on."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["docker", *args], capture_output=True, text=True, timeout=180, check=False
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(f"docker {' '.join(args)} failed: {result.stderr.strip()}")
+    return result
+
+
+def _docker_available() -> bool:
+    try:
+        return _docker("info", "--format", "{{.ServerVersion}}").returncode == 0
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - environment dependent
+        return False
+
+
+def _remove_container(name: str) -> None:
+    _docker("rm", "-f", name, check=False)
+
+
+@pytest.fixture(scope="session")
+def postgres_url() -> Iterator[str]:
+    """A PostgreSQL instance that exists only for this test run."""
+    if not _docker_available():  # pragma: no cover - environment dependent
+        pytest.skip("Docker is not running, so the database tests cannot run")
+
+    name = f"{CONTAINER_PREFIX}-postgres"
+    port = _free_port()
+    _remove_container(name)
+    _docker(
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
+        "-e",
+        "POSTGRES_PASSWORD=gebeyalink-test",
+        "-e",
+        "POSTGRES_DB=gebeyalink",
+        "-p",
+        f"{port}:5432",
+        "postgres:16-alpine",
+    )
+    try:
+        deadline = time.monotonic() + 90
+        ready = False
+        while time.monotonic() < deadline:
+            probe = _docker(
+                "exec", name, "pg_isready", "-U", "postgres", "-d", "gebeyalink", check=False
+            )
+            if probe.returncode == 0:
+                ready = True
+                break
+            time.sleep(1)
+        if not ready:  # pragma: no cover - environment dependent
+            pytest.fail("the test database did not become ready")
+
+        yield f"postgresql+psycopg://postgres:gebeyalink-test@127.0.0.1:{port}/gebeyalink"
+    finally:
+        _remove_container(name)
+
+
+@pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    """A Redis instance that exists only for this test run."""
+    if not _docker_available():  # pragma: no cover - environment dependent
+        pytest.skip("Docker is not running, so the store tests cannot run")
+
+    name = f"{CONTAINER_PREFIX}-redis"
+    port = _free_port()
+    _remove_container(name)
+    _docker("run", "-d", "--rm", "--name", name, "-p", f"{port}:6379", "redis:7-alpine")
+    try:
+        deadline = time.monotonic() + 60
+        ready = False
+        while time.monotonic() < deadline:
+            probe = _docker("exec", name, "redis-cli", "ping", check=False)
+            if probe.returncode == 0 and "PONG" in probe.stdout:
+                ready = True
+                break
+            time.sleep(1)
+        if not ready:  # pragma: no cover - environment dependent
+            pytest.fail("the test store did not become ready")
+
+        yield f"redis://127.0.0.1:{port}/0"
+    finally:
+        _remove_container(name)
+
+
+@pytest.fixture(scope="session")
+def signing_keys() -> tuple[str, str]:
+    """A throwaway keypair for signing tokens.
+
+    Generated per run and never written down: a test that reused a real deployment's key
+    could not tell us anything, and a key checked into the repository would be a key
+    somebody could use.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    return private_pem, public_pem
+
+
+@pytest.fixture(scope="session")
+def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
+    """Configuration pointing at this run's throwaway services.
+
+    Lifetimes are the production ones, so what the tests assert about a code's lifetime or
+    a resend gap is the lifetime a real trader gets. The impatient variant below exists for
+    the tests that have to sit through one.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+    )
+
+
+@pytest.fixture(scope="session")
+def impatient_settings(
+    postgres_url: str, redis_url: str, signing_keys: tuple[str, str]
+) -> Settings:
+    """The same configuration with lifetimes shortened to what a test can sit through."""
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+        otp_ttl_seconds=2,
+        otp_resend_cooldown_seconds=1,
+    )
+
+
+@pytest.fixture(scope="session")
+def spray_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
+    """Configuration for proving the daily per-address ceiling.
+
+    The per-minute ceiling of ten would otherwise stop a single address long before it
+    reaches twenty codes a day, and the test would be measuring the wrong guard. Raising
+    only that ceiling leaves the daily one as the limit actually under test.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+        auth_endpoint_limit_per_minute_per_ip=100,
+    )
+
+
+@pytest.fixture()
+def spray_client(
+    spray_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> Iterator[TestClient]:
+    """The application with only the per-minute guard lifted."""
+    application: FastAPI = create_app(spray_settings)
+    with TestClient(application) as test_client:
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture(scope="session", autouse=True)
+def migrated_database(postgres_url: str) -> Iterator[None]:
+    """Build the schema by running the real migration command.
+
+    Running the migration rather than creating tables from the models is the point: it is
+    the only way to find out that the migration and the models have drifted apart.
+    """
+    environment = {
+        **os.environ,
+        "DATABASE_URL": postgres_url,
+        "REDIS_URL": "redis://127.0.0.1:1/0",
+        "SIGNING_PRIVATE_KEY": "unused-outside-the-application",
+        "SIGNING_PUBLIC_KEY": "unused-outside-the-application",
+        "TERMS_VERSION": TERMS_VERSION,
+    }
+    result = subprocess.run(
+        # Run through the interpreter that is running the tests, so the migration uses the
+        # same Alembic install no matter how the suite was launched.
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:  # pragma: no cover - environment dependent
+        pytest.fail(f"migration failed:\n{result.stdout}\n{result.stderr}")
+    yield
+
+
+@pytest.fixture()
+def clean_database(postgres_url: str) -> Iterator[None]:
+    """Empty the account table so each test starts from a known state."""
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+    with psycopg.connect(sync_url, autocommit=True) as connection:
+        connection.execute("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
+    yield
+
+
+@pytest.fixture()
+def clean_store(redis_url: str) -> Iterator[None]:
+    """Empty Redis so counters and sessions never leak between tests."""
+    client = SyncRedis.from_url(redis_url)
+    client.flushdb()
+    yield
+    client.flushdb()
+    client.close()
+
+
+@pytest.fixture()
+def sms_recorder() -> Iterator[RecordingSmsProvider]:
+    """The backend that captured the messages the trader would have received.
+
+    Built here rather than read back off the application, so a test that runs the impatient
+    configuration can still read the messages that configuration sent. Depending on one
+    particular client would quietly point such tests at the wrong recorder.
+    """
+    recorder = RecordingSmsProvider()
+    yield recorder
+
+
+@pytest.fixture()
+def client(
+    settings: Settings, clean_database: None, clean_store: None, sms_recorder: RecordingSmsProvider
+) -> Iterator[TestClient]:
+    """The application, wired to this run's throwaway services."""
+    application: FastAPI = create_app(settings)
+    with TestClient(application) as test_client:
+        # Installed after the lifespan has run: startup builds the configured backend, and
+        # the recorder has to be the one in place by the time a request arrives.
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture()
+def impatient_client(
+    impatient_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> Iterator[TestClient]:
+    """The application with shortened code lifetimes, for tests that wait one out."""
+    application: FastAPI = create_app(impatient_settings)
+    with TestClient(application) as test_client:
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture()
+def accounts(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read the account rows straight out of PostgreSQL.
+
+    Deliberately not through the application's own repository: a test that asks the code
+    under test whether the code under test wrote a row proves very little.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _accounts() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT phone_e164, role, language, kyc_tier, status, terms_version,"
+                " terms_accepted_at FROM users ORDER BY phone_e164"
+            )
+            return list(cursor.fetchall())
+
+    return _accounts
+
+
+@pytest.fixture()
+def code_for(sms_recorder: RecordingSmsProvider) -> Callable[[str], str]:
+    """Read the most recent code a trader was sent.
+
+    Extracted from the recorded message rather than from the store, so the test proves the
+    digits actually reached the handset and not merely that something was written down.
+    """
+
+    def _code_for(phone_e164: str) -> str:
+        messages = sms_recorder.messages_to(phone_e164)
+        assert messages, f"no message was recorded for {phone_e164}"
+        found = re.search(r"\d{6}", messages[-1].body)
+        assert found, f"the message carried no six-digit code: {messages[-1].body!r}"
+        return found.group(0)
+
+    return _code_for
+
+
+@pytest.fixture()
+def request_code(client: TestClient) -> Callable[[str], httpx.Response]:
+    """Ask for a code the way a trader's handset does."""
+
+    def _request_code(phone_e164: str) -> httpx.Response:
+        response: httpx.Response = client.post(
+            "/v1/auth/otp/request", json={"phone_e164": phone_e164}
+        )
+        return response
+
+    return _request_code
+
+
+@pytest.fixture()
+def sign_in(client: TestClient, code_for: Callable[[str], str]) -> Callable[..., httpx.Response]:
+    """Run the whole sign-in journey and hand back the verify response."""
+
+    def _sign_in(
+        phone_e164: str,
+        *,
+        terms_version: str = TERMS_VERSION,
+        language: str | None = None,
+    ) -> httpx.Response:
+        requested = client.post("/v1/auth/otp/request", json={"phone_e164": phone_e164})
+        assert requested.status_code == 200, requested.text
+        body: dict[str, object] = {
+            "phone_e164": phone_e164,
+            "code": code_for(phone_e164),
+            "terms_version": terms_version,
+        }
+        if language is not None:
+            body["language"] = language
+        verified: httpx.Response = client.post("/v1/auth/otp/verify", json=body)
+        return verified
+
+    return _sign_in
