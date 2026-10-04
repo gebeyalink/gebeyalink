@@ -35,6 +35,12 @@ $RECYCLE.BIN/
 __pycache__/
 *.py[cod]
 .venv/
+# The throwaway environment a dependency audit builds to prove a clean install works.
+# It exists only to be deleted, and must never reach a commit.
+.verify-venv/
+# Written into the working tree by any editable install (`pip install -e .`), whether
+# declared or not. Build metadata, not source.
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

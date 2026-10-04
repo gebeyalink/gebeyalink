@@ -289,16 +289,34 @@ jobs:
     # Gated on the manifest existing: apps/mobile/pubspec.yaml is not created yet.
     # Package name is pinned by user decision: et.gebeyalink.mobile (reverse-domain of
     # gebeyalink.et). Flutter 3 per SPEC §18.2.
-    if: ${{ hashFiles('apps/mobile/pubspec.yaml') != '' }}
+    #
+    # Probed in a step and reported through $GITHUB_OUTPUT, the same idiom every other gate
+    # in this file uses. hashFiles() is not available at job-level `if:` here, and one
+    # gating idiom across the file is worth more than the brevity of the alternative.
     steps:
       - uses: actions/checkout@v4
+      - name: detect mobile manifest
+        id: gate
+        run: |
+          if [ -f apps/mobile/pubspec.yaml ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: mobile build (package et.gebeyalink.mobile)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no apps/mobile/pubspec.yaml yet (activates when the manifest lands)"
+          fi
       - uses: subosito/flutter-action@v2
+        if: steps.gate.outputs.count != '0'
         with:
           flutter-version: '3.24.x'
       - run: flutter pub get
+        if: steps.gate.outputs.count != '0'
       - run: flutter analyze
+        if: steps.gate.outputs.count != '0'
       - run: flutter test
+        if: steps.gate.outputs.count != '0'
       - run: flutter build apk --debug
+        if: steps.gate.outputs.count != '0'
       # SPEC §20: widget tests for critical flows; Android emulator CI is the merge gate
       # for app changes (emulator job lands with the mobile test suite).
 
@@ -308,21 +326,39 @@ jobs:
     needs: [lint, typecheck, unit, coverage-gate]
     # Gated on apps/admin/package.json existing. Package name is pinned by user decision:
     # et.gebeyalink.admin. React 18 + TypeScript + MUI per SPEC §18.2.
-    if: ${{ hashFiles('apps/admin/package.json') != '' }}
+    #
+    # Probed in a step, not with hashFiles(): same idiom as build-mobile and every other
+    # gate in this file.
     steps:
       - uses: actions/checkout@v4
+      - name: detect admin manifest
+        id: gate
+        run: |
+          if [ -f apps/admin/package.json ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: admin build (package et.gebeyalink.admin)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no apps/admin/package.json yet (activates when the manifest lands)"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.count != '0'
         with:
           node-version: '22'
       - run: npm ci
+        if: steps.gate.outputs.count != '0'
         working-directory: apps/admin
       - run: npm run lint
+        if: steps.gate.outputs.count != '0'
         working-directory: apps/admin
       - run: npm run typecheck
+        if: steps.gate.outputs.count != '0'
         working-directory: apps/admin
       - run: npm test
+        if: steps.gate.outputs.count != '0'
         working-directory: apps/admin
       - run: npm run build
+        if: steps.gate.outputs.count != '0'
         working-directory: apps/admin
 
   zap-baseline:
