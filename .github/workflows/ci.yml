@@ -581,7 +581,10 @@ jobs:
         # endpoint with its parameters and its declared security, and it drives the scan from
         # that list. That is why the boot step sets EXPOSE_DOCS: without /openapi.json there is
         # no description to hand it, and the scan would go back to guessing.
-        uses: zaproxy/action-api-scan@master
+        # `main`, not `master`: this action's repository has exactly one branch and it is
+        # `main`, so `@master` fails the run before a single step executes. action-baseline,
+        # which this replaced, is on `master` - the two actions do not share a default branch.
+        uses: zaproxy/action-api-scan@main
         with:
           rules_file_name: infra/zap-baseline-rules.conf
           # The input is `docker_name`. `docker-image` is not an input of this action, so it
