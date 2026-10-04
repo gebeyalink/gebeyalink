@@ -12,7 +12,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# SPEC §20: integration. Each of these writes a coordinate through the API and reads back
+# what the database actually holds, which is the whole claim being tested — the round trip
+# cannot be observed without a real one.
+pytestmark = pytest.mark.integration
 
 #: Somewhere real, so the value is not obviously a placeholder.
 ADDIS_ABABA = (9.0192, 38.7525)

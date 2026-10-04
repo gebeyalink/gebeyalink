@@ -13,6 +13,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+# SPEC §20: integration. The endpoint's filtering is a query over seeded rows — only active
+# crops, only those measured in kilograms — so it can only be pinned down against a
+# database holding the taxonomy.
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture()
 def access_token(sign_in: Callable[..., httpx.Response]) -> str:

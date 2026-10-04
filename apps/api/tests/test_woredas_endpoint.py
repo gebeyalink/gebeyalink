@@ -12,7 +12,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.usefixtures("migrated_database")
+# SPEC §20: integration — the endpoint filters seeded regions, which is a query, not a rule.
+# A list, not a second assignment: `pytestmark` is one module-level variable, so assigning
+# it twice silently discards the first mark and every test in the file loses its fixture.
+pytestmark = [pytest.mark.usefixtures("migrated_database"), pytest.mark.integration]
 
 
 @pytest.fixture()

@@ -10,7 +10,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# SPEC §20: integration. Business fields are persisted and read back through the API, so
+# every test here is bounded by what the database accepts rather than by a pure rule.
+pytestmark = pytest.mark.integration
 
 
 def test_a_buyer_can_record_a_business_name_and_licence(

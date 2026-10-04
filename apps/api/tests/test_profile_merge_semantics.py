@@ -9,7 +9,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# SPEC §20: integration. Merge semantics are about what a second write does to a row that
+# is already there — the previous version, the untouched fields and the refused write are
+# all only observable against a stored row, never from the request alone.
+pytestmark = pytest.mark.integration
 
 
 def test_a_second_write_leaves_the_earlier_fields_alone(

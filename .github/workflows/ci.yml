@@ -242,6 +242,25 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install -e '.[dev]'
+      # Structural guard. The gates below select tests with `-m 'unit or integration'`, and a
+      # test file carrying no layer mark is silently deselected: it runs nowhere in this job,
+      # contributes no coverage, and the service it exercises is measured as though it had no
+      # tests. That is not a hypothetical — every profile and reference test sat unmarked from
+      # c07ce07 to a1095a5 and the scoped gate read 76.91% instead of failing loudly.
+      #
+      # So unmarked is asserted to be empty. Anything collected here is a test the coverage
+      # gate cannot see, and it is named rather than counted so the fix is obvious.
+      - name: fail if any test lacks a §20 layer mark
+        run: |
+          unmarked=$(pytest --collect-only -q -m "not unit and not integration and not ussd and not e2e and not load" 2>&1 || true)
+          offenders=$(printf '%s\n' "$unmarked" | grep '::' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::tests carry no SPEC §20 layer mark, so the coverage gate cannot see them"
+            printf '%s\n' "$offenders" | cut -d: -f1 | sort -u
+            echo "::error::mark each file pytestmark = pytest.mark.unit|integration (see SPEC §20)"
+            exit 1
+          fi
+          echo "every test carries a layer mark"
       # SPEC §20: >=85% line coverage on services/ and packages/*; >=70% overall.
       #
       # Each command is one line, with no backslash continuation. A continuation is broken

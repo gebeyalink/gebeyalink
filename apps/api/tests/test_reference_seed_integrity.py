@@ -14,7 +14,11 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-pytestmark = pytest.mark.usefixtures("migrated_database")
+# SPEC §20: integration — this reads the seeded rows back out of Postgres with psycopg and
+# compares them to the published taxonomy.
+# A list, not a second assignment: `pytestmark` is one module-level variable, so assigning
+# it twice silently discards the first mark and every test in the file loses its fixture.
+pytestmark = [pytest.mark.usefixtures("migrated_database"), pytest.mark.integration]
 
 # The published taxonomy, transcribed. Written out in full rather than checked as a count,
 # because a count cannot tell a missing faba bean from a spurious peanut.

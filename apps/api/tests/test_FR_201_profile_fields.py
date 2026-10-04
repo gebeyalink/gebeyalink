@@ -9,7 +9,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+
+# SPEC §20: this file drives the real app against an ephemeral Postgres through the client
+# fixture, so it is an integration-layer test. The mark is what carries the file into the
+# coverage gate; without it the whole file is collected but deselected, and the service it
+# exercises is measured as though it had no tests at all.
+pytestmark = pytest.mark.integration
 
 
 def test_a_fresh_account_answers_with_nulls_rather_than_asking(
