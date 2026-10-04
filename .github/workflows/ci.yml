@@ -489,21 +489,58 @@ jobs:
       - name: apply migrations
         run: alembic upgrade head
       - name: boot the API
+        # Bound to 0.0.0.0 rather than 127.0.0.1, and detached with setsid as well as nohup.
+        #
+        # The bind address is why this scan could never have worked, and it is worth being
+        # exact about the order of the two faults. The API did boot and did answer: the wait
+        # step passed on its second attempt. What failed is that ZAP runs inside a container,
+        # so it reaches this runner over the docker bridge and not over loopback - and a
+        # process listening only on 127.0.0.1 is invisible to it however well the hostname
+        # resolves. A scan that cannot connect is not a scan, so the address is fixed before
+        # the scan is trusted to say anything about the application.
+        #
+        # setsid as well as nohup: nohup only ignores the hangup signal, and the process stays
+        # in this step's process group, which the runner tears down at the step boundary.
+        # A new session is what actually carries the process into the next step.
         run: |
-          nohup python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          setsid nohup python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 \
+            > "$RUNNER_TEMP/api.log" 2>&1 < /dev/null &
           echo "$!" > "$RUNNER_TEMP/api.pid"
       - name: wait for the API to serve
+        # Two things are established here, and only together do they mean anything: uvicorn
+        # is listening, and the runner can reach itself on the address a container will use.
+        #
+        # The scanner's target is the default route's gateway because on a GitHub-hosted Linux
+        # runner the default route is the docker0 bridge, and field 3 of that route is the
+        # address the runner presents to a container. The Docker Desktop convenience hostname
+        # is not defined on a Linux runner at all - the last run failed on exactly that, with
+        # "Name or service not known" - so nothing here names it.
         run: |
+          gateway="$(ip -4 route show default | cut -d' ' -f3)"
+          if [ -z "$gateway" ]; then
+            echo "::error::no default route, so there is no bridge address to scan"
+            exit 1
+          fi
+          echo "ZAP_TARGET=http://${gateway}:8000" >> "$GITHUB_ENV"
+          ready=0
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
               echo "api is up after ${attempt}s"
-              exit 0
+              ready=1
+              break
             fi
             sleep 1
           done
-          echo "::error::the API did not answer /health"
-          cat "$RUNNER_TEMP/api.log"
-          exit 1
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::the API did not answer /health"
+            cat "$RUNNER_TEMP/api.log"
+            exit 1
+          fi
+          # The same request over the bridge rather than over loopback. This is the shape of
+          # request the spider will make, so a failure here is the failure the scan would
+          # otherwise report as an unreachable target and leave uninvestigated.
+          curl -fsS "http://${gateway}:8000/health" > /dev/null
+          echo "reachable from the bridge at ${gateway}:8000"
       - name: ZAP baseline scan
         uses: zaproxy/action-baseline@master
         with:
@@ -511,10 +548,16 @@ jobs:
           # The input is `docker_name`. `docker-image` is not an input of this action, so it
           # was silently ignored and the scan ran on whatever the action defaults to.
           docker_name: ghcr.io/zaproxy/zaproxy:stable
-          target: http://host.docker.internal:8000
+          target: ${{ env.ZAP_TARGET }}
       - name: stop the API
         if: always()
-        run: kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
+        # By pattern as well as by the recorded pid. setsid execs uvicorn in place when it is
+        # not already a process group leader and forks when it is, so the number written at
+        # boot is not guaranteed to be the process holding port 8000. The pattern matches one
+        # process, and the pid file is kept for the case where neither is available.
+        run: |
+          pkill -f "uvicorn apps.api.main:app" || true
+          kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
       # No artifact step of our own: action-baseline already attaches the report as the
       # `zap_scan` artifact. The step that used to sit here had an empty `path:` and an `if:`
       # naming a step id that does not exist in this job, so it uploaded nothing - and it
