@@ -1,9 +1,11 @@
 name: ci
 
 # SPEC §21 — PR pipeline, in the mandated order:
-#   lint -> typecheck -> unit -> integration (ephemeral DB) -> USSD harness
+#   lint -> typecheck -> i18n-keys -> unit -> integration (ephemeral DB) -> USSD harness
 #        -> coverage gate -> build artifacts -> ZAP baseline
 # SPEC §19 — mypy strict on apps/api and packages/*; ruff/black; pytest.
+# NFR-07 — the i18n-keys job is an addition to that order, not a replacement: it is the
+# named job the pipeline fails on when a language is missing a key or a placeholder.
 #
 # Phase 0 reality: there is no application source yet. Rather than ship a permanently
 # red pipeline, each layer job performs a REAL collection probe first. If a layer has
@@ -72,6 +74,23 @@ jobs:
       - name: mypy strict
         if: steps.gate.outputs.count != '0'
         run: mypy --strict apps/api packages
+
+  i18n-keys:
+    name: i18n-keys (key and placeholder parity)
+    runs-on: ubuntu-latest
+    # NFR-07 — a key one language does not speak, or a placeholder one translation forgot,
+    # must be a red build. The runtime fallback to English keeps a request answering, so
+    # nothing else in the pipeline would notice either gap. Runs after typecheck; no
+    # continue-on-error, so a missing key fails the pipeline rather than warning in a log.
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]'
+      - name: every key spoken in every language
+        run: pytest apps/api/tests/test_NFR_07_i18n_key_parity.py -m unit -q
 
   unit:
     name: unit (pytest)
@@ -346,6 +365,7 @@ jobs:
     needs:
       - lint
       - typecheck
+      - i18n-keys
       - unit
       - integration
       - ussd
