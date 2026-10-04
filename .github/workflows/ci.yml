@@ -568,6 +568,14 @@ jobs:
           # was silently ignored and the scan ran on whatever the action defaults to.
           docker_name: ghcr.io/zaproxy/zaproxy:stable
           target: ${{ env.ZAP_TARGET }}
+          # This job scans, it does not publish. With issue writing left on, a scan that finds
+          # anything tries to open an issue, and the token here cannot - the job holds no
+          # `issues: write` - so the step dies with "Resource not accessible by integration"
+          # *after* a successful scan, which is the least useful way for a baseline to fail.
+          # The alternative, granting the permission, was rejected on purpose: a baseline scan
+          # on every push should not be filing issues, and the report is already attached as
+          # the `zap_scan` artifact by the action itself.
+          allow_issue_writing: false
       - name: stop the API
         if: always()
         # By pattern as well as by the recorded pid. setsid execs uvicorn in place when it is
