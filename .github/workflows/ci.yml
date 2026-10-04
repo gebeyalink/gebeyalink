@@ -332,27 +332,99 @@ jobs:
     # SPEC §20: OWASP ZAP baseline in CI; zero high/critical open.
     # Standard documented path: zaproxy/action-baseline with the `rules_file_name` input
     # (properties-format rules file). No autogenrun / -config_file invocation is used.
+    #
+    # The API is BOOTED here rather than scanned as an absent target. A baseline scan
+    # pointed at a port with nothing on it reports a clean result while having checked
+    # nothing at all, which is worse than no gate: it looks like coverage. Same two images
+    # the integration suite starts, so the scanner sees the API against a real database
+    # with a real geography column.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: gebeyalink
+          POSTGRES_PASSWORD: gebeyalink
+          POSTGRES_DB: gebeyalink_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
+      REDIS_URL: redis://localhost:6379/0
+      TERMS_VERSION: '2026-01-01'
     steps:
       - uses: actions/checkout@v4
-      # Phase 0: the API has no runnable entrypoint yet, so there is no target to scan.
-      # Gate on the entrypoint so the job self-describes instead of failing on a 404.
-      - name: detect API entrypoint
-        id: gate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]'
+      - name: generate a throwaway signing keypair
+        # Generated per run and never written down. A key committed to the repository is a
+        # key somebody could use, and a key copied out of a CI file becomes the template
+        # somebody later deploys with. The pair only has to sign tokens for the few
+        # seconds the process is up.
         run: |
-          if [ -f apps/api/main.py ]; then
-            echo "count=1" >> "$GITHUB_OUTPUT"
-            echo "RUNNING: ZAP baseline against the API target"
-          else
-            echo "count=0" >> "$GITHUB_OUTPUT"
-            echo "SKIPPED: no apps/api/main.py yet (activates with the FastAPI entrypoint)"
-          fi
+          python - <<'PY' > "$RUNNER_TEMP/signing-keys.sh"
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          private_pem = key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          ).decode()
+          public_pem = (
+              key.public_key()
+              .public_bytes(
+                  encoding=serialization.Encoding.PEM,
+                  format=serialization.PublicFormat.SubjectPublicKeyInfo,
+              )
+              .decode()
+          )
+          print(f"export SIGNING_PRIVATE_KEY='{private_pem}'")
+          print(f"export SIGNING_PUBLIC_KEY='{public_pem}'")
+          PY
+      - name: apply migrations
+        run: alembic upgrade head
+      - name: boot the API
+        run: |
+          . "$RUNNER_TEMP/signing-keys.sh"
+          nohup python -m uvicorn apps.api.main:app \
+            --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/api.pid"
+      - name: wait for the API to serve
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              echo "api is up after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the API did not answer /health"
+          cat "$RUNNER_TEMP/api.log"
+          exit 1
       - name: ZAP baseline scan
-        if: steps.gate.outputs.count != '0'
         uses: zaproxy/action-baseline@master
         with:
           rules_file_name: infra/zap-baseline-rules.conf
           docker-image: ghcr.io/zaproxy/zaproxy:stable
-          target: http://127.0.0.1:8000
+          target: http://host.docker.internal:8000
+      - name: stop the API
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always() && steps.gate.outputs.count != '0'
         with:

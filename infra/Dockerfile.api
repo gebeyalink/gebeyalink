@@ -1,5 +1,7 @@
 # GebeyaLink API image — Phase 0 base. SPEC §18.2 docker-compose pilot environment.
-# No application COPY yet: apps/ holds only .gitkeep until the first vertical slice.
+# The application source is not copied in yet. The entry point named below exists and its
+# /health route answers; what is missing is the layer that would put the source in the
+# image, which belongs with the deployment story rather than guessed at here.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -16,5 +18,6 @@ USER gebeyalink
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request as u,sys;sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)"
-# Entrypoint resolves with the first slice that creates apps/api/main.py.
+# The entrypoint is real: apps/api/main.py exists and /health answers, which is what the
+# HEALTHCHECK above probes.
 CMD ["python", "-m", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

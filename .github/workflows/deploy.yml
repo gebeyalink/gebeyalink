@@ -61,14 +61,17 @@ jobs:
       # Applies migrations to a disposable copy of the current schema, then asserts the
       # downgrade path also succeeds. A failed downgrade means the release is not
       # backward-compatible -> blocked, per SPEC §21 rollback rule.
+      # From the repository root: alembic.ini lives there and its script_location is
+      # relative to it. Running from apps/api finds no ini file at all.
       - name: upgrade dry-run
         if: steps.gate.outputs.count != '0'
         run: alembic upgrade head --sql > /tmp/upgrade.sql
-        working-directory: apps/api
+      # `head:base` rather than `-1`: a relative downgrade has no current revision to count
+      # back from when nothing is connected. The whole chain is rendered so a release that
+      # cannot reverse is caught here, not halfway through a rollback.
       - name: downgrade dry-run
         if: steps.gate.outputs.count != '0'
-        run: alembic downgrade -1 --sql > /tmp/downgrade.sql
-        working-directory: apps/api
+        run: alembic downgrade 'head:base' --sql > /tmp/downgrade.sql
       # Guard: expand/contract forbids drop/rename in a single release.
       - name: assert no destructive DDL
         if: steps.gate.outputs.count != '0'

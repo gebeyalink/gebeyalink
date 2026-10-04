@@ -12,7 +12,7 @@ import asyncio
 import sys
 from collections.abc import Callable, Coroutine
 from logging.config import fileConfig
-from typing import Any
+from typing import Any, Final
 
 from alembic import context
 from sqlalchemy.engine import Connection
@@ -28,7 +28,18 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+#: Whether this invocation will render SQL instead of applying it, read before anything
+#: else. Offline runs are a review of what a migration would do, so they must not require a
+#: database address or a signing key to be configured: a dry run is exactly the moment a
+#: release engineer has no live environment to hand.
+OFFLINE: bool = context.is_offline_mode()
+
+if not OFFLINE:
+    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+
+#: The database the offline renderer speaks. One database is deployed and one dialect is
+#: rendered, so this names the real target rather than a guess.
+_OFFLINE_DIALECT: Final[str] = "postgresql"
 
 #: Autogenerate compares the live database against this. Every mapped class must be
 #: imported into the process for it to be seen.
@@ -38,10 +49,13 @@ target_metadata = Base.metadata
 def run_migrations_offline() -> None:
     """Emit the migration as SQL without connecting to anything.
 
-    Used to review what a migration will do before letting it touch a real database.
+    Used to review what a migration will do before letting it touch a real database. The
+    dialect is named rather than a URL read from the environment: generating SQL has to
+    work with no live configuration to hand, and the dialect is the one fact about the
+    target an offline run genuinely needs.
     """
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        dialect_name=_OFFLINE_DIALECT,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
