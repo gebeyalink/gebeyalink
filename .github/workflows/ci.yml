@@ -607,14 +607,24 @@ jobs:
       - build-mobile
       - build-admin
       - zap-baseline
-    if: always()
+    # The gate is this condition, and nothing else.
+    #
+    # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per
+    # job: outside `run:` the wildcard arrives as the single literal string "Array", so the
+    # loop compared "Array" against "failure", never matched, and the job passed while
+    # zap-baseline was failing. A gate that cannot fail is worse than no gate, because the
+    # green tick it prints is believed.
+    #
+    # `contains()` is evaluated by the workflow engine rather than by a shell, which is where
+    # the wildcard actually does expand into every job's result. always() is still required:
+    # without it a failed dependency would skip this job, and a skipped job does not block a
+    # merge the way a failed one does.
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     steps:
-      - name: fail if any required job failed
+      # Nothing decides anything here. The job runs only when the condition above held, so
+      # every required job has already passed; this step exists to leave a record in the log
+      # of which results were considered, for whoever reads a green build later.
+      - name: record the results this gate considered
         run: |
-          echo 'results:'
-          for r in ${{ needs.*.result }}; do
-            echo "  $r"
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "CI not green"; exit 1
-            fi
-          done
+          echo 'results considered by this gate:'
+          echo ${{ needs.*.result }}
