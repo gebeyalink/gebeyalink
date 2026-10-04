@@ -433,12 +433,24 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install -e '.[dev]'
       - name: generate a throwaway signing keypair
-        # Generated per run and never written down. A key committed to the repository is a
-        # key somebody could use, and a key copied out of a CI file becomes the template
-        # somebody later deploys with. The pair only has to sign tokens for the few
-        # seconds the process is up.
+        # FIRST, and into $GITHUB_ENV, so that every step below inherits the keys from one
+        # place. Generated per run and never written down: a key committed to the repository
+        # is a key somebody could use, and a key copied out of a CI file becomes the template
+        # somebody later deploys with.
+        #
+        # The heredoc form is required, not stylistic. A PEM is several lines long, and
+        # `echo "KEY=value"` would fold it into one line and hand uvicorn a key it cannot
+        # parse. The `KEY<<EOF` / content / `EOF` form preserves the newlines exactly.
+        #
+        # This runs before `alembic upgrade head` on purpose. env.py calls get_settings(),
+        # and Settings has no default for either key - it is a required field with no
+        # fallback. Provisioning the keys inside the boot step meant the migration step ran
+        # first with no keys at all and died on a pydantic ValidationError before the API was
+        # ever started.
         run: |
-          python - <<'PY' > "$RUNNER_TEMP/signing-keys.sh"
+          python - <<'PY'
+          from pathlib import Path
+
           from cryptography.hazmat.primitives import serialization
           from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -456,14 +468,28 @@ jobs:
               )
               .decode()
           )
-          print(f"export SIGNING_PRIVATE_KEY='{private_pem}'")
-          print(f"export SIGNING_PUBLIC_KEY='{public_pem}'")
+          # The trailing newline is load-bearing. A heredoc delimiter is only recognised on a line of
+          # its own, so a value without one glues itself to the delimiter and the runner
+          # reads the entire next variable as part of this one. Normalised here, where the
+          # file is written, rather than patched up in the shell afterwards.
+          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")
+          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")
           PY
+          # `cat` and `echo` here, not a newline-normalising pipeline: the heredoc delimiter is
+          # only recognised on a line of its own, so the value must end in a newline, and
+          # that is guaranteed one step above where the file is written rather than by
+          # trying to repair it in the shell afterwards.
+          { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; } >> "$GITHUB_ENV"
+          { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; } >> "$GITHUB_ENV"
+          rm -f /tmp/test-private.pem /tmp/test-public.pem
+      # Every setting the app reads is now resolved from two sources and no others: the
+      # job-level env above (database_url, redis_url, terms_version) and the two keys the
+      # step above wrote to $GITHUB_ENV. Nothing is provisioned inline further down, so
+      # there is no second copy to drift out of step with the first.
       - name: apply migrations
         run: alembic upgrade head
       - name: boot the API
         run: |
-          . "$RUNNER_TEMP/signing-keys.sh"
           nohup python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/api.pid"
       - name: wait for the API to serve
@@ -482,16 +508,17 @@ jobs:
         uses: zaproxy/action-baseline@master
         with:
           rules_file_name: infra/zap-baseline-rules.conf
-          docker-image: ghcr.io/zaproxy/zaproxy:stable
+          # The input is `docker_name`. `docker-image` is not an input of this action, so it
+          # was silently ignored and the scan ran on whatever the action defaults to.
+          docker_name: ghcr.io/zaproxy/zaproxy:stable
           target: http://host.docker.internal:8000
       - name: stop the API
         if: always()
         run: kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
-        if: always() && steps.gate.outputs.count != '0'
-        with:
-          name: zap-baseline-report
-          path: |
+      # No artifact step of our own: action-baseline already attaches the report as the
+      # `zap_scan` artifact. The step that used to sit here had an empty `path:` and an `if:`
+      # naming a step id that does not exist in this job, so it uploaded nothing - and it
+      # would have uploaded a second, redundant copy had either half been right.
 
   ci-green:
     name: ci green (merge gate)
