@@ -508,23 +508,29 @@ jobs:
           echo "$!" > "$RUNNER_TEMP/api.pid"
       - name: wait for the API to serve
         # Two things are established here, and only together do they mean anything: uvicorn
-        # is listening, and the runner can reach itself on the address a container will use.
+        # is listening, and this runner can reach itself on an address a container can use.
         #
-        # The scanner's target is the default route's gateway because on a GitHub-hosted Linux
-        # runner the default route is the docker0 bridge, and field 3 of that route is the
-        # address the runner presents to a container. The Docker Desktop convenience hostname
-        # is not defined on a Linux runner at all - the last run failed on exactly that, with
-        # "Name or service not known" - so nothing here names it.
+        # The address is chosen by trying candidates and keeping the one that answers, rather
+        # than by trusting a formula. The obvious formula -
+        # `ip -4 route show default | cut -d' ' -f3` - returns 10.1.0.1 on a GitHub-hosted
+        # Azure runner, which is the virtual network's gateway router rather than anything on
+        # this machine: uvicorn holds no address there, and a request to it hangs until it
+        # times out. The address a container uses to reach this runner is the one on the
+        # docker bridge, so that is tried first, and the default route is kept only as a
+        # fallback for a runner whose default route really is the bridge.
+        #
+        # Each candidate gets a short connect timeout so an address that cannot possibly work
+        # costs seconds rather than the two minutes an open connect takes to give up.
         run: |
-          gateway="$(ip -4 route show default | cut -d' ' -f3)"
-          if [ -z "$gateway" ]; then
-            echo "::error::no default route, so there is no bridge address to scan"
-            exit 1
-          fi
-          echo "ZAP_TARGET=http://${gateway}:8000" >> "$GITHUB_ENV"
+          candidates=()
+          bridge="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1)"
+          default_gateway="$(ip -4 route show default 2>/dev/null | cut -d' ' -f3)"
+          if [ -n "$bridge" ]; then candidates+=("$bridge"); fi
+          if [ -n "$default_gateway" ]; then candidates+=("$default_gateway"); fi
+          echo "candidates: ${candidates[*]:-none}"
           ready=0
           for attempt in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+            if curl -fsS --connect-timeout 3 --max-time 5 http://127.0.0.1:8000/health > /dev/null; then
               echo "api is up after ${attempt}s"
               ready=1
               break
@@ -536,11 +542,24 @@ jobs:
             cat "$RUNNER_TEMP/api.log"
             exit 1
           fi
-          # The same request over the bridge rather than over loopback. This is the shape of
-          # request the spider will make, so a failure here is the failure the scan would
-          # otherwise report as an unreachable target and leave uninvestigated.
-          curl -fsS "http://${gateway}:8000/health" > /dev/null
-          echo "reachable from the bridge at ${gateway}:8000"
+          # The same request a container would make: this runner, addressed by an address on
+          # the docker bridge, with the API bound to every interface. This is the reachability
+          # the scanner depends on, so it is proved here rather than discovered by the spider.
+          reachable=""
+          for address in "${candidates[@]}"; do
+            if curl -fsS --connect-timeout 3 --max-time 5 "http://${address}:8000/health" > /dev/null; then
+              reachable="$address"
+              break
+            fi
+            echo "not reachable from this runner: ${address}"
+          done
+          if [ -z "$reachable" ]; then
+            echo "::error::the API answers on loopback but on no bridge address, so a container cannot scan it"
+            ss -ltnp 2>/dev/null | grep 8000 || true
+            exit 1
+          fi
+          echo "ZAP_TARGET=http://${reachable}:8000" >> "$GITHUB_ENV"
+          echo "reachable from a container at ${reachable}:8000"
       - name: ZAP baseline scan
         uses: zaproxy/action-baseline@master
         with:
