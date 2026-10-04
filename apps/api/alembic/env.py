@@ -9,7 +9,6 @@ production is the column type that was tested.
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import Callable, Coroutine
 from logging.config import fileConfig
 from typing import Any, Final
@@ -90,13 +89,12 @@ def run_migrations_online() -> None:
 def _run(step: Callable[[], Coroutine[Any, Any, None]]) -> None:
     """Drive a coroutine on an event loop the database driver can actually use.
 
-    Windows' default loop is built on a proactor that cannot wait on a plain socket, which
-    is how a PostgreSQL driver connects. Every other platform's default loop is fine, so the
-    substitution is confined to Windows and the loop is closed explicitly.
+    The loop is built here rather than left to the platform default. Windows' default loop
+    is a proactor that cannot wait on a plain socket, which is exactly how a PostgreSQL
+    driver connects, so on Windows the default is unusable. A selector loop works on every
+    platform we deploy to, so it is the only one created — one path, closed explicitly,
+    rather than two paths of which one is dead wherever the code is not running.
     """
-    if sys.platform != "win32":
-        asyncio.run(step())
-        return
     loop = asyncio.SelectorEventLoop()
     try:
         loop.run_until_complete(step())

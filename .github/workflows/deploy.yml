@@ -37,6 +37,39 @@ env:
   PYTHON_VERSION: '3.12'
 
 jobs:
+  # One job that answers "does the thing this pipeline deploys exist yet?" once, so the
+  # decision is a job-level `if` on a named output rather than a step inside every job
+  # that has to be re-gated by hand. Keeps the two questions separate: the deploy scripts
+  # and the mobile manifest land independently, and either can arrive first.
+  deploy-gate:
+    name: detect deploy inputs
+    runs-on: ubuntu-latest
+    outputs:
+      has_deploy_scripts: ${{ steps.deploy.outputs.count }}
+      has_pubspec: ${{ steps.pubspec.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: detect deploy scripts
+        id: deploy
+        run: |
+          if [ -f infra/deploy.sh ] && [ -f infra/smoke.sh ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: deploy automation found (infra/deploy.sh + infra/smoke.sh)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: deploy automation not landed yet (activates with infra/deploy.sh + infra/smoke.sh)"
+          fi
+      - name: detect mobile manifest
+        id: pubspec
+        run: |
+          if [ -f apps/mobile/pubspec.yaml ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: mobile build (package et.gebeyalink.mobile)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no apps/mobile/pubspec.yaml yet (activates when the manifest lands)"
+          fi
+
   migration-dry-run:
     name: migration dry-run (expand/contract)
     runs-on: ubuntu-latest
@@ -89,8 +122,12 @@ jobs:
   deploy-staging:
     name: deploy staging (auto)
     runs-on: ubuntu-latest
-    needs: [migration-dry-run]
-    if: github.ref == 'refs/heads/main' || inputs.environment == 'staging'
+    needs: [deploy-gate, migration-dry-run]
+    # Both conditions, not either: the job runs only for the right ref AND only when the
+    # automation it calls is actually in the tree. Decided before the job starts, so an
+    # absent infra/deploy.sh shows up as a skipped job instead of a job that boots a
+    # runner and then fails on a missing script.
+    if: (github.ref == 'refs/heads/main' || inputs.environment == 'staging') && needs.deploy-gate.outputs.has_deploy_scripts == '1'
     environment:
       name: staging
       url: ${{ steps.deploy.outputs.url }}
@@ -172,8 +209,10 @@ jobs:
   mobile-internal-track:
     name: mobile -> Play internal track
     runs-on: ubuntu-latest
-    needs: [deploy-staging]
-    if: github.ref == 'refs/heads/main'
+    # deploy-gate is needed alongside deploy-staging: the pubspec probe's output is only
+    # readable from a job listed in `needs`.
+    needs: [deploy-staging, deploy-gate]
+    if: github.ref == 'refs/heads/main' && needs.deploy-gate.outputs.has_pubspec == '1'
     environment: staging
     steps:
       - uses: actions/checkout@v4
@@ -196,12 +235,17 @@ jobs:
       - run: flutter build appbundle --release
         if: steps.gate.outputs.count == '1'
         working-directory: apps/mobile
-      - uses: fastlane/fastlane-action@v2
+      # A plain `run`, not fastlane/fastlane-action. That action is a third-party
+      # reference the runner has to resolve before anything in this job is even read,
+      # and it installs its own fastlane, which can disagree with the repo's. Calling the
+      # binary directly leaves the only thing that can be missing a file that has not
+      # landed yet (apps/mobile/fastlane/Fastfile) instead of an unresolvable reference.
+      - name: publish to Play internal track
         if: steps.gate.outputs.count == '1'
-        with:
-          lane: internal
+        working-directory: apps/mobile
         env:
           PLAY_JSON_KEY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: fastlane internal
 
   rollback:
     name: rollback

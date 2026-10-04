@@ -135,7 +135,11 @@ jobs:
       - name: detect integration tests
         id: gate
         run: |
-          out=$(pytest --collect-only -q -m integration 2>&1); rc=$?
+          # The `if` matters: an assignment's exit status is the command substitution's,
+          # and under errexit a non-zero pytest here would kill the step before rc was ever
+          # read. A condition suspends errexit, so the real code is captured and the probe
+          # gets to decide what it means.
+          if out=$(pytest --collect-only -q -m integration 2>&1); then rc=0; else rc=$?; fi
           n=$(printf '%s\n' "$out" | grep -c '::' || true)
           echo "collect-exit=${rc} collected=${n:-0}"
           echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
@@ -161,7 +165,7 @@ jobs:
       - name: detect ussd tests
         id: gate
         run: |
-          out=$(pytest --collect-only -q packages/ussd apps/api/tests -m ussd 2>&1); rc=$?
+          if out=$(pytest --collect-only -q packages/ussd apps/api/tests -m ussd 2>&1); then rc=0; else rc=$?; fi
           n=$(printf '%s\n' "$out" | grep -c '::' || true)
           echo "collect-exit=${rc} collected=${n:-0}"
           echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
@@ -187,7 +191,7 @@ jobs:
       - name: detect e2e tests
         id: gate
         run: |
-          out=$(pytest --collect-only -q apps/api/tests/e2e -m e2e 2>&1); rc=$?
+          if out=$(pytest --collect-only -q apps/api/tests/e2e -m e2e 2>&1); then rc=0; else rc=$?; fi
           n=$(printf '%s\n' "$out" | grep -c '::' || true)
           echo "collect-exit=${rc} collected=${n:-0}"
           echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
@@ -215,7 +219,7 @@ jobs:
       - name: detect load tests
         id: gate
         run: |
-          out=$(pytest --collect-only -q apps/api/tests -m load 2>&1); rc=$?
+          if out=$(pytest --collect-only -q apps/api/tests -m load 2>&1); then rc=0; else rc=$?; fi
           n=$(printf '%s\n' "$out" | grep -c '::' || true)
           echo "collect-exit=${rc} collected=${n:-0}"
           echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
@@ -238,21 +242,25 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install -e '.[dev]'
-      - name: pytest with coverage
-        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages \
-             --cov-report=xml --cov-report=term -q
       # SPEC §20: >=85% line coverage on services/ and packages/*; >=70% overall.
+      #
+      # Each command is one line, with no backslash continuation. A continuation is broken
+      # by one stray trailing space, and what breaks it is invisible in review and becomes
+      # a shell word pytest rejects at run time.
+      - name: pytest with coverage
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-report=xml --cov-report=term -q
       - name: scoped gate (>=85% on services/ + packages/*)
-        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api/services \
-             --cov=packages --cov-fail-under=85 -q
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api/services --cov=packages --cov-fail-under=85 -q
       - name: overall gate (>=70%)
-        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages \
-             --cov-fail-under=70 -q
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-fail-under=70 -q
+      # --cov-report=xml names no path, so coverage.py writes ./coverage.xml in the step's
+      # working directory, which is the checkout root. Named explicitly below so the upload
+      # cannot drift from where the report is actually produced.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-xml
-          path: |
+          path: coverage.xml
 
   build-artifacts:
     name: build artifacts
@@ -437,8 +445,7 @@ jobs:
       - name: boot the API
         run: |
           . "$RUNNER_TEMP/signing-keys.sh"
-          nohup python -m uvicorn apps.api.main:app \
-            --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          nohup python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/api.pid"
       - name: wait for the API to serve
         run: |

@@ -46,4 +46,8 @@ __pycache__/
 .ruff_cache/
 htmlcov/
 .coverage
+# Written by any local run using --cov-report=xml. The coverage-gate job produces one on
+# every CI run and uploads it as the coverage-xml artifact; a local one is never that
+# artifact and must not be committed as if it were.
+coverage.xml
 
