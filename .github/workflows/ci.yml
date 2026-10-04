@@ -566,23 +566,42 @@ jobs:
             ss -ltnp 2>/dev/null | grep 8000 || true
             exit 1
           fi
-          echo "ZAP_TARGET=http://${reachable}:8000" >> "$GITHUB_ENV"
+          echo "ZAP_TARGET=http://${reachable}:8000/openapi.json" >> "$GITHUB_ENV"
           echo "reachable from a container at ${reachable}:8000"
-      - name: ZAP baseline scan
-        uses: zaproxy/action-baseline@master
+      - name: ZAP API scan
+        # action-api-scan, not action-baseline, and this is the change that makes the scan mean
+        # something.
+        #
+        # The baseline scan spidered a URL and found three of them: `/`, `/robots.txt` and
+        # `/sitemap.xml`, all 404, because this API has no root document to crawl from. Its 66
+        # passes were mostly rules not firing against a 404 page. It was measuring the absence
+        # of a website, not the security of an API.
+        #
+        # The API scan is handed the OpenAPI description instead, which is a list of every
+        # endpoint with its parameters and its declared security, and it drives the scan from
+        # that list. That is why the boot step sets EXPOSE_DOCS: without /openapi.json there is
+        # no description to hand it, and the scan would go back to guessing.
+        uses: zaproxy/action-api-scan@master
         with:
           rules_file_name: infra/zap-baseline-rules.conf
           # The input is `docker_name`. `docker-image` is not an input of this action, so it
           # was silently ignored and the scan ran on whatever the action defaults to.
           docker_name: ghcr.io/zaproxy/zaproxy:stable
+          # The spec URL, not the site root: `format` tells the action how to read it, and the
+          # endpoints to test are in the document rather than behind it.
           target: ${{ env.ZAP_TARGET }}
+          format: openapi
+          # Reporting, not gating. `fail_action` defaults to false here and is set anyway, so
+          # that an upstream default change cannot turn a finding into a red build before the
+          # findings have been triaged into the rules file.
+          fail_action: false
           # This job scans, it does not publish. With issue writing left on, a scan that finds
           # anything tries to open an issue, and the token here cannot - the job holds no
           # `issues: write` - so the step dies with "Resource not accessible by integration"
-          # *after* a successful scan, which is the least useful way for a baseline to fail.
-          # The alternative, granting the permission, was rejected on purpose: a baseline scan
-          # on every push should not be filing issues, and the report is already attached as
-          # the `zap_scan` artifact by the action itself.
+          # *after* a successful scan, which is the least useful way for a scan to fail.
+          # The alternative, granting the permission, was rejected on purpose: a scan on every
+          # push should not be filing issues, and the report is already attached as the
+          # `zap_scan` artifact by the action itself.
           allow_issue_writing: false
       - name: stop the API
         if: always()
@@ -593,10 +612,10 @@ jobs:
         run: |
           pkill -f "uvicorn apps.api.main:create_app" || true
           kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
-      # No artifact step of our own: action-baseline already attaches the report as the
-      # `zap_scan` artifact. The step that used to sit here had an empty `path:` and an `if:`
-      # naming a step id that does not exist in this job, so it uploaded nothing - and it
-      # would have uploaded a second, redundant copy had either half been right.
+      # No artifact step of our own: the action already attaches the report as the `zap_scan`
+      # artifact. The step that used to sit here had an empty `path:` and an `if:` naming a
+      # step id that does not exist in this job, so it uploaded nothing - and it would have
+      # uploaded a second, redundant copy had either half been right.
 
   ci-green:
     name: ci green (merge gate)
