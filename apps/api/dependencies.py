@@ -23,6 +23,8 @@ from apps.api.core.redis_client import get_client
 from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, VerifiedToken
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
+from apps.api.repositories.listing_repository import ListingRepository
+from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
 from apps.api.repositories.session_repository import SessionRepository
@@ -30,6 +32,7 @@ from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.services.auth_service import AuthService
+from apps.api.services.listing_service import ListingService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
@@ -148,3 +151,18 @@ def get_profile_service(db_session: db_session_dep) -> ProfileService:
 DbSessionDep = db_session_dep
 AccessTokenDep = Annotated[VerifiedToken, Depends(require_access_token)]
 ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
+
+
+def get_listing_service(db_session: db_session_dep) -> ListingService:
+    """Postings, their lifecycle, and the price index they are judged against.
+
+    One session for both repositories, so that a listing and the index row read while
+    creating it are seen in the same transaction as the listing itself.
+    """
+    return ListingService(
+        listings=ListingRepository(db_session),
+        price_indices=PriceIndexRepository(db_session),
+    )
+
+
+ListingServiceDep = Annotated[ListingService, Depends(get_listing_service)]

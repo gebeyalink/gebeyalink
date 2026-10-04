@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -277,10 +278,16 @@ def migrated_database(postgres_url: str) -> Iterator[None]:
 
 @pytest.fixture()
 def clean_database(postgres_url: str) -> Iterator[None]:
-    """Empty the account table so each test starts from a known state."""
+    """Empty the tables each test writes to, so each starts from a known state.
+
+    Accounts are emptied with a cascade, which takes their listings with them. The price
+    index is emptied outright because it hangs off crops rather than accounts, and a row
+    left behind by a price test would quietly judge the next test's listing.
+    """
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(sync_url, autocommit=True) as connection:
         connection.execute("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
+        connection.execute("TRUNCATE TABLE price_indices")
     yield
 
 
@@ -397,6 +404,137 @@ def profiles(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
             return list(cursor.fetchall())
 
     return _profiles
+
+
+@pytest.fixture()
+def listing_body() -> Callable[..., dict[str, object]]:
+    """A valid listing body, with any field replaced.
+
+    Written once here rather than in each test file so that a test which is about one rule
+    does not have to restate the eleven that are not. Harvest and expiry are relative to
+    today, because both are rules about the clock and a fixed date would make these tests
+    fail on a different day than they were written.
+    """
+
+    def _listing_body(**overrides: object) -> dict[str, object]:
+        now = datetime.now(UTC)
+        body: dict[str, object] = {
+            "crop_id": 1,
+            "quantity_kg": 2_000,
+            "min_order_kg": 100,
+            "unit_price_santim": 3_250_000,
+            "harvest_date": (now + timedelta(days=14)).date().isoformat(),
+            "region_code": "OR",
+            "woreda_id": 1,
+            "delivery_options": ["PICKUP"],
+            "delivery_fee_santim": 0,
+            "description": "Red teff, well dried, from Adaa woreda",
+            "organic": False,
+        }
+        body.update(overrides)
+        return body
+
+    return _listing_body
+
+
+@pytest.fixture()
+def stored_listings(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read listing rows and their photographs straight out of PostgreSQL.
+
+    As with the account and profile rows, a test that asks the service whether the service
+    wrote a row proves very little. This is the database's own account of what was stored.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored_listings() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT id, seller_id, source, crop_id, quantity_kg, sold_kg, min_order_kg,"
+                " unit_price_santim, harvest_date, region_code, woreda_id, delivery_options,"
+                " delivery_fee_santim, organic, status, price_outlier, short_code, version"
+                " FROM listings ORDER BY created_at"
+            )
+            return list(cursor.fetchall())
+
+    return _stored_listings
+
+
+@pytest.fixture()
+def stored_photos(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read photograph rows straight out of PostgreSQL, in the order they claim."""
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored_photos() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT listing_id, url, width, height, sort_order FROM listing_photos"
+                " ORDER BY listing_id, sort_order"
+            )
+            return list(cursor.fetchall())
+
+    return _stored_photos
+
+
+@pytest.fixture()
+def publish_price_index(postgres_url: str) -> Callable[..., None]:
+    """Write a row of the price index, as the overnight aggregation would.
+
+    Written directly because the aggregation is not part of this work: a price test needs an
+    average to have been published before it can ask whether a listing was judged against it.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _publish_price_index(
+        *,
+        crop_id: int = 1,
+        region_code: str = "OR",
+        average_santim: int | None = 3_250_000,
+        sample_size: int = 40,
+        insufficient_data: bool = False,
+        day: date | None = None,
+    ) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "INSERT INTO price_indices"
+                " (crop_id, region_code, day, avg_unit_price_santim, sample_size,"
+                "  insufficient_data)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    crop_id,
+                    region_code,
+                    day or datetime.now(UTC).date(),
+                    average_santim,
+                    sample_size,
+                    insufficient_data,
+                ),
+            )
+
+    return _publish_price_index
+
+
+@pytest.fixture()
+def lapse_listing(postgres_url: str) -> Callable[[str], None]:
+    """Move a listing's expiry into the past, behind the API's back.
+
+    The alternative is waiting thirty days, and a test that cannot be run is not a test. This
+    writes the one column the clock reads, which is exactly what time would have done to it.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _lapse_listing(listing_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE listings SET expires_at = now() - interval '1 second' WHERE id = %s",
+                (listing_id,),
+            )
+
+    return _lapse_listing
 
 
 @pytest.fixture()
