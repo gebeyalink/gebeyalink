@@ -93,6 +93,21 @@ class Settings(BaseSettings):
         description="Version stamped on every terms acceptance recorded from now on.",
     )
 
+    # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
+    # second at /redoc, and a machine-readable description of every route at /openapi.json -
+    # all three mounted unconditionally, all three reachable by anyone who can reach the
+    # port. That last one is the reason for the flag: it is a complete map of the API for a
+    # caller who has no account, including which endpoints take which secret. Nothing in the
+    # specification asks for it, so it is not on by default.
+    #
+    # The security scan in CI is the one caller that sets it, and it has to: ZAP's API scan
+    # reads the OpenAPI description to learn the endpoints at all. Scanning an API whose
+    # description is hidden would be scanning the absence of a schema.
+    expose_docs: bool = Field(
+        default=False,
+        description="Serve /docs, /redoc and /openapi.json. Off unless asked for.",
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

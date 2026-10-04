@@ -175,6 +175,25 @@ def signing_keys() -> tuple[str, str]:
 
 
 @pytest.fixture(scope="session")
+def inert_settings() -> Settings:
+    """Configuration pointing nowhere, for tests that never start anything.
+
+    Building an application now reads the configuration, because the route table depends on
+    it, so a test that only wants to inspect routes still has to hand one over. The addresses
+    here are deliberately addresses nothing is listening on: if such a test ever reached for
+    the database or the store, it would fail rather than quietly talk to a real one.
+    """
+    return Settings(
+        database_url="postgresql+psycopg://nobody@127.0.0.1:1/nothing",
+        redis_url="redis://127.0.0.1:1/0",
+        signing_private_key=SecretStr("unused-outside-the-application"),
+        signing_public_key=SecretStr("unused-outside-the-application"),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+    )
+
+
+@pytest.fixture(scope="session")
 def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
     """Configuration pointing at this run's throwaway services.
 

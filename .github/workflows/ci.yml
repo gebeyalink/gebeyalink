@@ -426,6 +426,11 @@ jobs:
       DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
       REDIS_URL: redis://localhost:6379/0
       TERMS_VERSION: '2026-01-01'
+      # The only place the API description is served. ZAP's API scan reads /openapi.json to
+      # learn which endpoints exist, so scanning a process that hides it would be scanning the
+      # absence of a schema. Everywhere else it stays off, including in production, where it
+      # is a map of every endpoint handed to anyone who can reach the port.
+      EXPOSE_DOCS: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -499,11 +504,14 @@ jobs:
         # resolves. A scan that cannot connect is not a scan, so the address is fixed before
         # the scan is trusted to say anything about the application.
         #
-        # setsid as well as nohup: nohup only ignores the hangup signal, and the process stays
-        # in this step's process group, which the runner tears down at the step boundary.
-        # A new session is what actually carries the process into the next step.
+        # setsid as well as nohup, and this is hardening rather than the fix: the logs show
+        # the process did survive the step boundary, so the fault was never a dead process. It
+        # was the address it listened on. setsid is here because nohup alone only ignores the
+        # hangup signal, and a new session is a stronger promise than a process group the
+        # runner happens to leave alone today.
         run: |
-          setsid nohup python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 \
+          setsid nohup python -m uvicorn apps.api.main:create_app --factory \
+            --host 0.0.0.0 --port 8000 \
             > "$RUNNER_TEMP/api.log" 2>&1 < /dev/null &
           echo "$!" > "$RUNNER_TEMP/api.pid"
       - name: wait for the API to serve
@@ -583,7 +591,7 @@ jobs:
         # boot is not guaranteed to be the process holding port 8000. The pattern matches one
         # process, and the pid file is kept for the case where neither is available.
         run: |
-          pkill -f "uvicorn apps.api.main:app" || true
+          pkill -f "uvicorn apps.api.main:create_app" || true
           kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
       # No artifact step of our own: action-baseline already attaches the report as the
       # `zap_scan` artifact. The step that used to sit here had an empty `path:` and an `if:`

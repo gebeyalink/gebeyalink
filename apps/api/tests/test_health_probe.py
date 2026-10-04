@@ -11,10 +11,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from apps.api.core.config import Settings
+
 pytestmark = pytest.mark.unit
 
 
-def _bare_client() -> TestClient:
+def _bare_client(settings: Settings) -> TestClient:
     """The app with no lifespan run, and so no services behind it.
 
     Used as a plain object rather than as a context manager on purpose: entering the
@@ -24,18 +26,18 @@ def _bare_client() -> TestClient:
     """
     from apps.api.main import create_app
 
-    return TestClient(create_app())
+    return TestClient(create_app(settings))
 
 
-def test_health_answers_without_a_sign_in() -> None:
+def test_health_answers_without_a_sign_in(inert_settings: Settings) -> None:
     """A healthcheck carries no credentials, so the route may not require any."""
-    response = _bare_client().get("/health")
+    response = _bare_client(inert_settings).get("/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_health_needs_no_database_or_store() -> None:
+def test_health_needs_no_database_or_store(inert_settings: Settings) -> None:
     """The probe runs before anything is provisioned, so it may not touch a service.
 
     This application has neither an engine nor a store client in its state, and no settings
@@ -44,20 +46,20 @@ def test_health_needs_no_database_or_store() -> None:
     """
     from apps.api.main import create_app
 
-    application = create_app()
+    application = create_app(inert_settings)
     response = TestClient(application).get("/health")
 
     assert response.status_code == 200
     assert "engine" not in application.state.__dict__
 
 
-def test_health_carries_the_trace_header_every_response_carries() -> None:
+def test_health_carries_the_trace_header_every_response_carries(inert_settings: Settings) -> None:
     """One response shape, including on the one route that is not versioned."""
-    response = _bare_client().get("/health")
+    response = _bare_client(inert_settings).get("/health")
 
     assert response.headers["X-Trace-Id"]
 
 
-def test_health_sits_outside_the_versioned_prefix() -> None:
+def test_health_sits_outside_the_versioned_prefix(inert_settings: Settings) -> None:
     """The Dockerfile addresses /health by a fixed path and must keep working."""
-    assert _bare_client().get("/v1/health").status_code == 404
+    assert _bare_client(inert_settings).get("/v1/health").status_code == 404
