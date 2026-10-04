@@ -23,11 +23,15 @@ from apps.api.core.redis_client import get_client
 from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, VerifiedToken
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
+from apps.api.repositories.profile_repository import ProfileRepository
+from apps.api.repositories.region_repository import RegionRepository
 from apps.api.repositories.session_repository import SessionRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
+from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.services.auth_service import AuthService
 from apps.api.services.otp_service import OtpService
+from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
 from packages.shared.errors import ApiError, ErrorCode
 
@@ -127,5 +131,20 @@ async def require_access_token(
         raise ApiError(ErrorCode.TOKEN_INVALID, details={"reason": "unreadable"}) from exc
 
 
+def get_profile_service(db_session: db_session_dep) -> ProfileService:
+    """A trader's own profile, and the reference data it is checked against.
+
+    One session is shared by the four repositories on purpose: the request either writes the
+    whole change or none of it, and separate sessions would let half of it land.
+    """
+    return ProfileService(
+        profiles=ProfileRepository(db_session),
+        users=UserRepository(db_session),
+        regions=RegionRepository(db_session),
+        woredas=WoredaRepository(db_session),
+    )
+
+
 DbSessionDep = db_session_dep
 AccessTokenDep = Annotated[VerifiedToken, Depends(require_access_token)]
+ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]

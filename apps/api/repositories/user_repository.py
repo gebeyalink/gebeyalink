@@ -7,12 +7,14 @@ learn whether the answer came from a cache, a join, or a scan.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.user import User
+from packages.shared.i18n.languages import Language
 
 
 class UserRepository:
@@ -28,6 +30,22 @@ class UserRepository:
         """
         result = await self._session.execute(select(User).where(User.phone_e164 == phone_e164))
         return result.scalar_one_or_none()
+
+    async def find_by_id(self, user_id: uuid.UUID) -> User | None:
+        """The account with this identifier, if it still exists."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
+
+    async def save_language(self, user: User, language: Language) -> User:
+        """Record the language this trader reads in.
+
+        An explicit choice in a request is worth keeping; a language the caller merely
+        happened to read the response in is not, which is why nothing here is inferred from
+        a header.
+        """
+        user.language = language
+        await self._session.flush()
+        return user
 
     async def add(self, user: User) -> User:
         """Create the account.

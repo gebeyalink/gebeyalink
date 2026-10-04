@@ -357,6 +357,49 @@ def accounts(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
 
 
 @pytest.fixture()
+def signed_in(sign_in: Callable[..., httpx.Response]) -> Callable[..., dict[str, str]]:
+    """Sign a trader in and hand back the headers their next request needs.
+
+    Goes through the real sign-in journey rather than minting a token, so a test that calls a
+    protected endpoint is exercising the same path a handset would take to get there.
+    """
+
+    def _signed_in(phone_e164: str = "+251911000001", **kwargs: object) -> dict[str, str]:
+        verified = sign_in(phone_e164, **kwargs)
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _signed_in
+
+
+@pytest.fixture()
+def profiles(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read profile rows straight out of PostgreSQL.
+
+    As with the account rows, going around the application's own repository is what makes
+    this worth having: it shows what was actually stored, including whether a coordinate made
+    it into the geography column at the precision it was supposed to.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _profiles() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT display_name, region_code, woreda_id, kebele, business_name,"
+                " license_no, tax_identification_number, version,"
+                " ST_AsText(gps) AS gps_text, ST_SRID(gps) AS gps_srid,"
+                " avatar_url"
+                " FROM profiles ORDER BY user_id"
+            )
+            return list(cursor.fetchall())
+
+    return _profiles
+
+
+@pytest.fixture()
 def code_for(sms_recorder: RecordingSmsProvider) -> Callable[[str], str]:
     """Read the most recent code a trader was sent.
 
@@ -410,3 +453,27 @@ def sign_in(client: TestClient, code_for: Callable[[str], str]) -> Callable[...,
         return verified
 
     return _sign_in
+
+
+@pytest.fixture()
+def signed_in_as_buyer(
+    signed_in: Callable[..., dict[str, str]], postgres_url: str
+) -> Callable[..., dict[str, str]]:
+    """Sign a trader in as a buyer.
+
+    Sign-in always produces a farmer, because that is the default every new account starts
+    from, and nothing in the API yet moves an account to buying. The role is therefore set in
+    the database directly: these tests are about what a buyer may put on a profile, and the
+    journey for becoming one is not part of this task.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _signed_in_as_buyer(phone_e164: str = "+251911000003") -> dict[str, str]:
+        headers = signed_in(phone_e164)
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE users SET role = 'BUYER' WHERE phone_e164 = %s", (phone_e164,)
+            )
+        return headers
+
+    return _signed_in_as_buyer
