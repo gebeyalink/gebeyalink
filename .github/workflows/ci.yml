@@ -594,10 +594,21 @@ jobs:
           # endpoints to test are in the document rather than behind it.
           target: ${{ env.ZAP_TARGET }}
           format: openapi
-          # Reporting, not gating. `fail_action` defaults to false here and is set anyway, so
-          # that an upstream default change cannot turn a finding into a red build before the
-          # findings have been triaged into the rules file.
-          fail_action: false
+          # The gate. `fail_action: true` makes zap-api-scan.py's exit code decide this step,
+          # and its exit code is arithmetic, not opinion: 1 when any rule FAILed, 2 when any
+          # rule WARNed, 3 when the scan itself broke or found nothing at all, 0 when there is
+          # at least one pass and nothing failed or warned. Ignored rules are not counted, so
+          # an accepted risk in the rules file cannot redden the build - it has been triaged on
+          # purpose.
+          #
+          # This could only be turned on after the scan was made to mean something and then
+          # read clean. Run 37205542548 found two warnings; one (10021, X-Powered-By) was
+          # fixed by sending X-Content-Type-Options on every response, including 500s; the
+          # other (90004, CORP) was triaged into infra/zap-baseline-rules.conf with its
+          # rationale. Run 37268838565 then reported WARN-NEW: 0, FAIL-NEW: 0, PASS: 117, and
+          # only then did this flip. A gate armed before that would have been a gate armed
+          # against a scan that reports three 404s as its whole world.
+          fail_action: true
           # This job scans, it does not publish. With issue writing left on, a scan that finds
           # anything tries to open an issue, and the token here cannot - the job holds no
           # `issues: write` - so the step dies with "Resource not accessible by integration"
