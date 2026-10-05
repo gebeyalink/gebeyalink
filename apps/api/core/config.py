@@ -16,6 +16,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from packages.shared.money import FeePayer
+
 
 class Settings(BaseSettings):
     """Everything the API needs to boot."""
@@ -87,6 +89,16 @@ class Settings(BaseSettings):
     sms_provider: str = Field(
         default="recording",
         description="Name of the SMS backend the API builds at start-up.",
+    )
+
+    # Which side funds the platform fee and its VAT. A commercial decision rather than an
+    # arithmetic one: the fee, the VAT and the ledger are identical under all three, and only
+    # the split between what the buyer pays and what the seller keeps moves. The buyer pays by
+    # default, because a marketplace that quietly taxes the seller changes the price a seller
+    # sees, and one that quietly taxes the buyer changes the price a buyer sees.
+    fee_payer: FeePayer = Field(
+        default=FeePayer.BUYER,
+        description="Side of the order that funds the platform fee: BUYER, SELLER or SPLIT_50.",
     )
 
     terms_version: str = Field(
