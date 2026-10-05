@@ -24,6 +24,7 @@ from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, 
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.listing_repository import ListingRepository
+from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
@@ -33,6 +34,7 @@ from apps.api.repositories.verification_code_repository import VerificationCodeR
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.services.auth_service import AuthService
 from apps.api.services.listing_service import ListingService
+from apps.api.services.offer_service import OfferService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
@@ -166,3 +168,19 @@ def get_listing_service(db_session: db_session_dep) -> ListingService:
 
 
 ListingServiceDep = Annotated[ListingService, Depends(get_listing_service)]
+
+
+def get_offer_service(db_session: db_session_dep) -> OfferService:
+    """Bids on a listing, and the listing they are bounded by.
+
+    One session for both repositories, for the reason the listing service has one for two: a
+    counter writes an offer and reads the listing it must satisfy the rules of, and those two
+    statements have to describe the same listing.
+    """
+    return OfferService(
+        offers=OfferRepository(db_session),
+        listings=ListingRepository(db_session),
+    )
+
+
+OfferServiceDep = Annotated[OfferService, Depends(get_offer_service)]

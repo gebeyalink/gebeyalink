@@ -557,6 +557,72 @@ def lapse_listing(postgres_url: str) -> Callable[[str], None]:
 
 
 @pytest.fixture()
+def offer_body() -> Callable[..., dict[str, object]]:
+    """A valid offer body, with any field replaced.
+
+    Priced above the default listing's ask and below twice it, because an offer that only just
+    met the ceiling would test the ceiling in every test that used it, and one that only just
+    beat the ask would test the ask instead. A valid offer ought to be valid for reasons other
+    than the boundary it is standing next to.
+    """
+
+    def _offer_body(**overrides: object) -> dict[str, object]:
+        body: dict[str, object] = {
+            "quantity_kg": 500,
+            "price_santim": 3_300_000,
+            "valid_hours": 72,
+        }
+        body.update(overrides)
+        return body
+
+    return _offer_body
+
+
+@pytest.fixture()
+def stored_offers(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read offer rows straight out of PostgreSQL.
+
+    The database's own account of what was stored, for the same reason the listing rows are
+    read this way: a test that asks the API whether the API wrote a row proves very little.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored_offers() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT id, listing_id, buyer_id, thread_id, thread_depth, quantity_kg,"
+                " price_santim, valid_until, status, version"
+                " FROM offers ORDER BY thread_depth, created_at"
+            )
+            return list(cursor.fetchall())
+
+    return _stored_offers
+
+
+@pytest.fixture()
+def lapse_offer(postgres_url: str) -> Callable[[str], None]:
+    """Move an offer's deadline into the past, behind the API's back.
+
+    The alternative is asking for a window of zero hours, which the request rules refuse on
+    purpose. Time is the only thing that should move a deadline forward, so this writes the one
+    column the clock reads - exactly what waiting seven days would have done.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _lapse_offer(offer_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE offers SET valid_until = now() - interval '1 second' WHERE id = %s",
+                (offer_id,),
+            )
+
+    return _lapse_offer
+
+
+@pytest.fixture()
 def code_for(sms_recorder: RecordingSmsProvider) -> Callable[[str], str]:
     """Read the most recent code a trader was sent.
 
@@ -589,15 +655,27 @@ def request_code(client: TestClient) -> Callable[[str], httpx.Response]:
 
 @pytest.fixture()
 def sign_in(client: TestClient, code_for: Callable[[str], str]) -> Callable[..., httpx.Response]:
-    """Run the whole sign-in journey and hand back the verify response."""
+    """Run the whole sign-in journey and hand back the verify response.
+
+    `from_address` sets the forwarding header the platform's load balancer would set, and both
+    requests carry it because the per-minute ceiling is applied to every route in the auth
+    router. It exists for tests that need several traders: eleven buyers on one listing is a
+    legitimate arrangement, but from a single address it would be one address signing in eleven
+    times, which is exactly what the ceiling is for. Each trader signing in from their own
+    address is the ordinary case, so the guard still applies to every one of them.
+    """
 
     def _sign_in(
         phone_e164: str,
         *,
         terms_version: str = TERMS_VERSION,
         language: str | None = None,
+        from_address: str | None = None,
     ) -> httpx.Response:
-        requested = client.post("/v1/auth/otp/request", json={"phone_e164": phone_e164})
+        headers = {"x-forwarded-for": from_address} if from_address is not None else {}
+        requested = client.post(
+            "/v1/auth/otp/request", json={"phone_e164": phone_e164}, headers=headers
+        )
         assert requested.status_code == 200, requested.text
         body: dict[str, object] = {
             "phone_e164": phone_e164,
@@ -606,7 +684,7 @@ def sign_in(client: TestClient, code_for: Callable[[str], str]) -> Callable[...,
         }
         if language is not None:
             body["language"] = language
-        verified: httpx.Response = client.post("/v1/auth/otp/verify", json=body)
+        verified: httpx.Response = client.post("/v1/auth/otp/verify", json=body, headers=headers)
         return verified
 
     return _sign_in

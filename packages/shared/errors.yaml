@@ -70,7 +70,7 @@ ILLEGAL_STATE_TRANSITION:
   message: illegal_state_transition
 
 OFFER_LIMIT:
-  status: 409
+  status: 422
   raises: true
   message: offer_limit
 
@@ -115,7 +115,7 @@ KYC_PENDING:
   message: kyc_pending
 
 LISTING_NOT_ACTIVE:
-  status: 409
+  status: 422
   raises: true
   message: listing_not_active
 
