@@ -120,6 +120,16 @@ markers = [
 [tool.coverage.run]
 source = ["apps/api", "packages"]
 branch = true
+# SQLAlchemy's async engine runs its synchronous database work inside a greenlet, and a
+# greenlet switch is invisible to the tracer. Without this the tracer loses the enclosing
+# coroutine at the first database await and only re-acquires it at the next one, so every
+# pure-Python statement after an await is reported as never run -- `profile_service.update`
+# reported `if existing is None:` as uncovered while the test written to drive it passed.
+# Measured over 481 tests, this put the services at 82.18% rather than 98.15% and hid that
+# offer_service.py was fully covered. `greenlet` teaches the tracer about the switch and
+# `thread` does the same for the portal thread the test client runs the app in. Both are
+# instrument settings: they only ever credit lines that really executed.
+concurrency = ["greenlet", "thread"]
 # Test code is scaffolding, not product code; measuring it inflates the reported
 # percentage and would mask a genuinely uncovered service.
 omit = ["*/tests/*", "*/.gitkeep", "*/alembic/*"]
