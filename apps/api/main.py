@@ -12,6 +12,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from apps.api.core.config import Settings, get_settings
 from apps.api.core.error_handlers import register_error_handlers
 from apps.api.core.redis_client import close_client, init_client
+from apps.api.core.response_headers import SECURITY_HEADERS
 from apps.api.core.trace import new_trace_id, set_language_from_header, set_trace_id
 from apps.api.db.session import dispose_engine, init_engine
 from apps.api.providers.sms import build_sms_provider
@@ -80,6 +81,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         set_language_from_header(request.headers.get("accept-language"))
         response: Response = await call_next(request)
         response.headers["X-Trace-Id"] = trace_id
+        # On every response, and here rather than on the handlers: a header that only appears
+        # on the responses somebody remembered to add it to is not a policy. The one response
+        # this middleware cannot reach - the 500 from an unhandled exception - is stamped in
+        # `error_response`, which is why the policy lives in one module both of them read.
+        for name, value in SECURITY_HEADERS.items():
+            response.headers[name] = value
         return response
 
     return app

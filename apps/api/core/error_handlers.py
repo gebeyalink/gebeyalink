@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from apps.api.core.response_headers import apply_security_headers
 from apps.api.core.trace import get_language, get_trace_id
 from packages.shared.errors import ApiError, ErrorCode, http_status_for
 from packages.shared.i18n.messages import translate
@@ -55,10 +56,17 @@ def error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """Render a catalog failure as a response."""
+    merged = dict(headers or {})
+    # Applied here and not only in the request middleware, because one of these responses is
+    # built outside the middleware entirely: the handler for an unhandled exception belongs to
+    # Starlette's outermost error middleware, so the 500 it renders never travels back out
+    # through ours. Without this line the one response nobody planned would also be the one
+    # without the header.
+    apply_security_headers(merged)
     return JSONResponse(
         status_code=status or http_status_for(code),
         content=build_error_body(code, message=message, details=details),
-        headers=headers,
+        headers=merged,
     )
 
 
