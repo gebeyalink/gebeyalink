@@ -777,6 +777,112 @@ def seller_pays_signed_in(
     return _seller_pays_signed_in
 
 
+@pytest.fixture(scope="session")
+def cod_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
+    """The same configuration with cash-on-delivery switched on.
+
+    FR-2101's COD route is behind a flag, and a test that could only ever see the flag off would
+    be testing the refusal rather than the flow. This is the configuration a deployment opens to
+    run the pilot, which is exactly what the COD tests need to drive.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+        cod_enabled=True,
+    )
+
+
+@pytest.fixture()
+def cod_client(
+    cod_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> Iterator[TestClient]:
+    """The application with cash-on-delivery switched on."""
+    application: FastAPI = create_app(cod_settings)
+    with TestClient(application) as test_client:
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture()
+def cod_sign_in(
+    cod_client: TestClient, code_for: Callable[[str], str]
+) -> Callable[..., httpx.Response]:
+    """Sign a trader in against the COD-enabled application.
+
+    Written out again rather than shared with `sign_in`, and the reason matters: the engine and
+    the Redis client are process-global singletons bound to the event loop their application's
+    lifespan started, so a test may not drive two of these clients at once. Signing in through
+    the default client and then making the request through this one would leave the second app
+    querying a connection pool owned by the first app's loop, which fails in a way that looks
+    nothing like the mistake it is.
+    """
+
+    def _cod_sign_in(phone_e164: str = "+251911000001", **kwargs: object) -> httpx.Response:
+        headers = (
+            {"x-forwarded-for": kwargs.pop("from_address")} if "from_address" in kwargs else {}
+        )
+        requested = cod_client.post(
+            "/v1/auth/otp/request", json={"phone_e164": phone_e164}, headers=headers
+        )
+        assert requested.status_code == 200, requested.text
+        body: dict[str, object] = {
+            "phone_e164": phone_e164,
+            "code": code_for(phone_e164),
+            "terms_version": TERMS_VERSION,
+        }
+        verified: httpx.Response = cod_client.post(
+            "/v1/auth/otp/verify", json=body, headers=headers
+        )
+        return verified
+
+    return _cod_sign_in
+
+
+@pytest.fixture()
+def cod_signed_in(
+    cod_sign_in: Callable[..., httpx.Response],
+) -> Callable[..., dict[str, str]]:
+    """Headers for a trader signed in against the COD-enabled application."""
+
+    def _cod_signed_in(phone_e164: str = "+251911000001", **kwargs: object) -> dict[str, str]:
+        verified = cod_sign_in(phone_e164, **kwargs)
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _cod_signed_in
+
+
+@pytest.fixture()
+def cod_signed_in_as_buyer(
+    cod_signed_in: Callable[..., dict[str, str]], postgres_url: str
+) -> Callable[..., dict[str, str]]:
+    """Sign a buyer in against the COD-enabled application.
+
+    The role is set in the database directly, exactly as `signed_in_as_buyer` does: nothing in
+    the API yet moves an account to buying, and these tests are about the COD order flow, not the
+    trading-role journey.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _cod_signed_in_as_buyer(phone_e164: str = "+251911000003") -> dict[str, str]:
+        headers = cod_signed_in(phone_e164)
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE users SET role = 'BUYER' WHERE phone_e164 = %s", (phone_e164,)
+            )
+        return headers
+
+    return _cod_signed_in_as_buyer
+
+
 @pytest.fixture()
 async def concurrent_client(
     settings: Settings, clean_database: None, clean_store: None, sms_recorder: RecordingSmsProvider
@@ -883,7 +989,8 @@ def stored_orders(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
                 "SELECT id, short_code, buyer_id, seller_id, listing_id, offer_id, quantity_kg,"
                 " unit_price_santim, delivery_method, delivery_fee_santim, platform_fee_santim,"
                 " vat_santim, total_santim, fee_payer, buyer_address_woreda_id,"
-                " buyer_address_text, pickup_code, status, cancel_reason, payment_mode, version,"
+                " buyer_address_text, pickup_code, status, cancel_reason, payment_mode,"
+                " confirmed_at, buyer_confirmed_at, seller_confirmed_at, version,"
                 " state_before_dispute FROM orders ORDER BY created_at, id"
             )
             return list(cursor.fetchall())
@@ -934,6 +1041,27 @@ def lapse_order(postgres_url: str) -> Callable[[str], None]:
             )
 
     return _lapse_order
+
+
+@pytest.fixture()
+def backdate_confirmation(postgres_url: str) -> Callable[[str], None]:
+    """Move an order's confirmation into the past, behind the API's back.
+
+    The alternative is waiting seventy-two hours, and a test that cannot be run is not a test.
+    This writes the column `seller_delayed` is measured from, which is exactly what the clock
+    would have done to it — and nothing else, so a test about the delay cannot pass by having
+    quietly changed the order's status as well.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _backdate_confirmation(order_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE orders SET confirmed_at = now() - interval '73 hours' WHERE id = %s",
+                (order_id,),
+            )
+
+    return _backdate_confirmation
 
 
 @pytest.fixture()

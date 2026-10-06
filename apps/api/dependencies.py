@@ -236,6 +236,7 @@ def get_order_service(
         offers=OfferRepository(db_session),
         reservations=ReservationRepository(db_session),
         fee_payer=settings.fee_payer,
+        cod_enabled=settings.cod_enabled,
         codes=CrockfordOrderCode(orders.short_code_exists),
         idempotency=IdempotencyStore(get_client()),
     )

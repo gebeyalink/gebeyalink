@@ -16,7 +16,9 @@ The status is not a field a request may set. There is exactly one function in th
 writes an order's status, it consults the state table before it does, and everything that reaches
 a status goes through it — including creation, which is born `CREATED` and enters `AWAITING_FUNDING`
 in the same transaction that reserves its kilos, because that transition is what makes the
-reservation mean something.
+reservation mean something. A COD order is the one exception and it is not a move at all: there is
+no money to wait for, so it stays `CREATED`, and the reservation gains its meaning instead when both
+parties confirm it (§10.2, FR-2102).
 
 The money is not a field a request may set either. Totals come from the shared money functions
 and from the listing, and `fee_payer` is snapshotted onto the row rather than read from
@@ -30,10 +32,11 @@ back. That work is a write even when it is reached from a read, and deliberately
 offer's window, this one's consequence is another table's contents, and a read that answered
 "cancelled" while the kilos were still reserved would be lying in two directions at once.
 
-What is deliberately not here: escrow, payment webhooks, delivery, confirmation, COD and
-disputes. Those slices own their own transitions and will come through the same guard this
-module uses, which is why the state table below is the specification's whole table rather than
-the part this slice happens to need.
+What is deliberately not here: escrow, payment webhooks, delivery and disputes. Those slices own
+their own transitions and will come through the same guard this module uses, which is why the
+state table below is the specification's whole table rather than the part this slice happens to
+need. Confirmation and COD live here instead: a COD order is the buyer and seller agreeing
+between themselves, with no money-moving slice in between for them to wait on.
 """
 
 from __future__ import annotations
@@ -88,13 +91,34 @@ FUNDING_WINDOW = timedelta(hours=48)
 #: rather than inside a single request that times out.
 EXPIRY_SWEEP_LIMIT = 50
 
+#: The largest goods value a COD order may carry: ten thousand birr, in santim. COD is a credit
+#: the seller extends, and a pilot extends it only so far. `subtotal` is the price of the kilos
+#: alone — the delivery fee and the platform fee are not part of what the seller is owed for the
+#: crop, so they are not part of the ceiling either.
+COD_CAP_SANTIM = 1_000_000
+
+#: How long a seller may sit on a confirmed order before the buyer may treat it as a delay.
+#: Seventy-two hours, counted from confirmation, and deliberately measured from the moment both
+#: parties agreed: before that agreement exists there is nothing to be late on.
+SELLER_DELAY_WINDOW = timedelta(hours=72)
+
 #: The whole state table, as which statuses may follow which. Absent from a row means the status
 #: is terminal: a completed, cancelled or refunded order is a record of how the trade ended, and
 #: none of those is reopened. The rows this slice cannot reach are here anyway — funding,
 #: delivery, disputes — because the specification's table is the whole table, and a guard
 #: missing an edge is a guard the next slice cannot trust.
 ALLOWED_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
-    OrderStatus.CREATED: frozenset({OrderStatus.AWAITING_FUNDING, OrderStatus.CONFIRMED}),
+    OrderStatus.CREATED: frozenset(
+        {
+            # An escrow order is born `CREATED` and moves immediately, and a COD order stays
+            # `CREATED` until both parties confirm it (FR-2102). Either way, cancellation while
+            # it is still `CREATED` is either party's right on a COD order (FR-2103); it is
+            # unreachable for escrow only because no escrow order ever sits in `CREATED`.
+            OrderStatus.AWAITING_FUNDING,
+            OrderStatus.CONFIRMED,
+            OrderStatus.CANCELLED,
+        }
+    ),
     OrderStatus.AWAITING_FUNDING: frozenset({OrderStatus.FUNDED, OrderStatus.CANCELLED}),
     OrderStatus.CONFIRMED: frozenset({OrderStatus.DELIVERED}),
     OrderStatus.FUNDED: frozenset(
@@ -245,6 +269,7 @@ class OrderService:
         reservations: ReservationRepository,
         *,
         fee_payer: FeePayer,
+        cod_enabled: bool,
         codes: OrderCodeSource,
         idempotency: IdempotencyStore,
     ) -> None:
@@ -253,6 +278,7 @@ class OrderService:
         self._offers = offers
         self._reservations = reservations
         self._fee_payer = fee_payer
+        self._cod_enabled = cod_enabled
         self._codes = codes
         self._idempotency = idempotency
 
@@ -377,6 +403,11 @@ class OrderService:
         seller who will not sell a kilo is not obliged to sell half of one; availability, because
         the seller may have sold the rest of it an hour ago; and the same distinction between a
         request that never fitted and one that lost a race for the last kilos.
+
+        COD is a choice in the body, and it is a choice with two refusals of its own, both 422. A
+        mode the platform has not switched on is refused by name — asking for COD where the flag is
+        off is a request for something that does not exist — and an order worth more than the
+        ceiling a pilot will extend is refused as over the limit, with the ceiling in the reply.
         """
 
         async def work() -> Order:
@@ -434,7 +465,25 @@ class OrderService:
                 quantity_kg=quantity_kg,
                 unit_price_santim=listing.unit_price_santim,
             )
-            return await self._open_order(listing, terms, buyer_id=caller_id, offer_id=None)
+            payment_mode = PaymentMode(body.get("payment_mode", PaymentMode.ESCROW.value))
+            if payment_mode is PaymentMode.COD:
+                if not self._cod_enabled:
+                    raise ApiError(
+                        ErrorCode.VALIDATION_ERROR,
+                        details={"feature": "cod"},
+                    )
+                subtotal = terms.money(self._fee_payer).subtotal
+                if subtotal > COD_CAP_SANTIM:
+                    raise ApiError(
+                        ErrorCode.LIMIT_EXCEEDED,
+                        details={
+                            "limit_santim": COD_CAP_SANTIM,
+                            "subtotal_santim": subtotal,
+                        },
+                    )
+            return await self._open_order(
+                listing, terms, buyer_id=caller_id, offer_id=None, payment_mode=payment_mode
+            )
 
         return await self._once(
             caller_id, key, ("buy-now", str(listing_id)), body, CREATED_STATUS, work
@@ -489,15 +538,73 @@ class OrderService:
         next_cursor = encode_cursor(page.orders[-1]) if page.has_more and page.orders else None
         return [to_response(order) for order in page.orders], next_cursor, page.has_more
 
-    async def cancel(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
-        """The buyer walking away from an order they have not paid for.
+    async def confirm(self, order_id: UUID, caller_id: UUID) -> OrderResponse:
+        """A party to a COD order recording that the terms are the ones they agreed to.
 
-        The buyer's alone, and only while the order is still waiting for money. FR-607 gives the
-        seller a cancellation too, but only before acceptance — and every order this slice can
-        see is an acceptance, so the seller's answer is that they cannot, and it is 403 rather
-        than 409 because the seller has not asked for something that does not exist yet: they
-        would be cancelling a deal they agreed to. A seller who wants a bid stopped before it
-        becomes an order rejects it, which is a different word for the same wish.
+        Confirmation is the COD stand-in for funding: money never moves, and instead each
+        party signs the order. It is idempotent per party, which is why there is no
+        `Idempotency-Key` on this route — the party *is* the key. A buyer who confirms twice is
+        told once, because a confirmation that ran twice would be no different from one that ran
+        once, and there is no stock to double-release for a mistake to be made in.
+
+        The order reaches `CONFIRMED` on the second distinct confirmation, whichever party is
+        second (the two may confirm in either order), and it is that transition which converts
+        the reservation from `HELD` to `CONVERTED` — the identical step the funding and delivery
+        slices use when escrow money arrives, so a confirmed COD order blocks stock exactly the
+        way a funded one does. `confirmed_at` is set at that same instant, and it is what the
+        seller-delayed window is measured from.
+
+        Every other status is refused by the guard: an escrow order is `AWAITING_FUNDING` and is
+        confirmed by its money, not by a party's signature, so this slice adds no move to it at
+        all. A cancelled order is a record and is not reopened.
+        """
+
+        order = await self._orders.find_by_id_for_update(order_id)
+        if order is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+        self._require_party(order, caller_id)
+
+        now = datetime.now(UTC)
+        current = effective_status(order, now)
+        if current not in (OrderStatus.CREATED, OrderStatus.CONFIRMED):
+            # Not a COD order still waiting to be confirmed, nor one already confirmed. The
+            # guard raises the 409 naming the state, and it is the same refusal an escrow
+            # order gets from every move this slice does not own.
+            transition_order_status(order, OrderStatus.CONFIRMED, current)
+        if caller_id == order.buyer_id:
+            if order.buyer_confirmed_at is None:
+                order.buyer_confirmed_at = now
+        elif order.seller_confirmed_at is None:
+            order.seller_confirmed_at = now
+
+        if (
+            order.buyer_confirmed_at is not None
+            and order.seller_confirmed_at is not None
+            and current is OrderStatus.CREATED
+        ):
+            transition_order_status(order, OrderStatus.CONFIRMED, current)
+            order.confirmed_at = now
+            converted = await self._reservations.convert_for_order(order.id)
+            logger.info(
+                "confirmed order order_id=%s converted_kg=%s",
+                order.id,
+                converted,
+            )
+        await self._orders.commit()
+        return to_response(order, now=now)
+
+    async def cancel(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
+        """A party walking away from an order that has not been paid for or confirmed.
+
+        Who may walk, and when, is decided by the mode. An escrow order is the buyer's alone to
+        cancel and only while it is still waiting for money: FR-607 gives the seller a
+        cancellation too, but only before acceptance — and every escrow order this slice can see
+        is an acceptance, so the seller's answer is that they cannot, and it is 403 rather than
+        409 because the seller has not asked for something that does not exist yet. A COD order
+        is different: nobody has paid and nobody expects to, so while it is still `CREATED` —
+        before both parties have confirmed — either party may cancel it (FR-2103). Once a COD
+        order is confirmed, nobody walks away: both parties signed, and undoing that is a
+        support decision, which is a 409 from the guard rather than a route.
 
         The kilos go back in the same transaction as the cancellation. An order cancelled with
         its reservation still held would be stock nobody can buy and nobody can count, and the
@@ -509,21 +616,39 @@ class OrderService:
             if order is None:
                 raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
             # Locked, because "read it, check it can move, move it" is three steps and two
-            # concurrent cancellations would otherwise both read `AWAITING_FUNDING` and both
+            # concurrent cancellations would otherwise both read the same status and both
             # believe they were the one to give the kilos back.
-            if order.seller_id == caller_id:
-                raise ApiError(
-                    ErrorCode.FORBIDDEN,
-                    details={
-                        "resource": "order",
-                        "reason": "seller_cannot_cancel_after_acceptance",
-                    },
-                )
             self._require_party(order, caller_id)
 
             now = datetime.now(UTC)
-            transition_order_status(order, OrderStatus.CANCELLED, effective_status(order, now))
-            order.cancel_reason = CancelReason.BUYER_CANCELLED.value
+            current = effective_status(order, now)
+            if current is OrderStatus.CREATED:
+                # A COD order neither party has confirmed: whoever walks away names the reason
+                # (FR-2103). `OTHER` is the seller's word — there is no `SELLER_CANCELLED` in the
+                # vocabulary the API contract gives, and `BUYER_CANCELLED` would be a lie about
+                # who cancelled.
+                order.cancel_reason = (
+                    CancelReason.OTHER.value
+                    if caller_id == order.seller_id
+                    else CancelReason.BUYER_CANCELLED.value
+                )
+            else:
+                if order.payment_mode is PaymentMode.COD:
+                    # Confirmed, or past it: the state table gives `CANCELLED` no edge from
+                    # `CONFIRMED`, so the guard's 409 is the whole answer. Both parties get it;
+                    # there is no seller-specific refusal to add on top of a state that refuses
+                    # everybody.
+                    transition_order_status(order, OrderStatus.CANCELLED, current)
+                if caller_id == order.seller_id:
+                    raise ApiError(
+                        ErrorCode.FORBIDDEN,
+                        details={
+                            "resource": "order",
+                            "reason": "seller_cannot_cancel_after_acceptance",
+                        },
+                    )
+                order.cancel_reason = CancelReason.BUYER_CANCELLED.value
+            transition_order_status(order, OrderStatus.CANCELLED, current)
             released = await self._reservations.release_for_order(order.id)
             logger.info("cancelled order order_id=%s released_kg=%s", order.id, released)
             await self._orders.commit()
@@ -716,6 +841,7 @@ class OrderService:
         *,
         buyer_id: UUID,
         offer_id: UUID | None,
+        payment_mode: PaymentMode = PaymentMode.ESCROW,
     ) -> Order:
         """Write the order, reserve its kilos, mark the listing sold out if it was the last of it.
 
@@ -723,6 +849,11 @@ class OrderService:
         listing, so either alone is incomplete, and the sold-out transition is written here
         rather than left to the cron because a listing that has just sold its last kilo and still
         reads as active would take another bid it cannot honour.
+
+        The born transition depends on the mode. An escrow order enters `AWAITING_FUNDING` in
+        the same transaction that reserves its kilos, because that is what its hold means. A COD
+        order stays `CREATED` — there is no money to wait for, so `AWAITING_FUNDING` would be a
+        lie about the trade — and its hold means something only once both parties confirm it.
         """
         totals = terms.money(self._fee_payer)
         order = Order(
@@ -747,14 +878,16 @@ class OrderService:
             buyer_address_text=terms.buyer_address_text,
             pickup_code=new_pickup_code(),
             status=OrderStatus.CREATED,
-            payment_mode=PaymentMode.ESCROW,
+            payment_mode=payment_mode,
             # Version one, as on a listing and an offer: version counts the changes a row has
             # been through, and an order nobody has touched has been through being created.
             version=1,
         )
-        # Born `CREATED` and moved like everything else, so the transition that gives the
-        # reservation its meaning has been through the guard too.
-        transition_order_status(order, OrderStatus.AWAITING_FUNDING, OrderStatus.CREATED)
+        if payment_mode is not PaymentMode.COD:
+            # Born `CREATED` and moved like everything else, so the transition that gives an
+            # escrow order's reservation its meaning has been through the guard too. A COD order
+            # stays where it was born: its reservation gains meaning at confirmation (§10.2).
+            transition_order_status(order, OrderStatus.AWAITING_FUNDING, OrderStatus.CREATED)
         await self._orders.add(order)
         await self._reservations.add(
             QuantityReservation(
@@ -854,7 +987,14 @@ def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
     The money comes out as it was frozen, never recomputed: an order's total is what two parties
     agreed to, and a figure that changed because a configuration value moved would be a
     different agreement.
+
+    `seller_delayed` is derived exactly the way `effective_status` derives a lapsed funding
+    window — a lie on read would be a lie on the thing a buyer acts on. An order that has never
+    been confirmed is never delayed, because the window only starts once there is an agreement
+    to be late on.
     """
+    moment = now or datetime.now(UTC)
+    confirmed = order.confirmed_at
     return OrderResponse(
         id=order.id,
         short_code=order.short_code,
@@ -872,7 +1012,7 @@ def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
         buyer_address_woreda_id=order.buyer_address_woreda_id,
         buyer_address_text=order.buyer_address_text,
         pickup_code=order.pickup_code,
-        status=effective_status(order, now),
+        status=effective_status(order, moment),
         state_before_dispute=order.state_before_dispute,
         funded_at=order.funded_at,
         shipped_at=order.shipped_at,
@@ -880,6 +1020,8 @@ def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
         delivered_weight_kg=order.delivered_weight_kg,
         cancel_reason=order.cancel_reason,
         payment_mode=order.payment_mode,
+        confirmed_at=order.confirmed_at,
+        seller_delayed=(confirmed is not None and confirmed + SELLER_DELAY_WINDOW < moment),
         fee_payer=order.fee_payer,
         version=order.version,
         created_at=order.created_at,

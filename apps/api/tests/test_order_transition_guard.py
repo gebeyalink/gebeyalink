@@ -43,6 +43,11 @@ LISTING = uuid.UUID("00000000-0000-0000-0000-000000000003")
 SPEC_TABLE: list[tuple[OrderStatus, OrderStatus]] = [
     (OrderStatus.CREATED, OrderStatus.AWAITING_FUNDING),
     (OrderStatus.CREATED, OrderStatus.CONFIRMED),
+    # Added for the COD pilot (FR-2103): either party to a COD order may cancel it while it is
+    # still `CREATED`. The specification's table reaches cancellation only from `AWAITING_FUNDING`
+    # (escrow's whole pre-payment life), and a COD order never enters that status, so without this
+    # edge its cancellation could never happen at all.
+    (OrderStatus.CREATED, OrderStatus.CANCELLED),
     (OrderStatus.AWAITING_FUNDING, OrderStatus.FUNDED),
     (OrderStatus.AWAITING_FUNDING, OrderStatus.CANCELLED),
     (OrderStatus.CONFIRMED, OrderStatus.DELIVERED),

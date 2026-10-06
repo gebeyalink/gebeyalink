@@ -101,6 +101,15 @@ class Settings(BaseSettings):
         description="Side of the order that funds the platform fee: BUYER, SELLER or SPLIT_50.",
     )
 
+    # Whether checkout may create cash-on-delivery orders. COD is the pilot flow the platform
+    # has not opened to everyone yet, so it is off unless a deployment has decided otherwise.
+    # The flag gates the mode's existence, not its size: a COD order above the ten-thousand-birr
+    # ceiling is refused whether or not the mode itself is enabled.
+    cod_enabled: bool = Field(
+        default=False,
+        description="Whether buyers may pay for an order on delivery instead of funding it.",
+    )
+
     terms_version: str = Field(
         description="Version stamped on every terms acceptance recorded from now on.",
     )

@@ -45,9 +45,16 @@ class OrderAcceptBody(BaseModel):
 
 
 class OrderBuyNowBody(OrderAcceptBody):
-    """A purchase at the asking price, with the weight the buyer wants."""
+    """A purchase at the asking price, with the weight the buyer wants.
+
+    `payment_mode` defaults to escrow, which is the only mode most deployments offer. A COD
+    order is the buyer choosing to pay on delivery rather than fund the order, and it is
+    gated by configuration: a mode the platform has not opened cannot be chosen, no matter
+    what the body says.
+    """
 
     quantity_kg: int = Field(ge=1, le=1_000_000)
+    payment_mode: PaymentMode = PaymentMode.ESCROW
 
 
 class OrderResponse(BaseModel):
@@ -85,6 +92,13 @@ class OrderResponse(BaseModel):
     delivered_weight_kg: int | None
     cancel_reason: str | None
     payment_mode: PaymentMode
+    # When both parties had confirmed a COD order. Null until the second confirmation, and
+    # null forever on an escrow order, which is confirmed by the payment instead.
+    confirmed_at: datetime | None
+    # Derived, never stored: whether the seller is past the seventy-two hours the parties
+    # agreed on. False until the order is confirmed, because there is no agreement to be late
+    # on before both parties have signed.
+    seller_delayed: bool
     # Who was paying when this order was created, and it is read back rather than recomputed for
     # the same reason the totals are not: the figure on the row is the agreement, and today's
     # configuration is somebody else's decision.

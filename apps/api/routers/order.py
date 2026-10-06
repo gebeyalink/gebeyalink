@@ -1,4 +1,4 @@
-"""Five routes: two ways to create an order, one to end it, and two to read them.
+"""Six routes: two ways to create an order, a cancellation, a confirmation, and two reads.
 
 An order is created in exactly two ways and both of them are here, because they are the same
 transaction with one row missing: accepting an offer that already agreed a price and weight, and
@@ -11,13 +11,18 @@ on the order, because that is where the decision was made. FR-608's buy-now path
 `/listings/:id/buy-now` and an acceptance belongs to the offer's own history; an order is the
 consequence of both and gets no route of its own for something it did not decide.
 
-Cancellation takes no body. There is nothing for a buyer to say that the platform would record
-differently — the reason is `BUYER_CANCELLED` because a buyer cancelling and a funding window
-closing are different facts about the future, and one word for both would lose that — and a body
-that could carry a reason would be a body whose contents nothing acts on.
+Cancellation takes no body, and confirmation takes no body either. The reason is
+`BUYER_CANCELLED` because a buyer cancelling and a funding window closing are different facts
+about the future, and one word for both would lose that; a body that could carry a reason would
+be a body whose contents nothing acts on. Confirmation is the COD stand-in for funding — each
+party signs instead of money moving — and a party's identity is the idempotency key, so it is
+the one mutation that does not ask for the header.
 
-The three mutations require `Idempotency-Key`. A buyer on a slow connection taps twice and means
-it once, and the second tap must not be a second order.
+The two mutations against an order require `Idempotency-Key` when a retry could do the work
+twice. A buyer on a slow connection taps twice and means it once: a second tap must not be a
+second order (accept, buy-now) and must not release stock twice (cancel). A confirmation cannot
+double anything — the second tap by the same party is a no-op by construction — so it does not
+ask.
 
 The reads answer the same question from two directions — "what is happening to my crops" — and
 both are scoped to the caller's own party on an order, because an order is the only row in the
@@ -118,13 +123,30 @@ async def cancel_order(
     idempotency_key: IdempotencyKey,
     order_id: UUID = OrderIdPath,
 ) -> OrderResponse:
-    """The buyer giving up on an order they have not paid for, and the kilos going back.
+    """A party walking away from an order that has not been paid for or confirmed.
 
-    Only while the order is still waiting for money. The seller cannot do this — an order is what
-    acceptance creates, and FR-607 gives a seller their way to stop a bid before it becomes one,
-    which is rejecting it.
+    Who may walk depends on the mode: an escrow order's buyer while it is still waiting for
+    money, or either party to a COD order while it is still `CREATED`. The seller cannot cancel
+    an escrow order — an order is what acceptance creates, and FR-607 gives a seller their way
+    to stop a bid before it becomes one, which is rejecting it.
     """
     return await orders.cancel(order_id, caller.user_id, str(idempotency_key))
+
+
+@router.post("/orders/{order_id}/confirm", response_model=OrderResponse)
+async def confirm_order(
+    caller: AccessTokenDep,
+    orders: OrderServiceDep,
+    order_id: UUID = OrderIdPath,
+) -> OrderResponse:
+    """A party to a COD order agreeing that the terms are the ones they signed up for.
+
+    Money never moves on a COD order, so confirmation is the funding step and the route is the
+    one mutation that needs no `Idempotency-Key`: the party *is* the key, and their second
+    confirmation is a no-op by construction. The order reaches `CONFIRMED` once both parties
+    have confirmed, in either order.
+    """
+    return await orders.confirm(order_id, caller.user_id)
 
 
 @router.get("/orders/mine", response_model=CursorPage[OrderResponse])

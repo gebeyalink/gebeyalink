@@ -95,9 +95,10 @@ class CancelReason(enum.StrEnum):
 class PaymentMode(enum.StrEnum):
     """Whether the platform holds the buyer's money until delivery, or never sees it.
 
-    Only escrow is reachable today. The column exists because an order's settlement path is
-    decided by which of these it carries, and a column added later to answer that question would
-    be a column whose absence had to be interpreted as "escrow" by every reader at once.
+    COD orders never move money: both parties confirm the terms instead of the buyer funding
+    them, and the order stays `CREATED` until that happens. Escrow orders are born
+    `AWAITING_FUNDING` and stay there until payment arrives. Which settlement path an order
+    is on is decided by this column, so a reader never has to guess from a missing value.
     """
 
     ESCROW = "ESCROW"
@@ -199,6 +200,19 @@ class Order(TimestampMixin, Base):
         SqlEnum(PaymentMode, name="payment_mode", values_callable=stored_values),
         server_default=PaymentMode.ESCROW.value,
         nullable=False,
+    )
+    # When both parties had confirmed a COD order (FR-2102). Null on every escrow order, which
+    # is confirmed by payment rather than by a second signature. The seller-delayed window is
+    # measured from this instant by the read path, lazily.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The first instant each party confirmed, kept apart so that confirming is idempotent per
+    # party: a party's replay of their own confirmation changes nothing, and the order only
+    # reaches `CONFIRMED` once both stamps are present. Either party may be first.
+    buyer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    seller_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     # Carried because §11.1 gives every mutable business entity one. Nothing edits an order's
     # terms; a change of terms is a new order, which is what a counter and a new offer are.
