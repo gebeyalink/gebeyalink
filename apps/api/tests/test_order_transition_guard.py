@@ -27,7 +27,12 @@ from apps.api.services.order_service import (  # noqa: E402
     INITIAL_STATUSES,
     effective_status,
     funding_window_closed,
+    max_recordable_weight,
+    min_acceptable_kg,
+    pickup_window_closed,
+    shipment_window_closed,
     transition_order_status,
+    within_shrinkage_tolerance,
 )
 from packages.shared.errors import ApiError, ErrorCode  # noqa: E402
 
@@ -51,6 +56,12 @@ SPEC_TABLE: list[tuple[OrderStatus, OrderStatus]] = [
     (OrderStatus.AWAITING_FUNDING, OrderStatus.FUNDED),
     (OrderStatus.AWAITING_FUNDING, OrderStatus.CANCELLED),
     (OrderStatus.CONFIRMED, OrderStatus.DELIVERED),
+    # Added for the COD pilot (FR-701, FR-702): a confirmed COD order may begin fulfillment —
+    # marked ready for pickup or shipped — because it has no `FUNDED` state for the kilos to
+    # spend time in. Money never moves on a COD order, so confirmation is the whole agreement
+    # there is to ship against; an escrow order reaches these states through `FUNDED` instead.
+    (OrderStatus.CONFIRMED, OrderStatus.READY_FOR_PICKUP),
+    (OrderStatus.CONFIRMED, OrderStatus.SHIPPED),
     (OrderStatus.FUNDED, OrderStatus.READY_FOR_PICKUP),
     (OrderStatus.FUNDED, OrderStatus.SHIPPED),
     (OrderStatus.FUNDED, OrderStatus.DISPUTED),
@@ -216,6 +227,76 @@ def test_a_window_is_only_enforced_on_an_order_that_is_still_waiting_for_money()
 
     assert funding_window_closed(old, NOW) is True
     assert effective_status(old, NOW) is OrderStatus.FUNDED
+
+
+def test_a_pickup_past_its_window_reads_as_delivered_even_though_nothing_has_been_written() -> None:
+    """Twenty-four hours from `ready_at`, and only when the order is still sitting ready.
+
+    A buyer who neither collects nor complains within a day has let the crop wait at the
+    seller's cost, so the honest answer to anybody who asks is `DELIVERED` — the goods were
+    let to sit past the point the seller can be expected to hold them. An order that was never
+    marked ready has no window and is never late.
+    """
+    ready = an_order(OrderStatus.READY_FOR_PICKUP, ready_at=NOW)
+    never_ready = an_order(OrderStatus.READY_FOR_PICKUP, ready_at=None)
+
+    assert pickup_window_closed(ready, NOW + timedelta(hours=23, minutes=59)) is False
+    assert pickup_window_closed(ready, NOW + timedelta(hours=24)) is True
+    assert effective_status(ready, NOW + timedelta(hours=24)) is OrderStatus.DELIVERED
+    assert effective_status(never_ready, NOW.replace(year=2030)) is OrderStatus.READY_FOR_PICKUP
+
+
+def test_a_shipment_window_is_measured_from_its_departure_and_the_crop_s_own_hold() -> None:
+    """The crop's holding window counts from `shipped_at`, and only when the order is still shipped.
+
+    (FR-2508.) A crop that keeps holds longer: the window is a property of the crop, so it is
+    handed to the derivation rather than guessed. Without it the derivation answers the stored
+    status rather than inventing one, because a caller that has not looked the crop up knows
+    nothing it could honestly deliver.
+    """
+    shipped = an_order(OrderStatus.SHIPPED, shipped_at=NOW)
+
+    assert shipment_window_closed(shipped, NOW + timedelta(hours=71), hold_hours=72) is False
+    assert shipment_window_closed(shipped, NOW + timedelta(hours=72), hold_hours=72) is True
+    assert (
+        effective_status(shipped, NOW + timedelta(hours=200), hold_hours=72)
+        is OrderStatus.DELIVERED
+    )
+    assert effective_status(shipped, NOW + timedelta(hours=200)) is OrderStatus.SHIPPED
+
+
+def test_the_shrinkage_tolerance_boundary_belongs_to_the_buyer() -> None:
+    """Delivered weights are compared in ten-thousandths, so the edge is exact.
+
+    Two percent tolerance is a receivable weight of exactly ninety-eight percent of the order,
+    no fraction looser: one more short kilogram is refused. The comparison is scaled so that the
+    boundary does not drift with floats, and written `>=` so the boundary itself passes — which
+    is the point of the `2.1` rows: at two-point-one percent the boundary is itself the
+    (whole-kilo ceiling of the) figure the tolerance names, and it passes, while the kilo below
+    it is refused.
+    """
+    assert within_shrinkage_tolerance(1000, 980, 2.0) is True
+    assert within_shrinkage_tolerance(1000, 979, 2.0) is False
+    assert within_shrinkage_tolerance(1000, 980, 2.1) is True
+    assert within_shrinkage_tolerance(1000, 979, 2.1) is True
+    assert within_shrinkage_tolerance(1000, 978, 2.1) is False
+    assert within_shrinkage_tolerance(1000, 1000, 0.0) is True
+    assert within_shrinkage_tolerance(1000, 999, 0.0) is False
+    assert min_acceptable_kg(1000, 2.0) == 980
+    assert min_acceptable_kg(1000, 2.1) == 979
+
+
+def test_the_recordable_weight_is_five_percent_on_top_and_flagged_to_the_ceiling() -> None:
+    """Record at most `1.05 * ordered`, whole kilograms, and never past the schema's ceiling.
+
+    (FR-2507.) An odd order floors at its cushion — thirty-three ordered allows the thirty-four
+    the round-up grants — and an order so large that five percent would pass a million kilograms
+    is capped at the ceiling the check constraint enforces anyway.
+    """
+    assert max_recordable_weight(33) == 34
+    assert max_recordable_weight(1000) == 1050
+    assert max_recordable_weight(2000) == 2100
+    assert max_recordable_weight(20_000_000) == 1_000_000
 
 
 def test_the_table_is_the_specification_s_whole_table() -> None:

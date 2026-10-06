@@ -32,11 +32,15 @@ back. That work is a write even when it is reached from a read, and deliberately
 offer's window, this one's consequence is another table's contents, and a read that answered
 "cancelled" while the kilos were still reserved would be lying in two directions at once.
 
-What is deliberately not here: escrow, payment webhooks, delivery and disputes. Those slices own
+What is deliberately not here: escrow, payment webhooks and disputes. Those slices own
 their own transitions and will come through the same guard this module uses, which is why the
 state table below is the specification's whole table rather than the part this slice happens to
 need. Confirmation and COD live here instead: a COD order is the buyer and seller agreeing
-between themselves, with no money-moving slice in between for them to wait on.
+between themselves, with no money-moving slice in between for them to wait on. Fulfillment
+lives here too — marking an order ready or shipped, recording the delivered kilograms, and
+confirming delivery against what was supposed to arrive — because it is the handover of the
+crop itself, and the numbers a later dispute needs are captured at the handover rather than
+reconstructed after it.
 """
 
 from __future__ import annotations
@@ -102,6 +106,22 @@ COD_CAP_SANTIM = 1_000_000
 #: parties agreed: before that agreement exists there is nothing to be late on.
 SELLER_DELAY_WINDOW = timedelta(hours=72)
 
+#: How long a pickup may sit marked-ready before the buyer is deemed to have collected it.
+#: Twenty-four hours from `ready_at`: the seller said the goods were waiting, and a buyer who
+#: neither collects nor complains within a day is a buyer who has let the crop wait at somebody
+#: else's cost.
+PICKUP_CONFIRM_WINDOW = timedelta(hours=24)
+
+#: The largest weight that may ever be recorded as delivered, whole kilograms. The same figure
+#: the schema's check constraint enforces; it caps what a recorded delivery may be even where
+#: five percent on top of an extraordinary order would push past it.
+MAX_DELIVERED_WEIGHT_KG = 1_000_000
+
+#: The five-percent cushion a delivered weight is allowed on top of what was ordered (FR-2507,
+#: ADR-E) — the seller reports what actually arrived, and "more than was agreed" is not the
+#: failure in transit "less than was agreed" is, up to this bound.
+DELIVERED_WEIGHT_UPPER_FACTOR_X = 105
+
 #: The whole state table, as which statuses may follow which. Absent from a row means the status
 #: is terminal: a completed, cancelled or refunded order is a record of how the trade ended, and
 #: none of those is reopened. The rows this slice cannot reach are here anyway — funding,
@@ -120,7 +140,14 @@ ALLOWED_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
         }
     ),
     OrderStatus.AWAITING_FUNDING: frozenset({OrderStatus.FUNDED, OrderStatus.CANCELLED}),
-    OrderStatus.CONFIRMED: frozenset({OrderStatus.DELIVERED}),
+    # Delivery reaches `DELIVERED` from either fulfillment state, and — added for this slice —
+    # a COD order may reach the fulfillment states directly: a confirmed order is the whole
+    # agreement there is to ship against, money will never move, so "confirmed" is that order's
+    # `FUNDED` (FR-701, FR-702). An escrow order reaches the same states through `FUNDED`
+    # instead, which is why its confirmation is the money's signature rather than one of these.
+    OrderStatus.CONFIRMED: frozenset(
+        {OrderStatus.DELIVERED, OrderStatus.READY_FOR_PICKUP, OrderStatus.SHIPPED}
+    ),
     OrderStatus.FUNDED: frozenset(
         {OrderStatus.READY_FOR_PICKUP, OrderStatus.SHIPPED, OrderStatus.DISPUTED}
     ),
@@ -230,20 +257,38 @@ def transition_order_status(
     return target
 
 
-def effective_status(order: Order, now: datetime | None = None) -> OrderStatus:
+def effective_status(
+    order: Order, now: datetime | None = None, *, hold_hours: int | None = None
+) -> OrderStatus:
     """The status an order has when the clock is consulted, rather than when it was written.
 
     An order still waiting for money past its window is cancelled, whether or not anything has
-    got round to writing that down. Deriving it is what stops a listing's kilos from being held
-    forever for an order nobody is going to pay for.
+    got round to writing that down. A pickup that has sat ready past its window is delivered, by
+    the same rule, and so is a shipment whose crop's holding window has passed. Deriving these is
+    what stops a listing's kilos from being held forever for an order nobody is going to pay
+    for, and what stops a buyer who neither collects nor complains from leaving a seller's crop
+    waiting — and the goods themselves at a roadside — at the seller's cost.
 
     Derived rather than written, because writing belongs to `OrderService._expire_if_stale` and
     only the paths that can afford the write call it. What every reader gets is an honest
     status; what the sale path gets is the kilos back.
+
+    `hold_hours` is the one argument the row cannot answer alone: the shipment window is a
+    property of the crop (FR-2508), and a caller that has not looked it up — a pure guard test,
+    a page assembled from a join — passes `None` and gets `SHIPPED` back, which is the stored
+    answer rather than a wrong one.
     """
     moment = now or datetime.now(UTC)
     if order.status is OrderStatus.AWAITING_FUNDING and funding_window_closed(order, moment):
         return OrderStatus.CANCELLED
+    if order.status is OrderStatus.READY_FOR_PICKUP and pickup_window_closed(order, moment):
+        return OrderStatus.DELIVERED
+    if (
+        order.status is OrderStatus.SHIPPED
+        and hold_hours is not None
+        and shipment_window_closed(order, moment, hold_hours)
+    ):
+        return OrderStatus.DELIVERED
     return order.status
 
 
@@ -256,6 +301,60 @@ def funding_window_closed(order: Order, now: datetime | None = None) -> bool:
     """
     moment = now or datetime.now(UTC)
     return order.created_at + FUNDING_WINDOW <= moment
+
+
+def pickup_window_closed(order: Order, now: datetime | None = None) -> bool:
+    """Whether this pickup has been waiting to be collected for longer than it was allowed to.
+
+    Measured from `ready_at`, the moment the seller said the goods were waiting: before that
+    there is nothing waiting, and the seller cannot be late to a collection date they never set.
+    """
+    moment = now or datetime.now(UTC)
+    return order.ready_at is not None and order.ready_at + PICKUP_CONFIRM_WINDOW <= moment
+
+
+def shipment_window_closed(order: Order, now: datetime, hold_hours: int) -> bool:
+    """Whether the waiting period on this shipment has passed.
+
+    Measured from `shipped_at` plus the crop's own holding window (FR-2508): the wait only
+    starts once the goods are on the move, and grain is held far longer than greens because it
+    keeps far longer.
+    """
+    return order.shipped_at is not None and order.shipped_at + timedelta(hours=hold_hours) <= now
+
+
+def within_shrinkage_tolerance(ordered_kg: int, delivered_kg: int, tolerance_pct: float) -> bool:
+    """Whether a delivered weight is within the shortfall a buyer is expected to accept.
+
+    The comparison is scaled to ten-thousandths of a percent so that the boundary is exact
+    rather than float-drifty: a two-percent tolerance means a delivered weight of ninety-eight
+    percent of the order is receivable. The *exact* boundary belongs to the buyer — a delivery
+    of precisely ninety-eight percent passes — and it is written `>=` on the scaled integers so
+    that it stays exact there.
+    """
+    basis = round(tolerance_pct * 100)
+    return 10_000 * delivered_kg >= ordered_kg * (10_000 - basis)
+
+
+def max_recordable_weight(quantity_kg: int) -> int:
+    """The largest weight that may be recorded against an order of this size.
+
+    Five percent on top of what was ordered, measured against the ordered amount on the order
+    (FR-2507, ADR-E), and never past the absolute ceiling the schema enforces. Whole kilograms
+    only, so an odd order floors at its cushion: thirty-three kilos ordered records at most
+    thirty-four.
+    """
+    return min(quantity_kg * DELIVERED_WEIGHT_UPPER_FACTOR_X // 100, MAX_DELIVERED_WEIGHT_KG)
+
+
+def min_acceptable_kg(ordered_kg: int, tolerance_pct: float) -> int:
+    """The smallest delivered weight, whole kilograms, a buyer must accept.
+
+    The ceiling of the tolerance's own minimum, so a refusal names the same boundary the check
+    uses and a client can show "at least this much must arrive" without recomputing it.
+    """
+    basis = round(tolerance_pct * 100)
+    return (ordered_kg * (10_000 - basis) + 9_999) // 10_000
 
 
 class OrderService:
@@ -272,6 +371,7 @@ class OrderService:
         cod_enabled: bool,
         codes: OrderCodeSource,
         idempotency: IdempotencyStore,
+        tolerance_pct: float,
     ) -> None:
         self._orders = orders
         self._listings = listings
@@ -281,6 +381,10 @@ class OrderService:
         self._cod_enabled = cod_enabled
         self._codes = codes
         self._idempotency = idempotency
+        # The shortfall a buyer must accept, handed in as a value like `fee_payer` rather than
+        # read from configuration again: one request should not see two answers to how much
+        # tolerance is being applied to its delivery.
+        self._tolerance_pct = tolerance_pct
 
     async def accept(
         self, offer_id: UUID, caller_id: UUID, body: dict[str, Any], key: str
@@ -507,8 +611,16 @@ class OrderService:
         if order is None:
             raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
         self._require_party(order, caller_id)
-        await self._expire_if_stale(order, moment)
-        return to_response(order, now=moment)
+        # The shipment window is the one derivation the row cannot answer alone, so the crop's
+        # hold hours are only fetched when this order is actually sitting shipped. A read of an
+        # order that is not shipped has no reason to join its way to the crop at all.
+        hold = (
+            await self._orders.crop_hold_hours_for_order(order.id)
+            if (order.status is OrderStatus.SHIPPED)
+            else None
+        )
+        await self._expire_if_stale(order, moment, hold_hours=hold)
+        return to_response(order, now=moment, viewer_id=caller_id, hold_hours=hold)
 
     async def read_mine(
         self,
@@ -536,7 +648,19 @@ class OrderService:
             caller_id, buyer=buyer, status=status_filter, after=after, limit=limit
         )
         next_cursor = encode_cursor(page.orders[-1]) if page.has_more and page.orders else None
-        return [to_response(order) for order in page.orders], next_cursor, page.has_more
+        hold = (
+            await self._orders.crop_hold_hours_for_orders([order.id for order in page.orders])
+            if any(order.status is OrderStatus.SHIPPED for order in page.orders)
+            else {}
+        )
+        return (
+            [
+                to_response(order, viewer_id=caller_id, hold_hours=hold.get(order.id))
+                for order in page.orders
+            ],
+            next_cursor,
+            page.has_more,
+        )
 
     async def confirm(self, order_id: UUID, caller_id: UUID) -> OrderResponse:
         """A party to a COD order recording that the terms are the ones they agreed to.
@@ -591,7 +715,7 @@ class OrderService:
                 converted,
             )
         await self._orders.commit()
-        return to_response(order, now=now)
+        return to_response(order, now=now, viewer_id=caller_id)
 
     async def cancel(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
         """A party walking away from an order that has not been paid for or confirmed.
@@ -656,6 +780,236 @@ class OrderService:
 
         return await self._once(caller_id, key, ("cancel", str(order_id)), {}, OK_STATUS, work)
 
+    async def mark_ready(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
+        """The seller's word that a pickup order is waiting to be collected (FR-701).
+
+        A standalone message precisely because it carries no transition of the delivery method
+        itself: a pickup is not "delivered" when the seller says it is ready, and an order whose
+        method is not pickup has no readiness to mark. The two obligations therefore refuse on
+        different lines — the wrong method with the 409 that names the method (the state allows
+        the move, the method does not), and the wrong state from the guard itself.
+
+        The clock that matters later is captured here: `ready_at` is the moment from which both
+        the buyer's pickup window and the seller's, in the delivery slice, are measured.
+        """
+
+        async def work() -> Order:
+            order = await self._orders.find_by_id_for_update(order_id)
+            if order is None:
+                raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+            self._require_seller(order, caller_id)
+
+            now = datetime.now(UTC)
+            current = effective_status(order, now)
+            if order.delivery_method is not DeliveryOption.PICKUP:
+                raise ApiError(
+                    ErrorCode.ILLEGAL_STATE_TRANSITION,
+                    details={
+                        "order_id": str(order.id),
+                        "status": current.value,
+                        "requested": OrderStatus.READY_FOR_PICKUP.value,
+                        "delivery_method": order.delivery_method.value,
+                    },
+                )
+            transition_order_status(order, OrderStatus.READY_FOR_PICKUP, current)
+            order.ready_at = now
+            await self._orders.commit()
+            return order
+
+        return await self._once(caller_id, key, ("ready", str(order_id)), {}, OK_STATUS, work)
+
+    async def mark_shipped(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
+        """The seller's word that a delivery order is on its way (FR-702).
+
+        The same shape as `mark_ready`, asked against the same method: an order whose method is
+        seller delivery is marked shipped, and one whose method is pickup has no shipment to
+        mark. The kilos are not moving until this message; they start moving at it.
+
+        The standalone message is also what an escrow order is shipped by, in whatever slice does
+        the shipping, because the guard is this table and the move is legal from `FUNDED`.
+        """
+
+        async def work() -> Order:
+            order = await self._orders.find_by_id_for_update(order_id)
+            if order is None:
+                raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+            self._require_seller(order, caller_id)
+
+            now = datetime.now(UTC)
+            current = effective_status(order, now)
+            if order.delivery_method is not DeliveryOption.SELLER_DELIVERY:
+                raise ApiError(
+                    ErrorCode.ILLEGAL_STATE_TRANSITION,
+                    details={
+                        "order_id": str(order.id),
+                        "status": current.value,
+                        "requested": OrderStatus.SHIPPED.value,
+                        "delivery_method": order.delivery_method.value,
+                    },
+                )
+            transition_order_status(order, OrderStatus.SHIPPED, current)
+            order.shipped_at = now
+            await self._orders.commit()
+            return order
+
+        return await self._once(caller_id, key, ("shipped", str(order_id)), {}, OK_STATUS, work)
+
+    async def confirm_pickup(
+        self,
+        order_id: UUID,
+        caller_id: UUID,
+        body: dict[str, Any],
+        key: str,
+    ) -> OrderResponse:
+        """Break the pickup code, and with it take the handover as done (FR-703).
+
+        The code is the seller's proof: the person who presents it is the person holding the
+        buyer's copy of the order, and therefore the person to hand the goods to. The check is
+        exact — it is a secret shared between the two parties of this order, not a fuzzy match —
+        and a wrong code stops the settlement rather than partially proceeding.
+
+        `DELIVERED` is refused before the code is even compared when the order is not waiting at
+        a pickup any more: the guard alone could not tell "waiting to be confirmed" from "already
+        counted", because both a ready pickup and a delivered one permit `DELIVERED`, so this
+        route pins the precondition the design actually means. Consuming the reservation and
+        clearing the used code happen as one committed step with the status, so there is no
+        moment where the goods are both handed over and still held.
+        """
+
+        async def work() -> Order:
+            order = await self._orders.find_by_id_for_update(order_id)
+            if order is None:
+                raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+            self._require_seller(order, caller_id)
+
+            now = datetime.now(UTC)
+            current = effective_status(order, now)
+            if current is not OrderStatus.READY_FOR_PICKUP:
+                raise ApiError(
+                    ErrorCode.ILLEGAL_STATE_TRANSITION,
+                    details={
+                        "order_id": str(order.id),
+                        "status": current.value,
+                        "requested": OrderStatus.DELIVERED.value,
+                    },
+                )
+            if body["pickup_code"] != order.pickup_code:
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR,
+                    details={"fields": {"pickup_code": "does_not_match"}},
+                )
+            await self._settle_delivery(
+                order, OrderStatus.READY_FOR_PICKUP, now, "seller pickup confirmation"
+            )
+            order.pickup_code = None
+            await self._orders.commit()
+            return order
+
+        return await self._once(
+            caller_id, key, ("confirm-pickup", str(order_id)), body, OK_STATUS, work
+        )
+
+    async def confirm_delivery(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
+        """The buyer's word that a shipped order arrived, and was received (FR-702).
+
+        The tolerated shortfall is checked here, against the kilograms recorded at the scale, and
+        only here: it is the buyer who carries the risk of a short delivery, so it is the buyer's
+        confirmation that is refused on a shortfall that exceeds the tolerance. A buyer who
+        confirms means the handover happened; an order whose handover has already been consumed
+        is refused by the precondition before the tolerance question is even asked.
+
+        Consumption happened for the pickup path, and the holding window does the same for a
+        shipment nobody confirms: the money and the kilos are eventually moved by design, not by
+        a request that may never come.
+        """
+
+        async def work() -> Order:
+            order = await self._orders.find_by_id_for_update(order_id)
+            if order is None:
+                raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+            self._require_buyer(order, caller_id)
+
+            now = datetime.now(UTC)
+            hold = await self._orders.crop_hold_hours_for_order(order.id)
+            current = effective_status(order, now, hold_hours=hold)
+            if current is not OrderStatus.SHIPPED:
+                raise ApiError(
+                    ErrorCode.ILLEGAL_STATE_TRANSITION,
+                    details={
+                        "order_id": str(order.id),
+                        "status": current.value,
+                        "requested": OrderStatus.DELIVERED.value,
+                    },
+                )
+            self._require_tolerable(order)
+            await self._settle_delivery(
+                order, OrderStatus.SHIPPED, now, "buyer delivery confirmation"
+            )
+            await self._orders.commit()
+            return order
+
+        return await self._once(
+            caller_id, key, ("confirm-delivery", str(order_id)), {}, OK_STATUS, work
+        )
+
+    async def record_weight(
+        self,
+        order_id: UUID,
+        caller_id: UUID,
+        body: dict[str, Any],
+        key: str,
+    ) -> OrderResponse:
+        """Record what the scale said, whole kilograms, against an order in transit (FR-2507).
+
+        Recording is deliberately separate from confirming: the scale reading is a fact, and an
+        order can know the fact long before its buyer is ready to sign it off. The window is the
+        order still being movable — a weight read after the handover has already been counted is
+        a weight read past the point it could change anything.
+
+        The upper bound is the five-percent cushion on what was ordered (the schema's ceiling
+        caps the product), and the bound has a name it can show in its own response when it
+        refuses: a delivery "more than was agreed up to five percent" is the handover bereaking
+        the *low* tolerance, not this one, and this one must be able to say exactly what it would
+        accept.
+        """
+
+        async def work() -> Order:
+            order = await self._orders.find_by_id_for_update(order_id)
+            if order is None:
+                raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+            self._require_seller(order, caller_id)
+
+            current = effective_status(order, datetime.now(UTC))
+            if current not in (OrderStatus.SHIPPED, OrderStatus.READY_FOR_PICKUP):
+                raise ApiError(
+                    ErrorCode.ILLEGAL_STATE_TRANSITION,
+                    details={
+                        "order_id": str(order.id),
+                        "status": current.value,
+                        "requested": "delivered_weight_kg",
+                    },
+                )
+            weight = int(body["delivered_weight_kg"])
+            bound = max_recordable_weight(order.quantity_kg)
+            if weight < 1 or weight > bound:
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR,
+                    details={
+                        "fields": {"delivered_weight_kg": "outside_recordable_range"},
+                        "min_delivered_weight_kg": 1,
+                        "max_delivered_weight_kg": bound,
+                    },
+                )
+            order.delivered_weight_kg = weight
+            # The version counts the changes a row has been through: a recorded weight is the
+            # one thing this slice writes that can be written again and mean something different,
+            # so it is the one thing that earns a bump.
+            order.version += 1
+            await self._orders.commit()
+            return order
+
+        return await self._once(caller_id, key, ("weight", str(order_id)), body, OK_STATUS, work)
+
     async def _once(
         self,
         caller_id: UUID,
@@ -681,7 +1035,7 @@ class OrderService:
         except BaseException:
             await guard.release()
             raise
-        response = to_response(order)
+        response = to_response(order, viewer_id=caller_id)
         await guard.record(status_code, response.model_dump(mode="json"))
         return response
 
@@ -961,27 +1315,112 @@ class OrderService:
             logger.info("expired %s stale order(s) on listing_id=%s", expired, listing_id)
         return expired
 
-    async def _expire_if_stale(self, order: Order, now: datetime) -> bool:
-        """Cancel this one order if its window closed, and give its kilos back. Did it, or not.
+    async def _expire_if_stale(
+        self, order: Order, now: datetime, *, hold_hours: int | None = None
+    ) -> bool:
+        """Settle this one order if one of its windows closed. Did anything change, or not.
+
+        Three windows close here, each with a different consequence. An order still waiting for
+        money past its funding window is cancelled and its kilos are given back. A pickup that
+        has sat ready past its window is deemed collected, and a shipment whose crop's holding
+        window has passed is deemed received — in both cases the kilos are recorded `CONSUMED`,
+        because delivered kilos never re-enter availability, and that is what consumption is.
 
         Committed on its own rather than left to the caller, because the caller is a read and
         there is nothing else in its transaction to commit with. The alternative — leaving the
         transaction open for a caller that does not write — would hold the row lock for as long
         as the response took to serialize.
         """
-        if order.status is not OrderStatus.AWAITING_FUNDING or not funding_window_closed(
-            order, now
+        if order.status is OrderStatus.AWAITING_FUNDING and funding_window_closed(order, now):
+            transition_order_status(order, OrderStatus.CANCELLED, OrderStatus.AWAITING_FUNDING)
+            order.cancel_reason = CancelReason.FUNDING_EXPIRED.value
+            released = await self._reservations.release_for_order(order.id)
+            logger.info("expired order order_id=%s released_kg=%s", order.id, released)
+            await self._orders.commit()
+            return True
+        if order.status is OrderStatus.READY_FOR_PICKUP and pickup_window_closed(order, now):
+            await self._settle_delivery(
+                order, OrderStatus.READY_FOR_PICKUP, now, "auto-confirmed pickup"
+            )
+            order.pickup_code = None
+            await self._orders.commit()
+            return True
+        if (
+            order.status is OrderStatus.SHIPPED
+            and hold_hours is not None
+            and shipment_window_closed(order, now, hold_hours)
         ):
-            return False
-        transition_order_status(order, OrderStatus.CANCELLED, OrderStatus.AWAITING_FUNDING)
-        order.cancel_reason = CancelReason.FUNDING_EXPIRED.value
-        released = await self._reservations.release_for_order(order.id)
-        logger.info("expired order order_id=%s released_kg=%s", order.id, released)
-        await self._orders.commit()
-        return True
+            await self._settle_delivery(order, OrderStatus.SHIPPED, now, "auto-released shipment")
+            await self._orders.commit()
+            return True
+        return False
+
+    async def _settle_delivery(
+        self, order: Order, from_status: OrderStatus, now: datetime, why: str
+    ) -> int:
+        """Record a delivery: `DELIVERED`, its timestamp, its kilos consumed.
+
+        Shared by the two confirmation routes and the two lazy windows, so every road into
+        `DELIVERED` has the same effect on the order and on the reservation and there is no
+        second delivery in this slice to disagree with the first.
+
+        The caller commits; `_settle_delivery` mutates and returns.
+        """
+        transition_order_status(order, OrderStatus.DELIVERED, from_status)
+        order.delivered_at = now
+        consumed = await self._reservations.consume_for_order(order.id)
+        logger.info("delivered order order_id=%s consumed_kg=%s why=%s", order.id, consumed, why)
+        return consumed
+
+    def _require_tolerable(self, order: Order) -> None:
+        """Refuse a buyer's confirmation when the record shows a shortfall past tolerance.
+
+        A confirmation with no recorded weight has nothing to refuse — the buyer confirms "it
+        arrived and I accept it" against the only fact there is. With a recorded weight the
+        comparison is the slice's own, not the schema's: the tolerance is a policy value handed
+        in with the request, and the refusal names the boundary the seller missed so the client
+        can show it without recomputing it.
+        """
+        recorded = order.delivered_weight_kg
+        if recorded is None or within_shrinkage_tolerance(
+            order.quantity_kg, recorded, self._tolerance_pct
+        ):
+            return
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            details={
+                "fields": {"delivered_weight_kg": "below_shrinkage_tolerance"},
+                "ordered_kg": order.quantity_kg,
+                "delivered_kg": recorded,
+                "tolerance_pct": self._tolerance_pct,
+                "min_acceptable_kg": min_acceptable_kg(order.quantity_kg, self._tolerance_pct),
+            },
+        )
+
+    def _require_seller(self, order: Order, caller_id: UUID) -> None:
+        """Only the seller marks, ships, weighs, or collects one of their own orders."""
+        if caller_id != order.seller_id:
+            raise ApiError(
+                ErrorCode.FORBIDDEN,
+                details={"resource": "order", "reason": "not_the_seller"},
+            )
+
+    def _require_buyer(self, order: Order, caller_id: UUID) -> None:
+        """Only the buyer signs off on the delivery they received."""
+        if caller_id != order.buyer_id:
+            raise ApiError(
+                ErrorCode.FORBIDDEN,
+                details={"resource": "order", "reason": "not_the_buyer"},
+            )
 
 
-def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
+def to_response(
+    order: Order,
+    now: datetime | None = None,
+    *,
+    viewer_id: UUID | None = None,
+    hold_hours: int | None = None,
+) -> OrderResponse:
     """Read an order out for a caller, with its status judged against the clock.
 
     The money comes out as it was frozen, never recomputed: an order's total is what two parties
@@ -992,6 +1431,15 @@ def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
     window — a lie on read would be a lie on the thing a buyer acts on. An order that has never
     been confirmed is never delayed, because the window only starts once there is an agreement
     to be late on.
+
+    `pickup_code` is the one field that depends on who is asking. The code is how a seller
+    verifies a handover, and a code the party being verified can read is a code the verification
+    proves nothing about — so the seller's copy of an order never carries it (ruling 4). The
+    buyer's copy does, until it is spent, at which point nobody's copy does.
+
+    `hold_hours` is handed through to `effective_status` so the shipment window is judged
+    honestly: a caller that has already looked the crop's window up passes it, and a caller that
+    has not gets the stored status rather than an invented one.
     """
     moment = now or datetime.now(UTC)
     confirmed = order.confirmed_at
@@ -1011,10 +1459,11 @@ def to_response(order: Order, now: datetime | None = None) -> OrderResponse:
         total_santim=order.total_santim,
         buyer_address_woreda_id=order.buyer_address_woreda_id,
         buyer_address_text=order.buyer_address_text,
-        pickup_code=order.pickup_code,
-        status=effective_status(order, moment),
+        pickup_code=None if viewer_id == order.seller_id else order.pickup_code,
+        status=effective_status(order, moment, hold_hours=hold_hours),
         state_before_dispute=order.state_before_dispute,
         funded_at=order.funded_at,
+        ready_at=order.ready_at,
         shipped_at=order.shipped_at,
         delivered_at=order.delivered_at,
         delivered_weight_kg=order.delivered_weight_kg,

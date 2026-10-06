@@ -990,8 +990,9 @@ def stored_orders(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
                 " unit_price_santim, delivery_method, delivery_fee_santim, platform_fee_santim,"
                 " vat_santim, total_santim, fee_payer, buyer_address_woreda_id,"
                 " buyer_address_text, pickup_code, status, cancel_reason, payment_mode,"
-                " confirmed_at, buyer_confirmed_at, seller_confirmed_at, version,"
-                " state_before_dispute FROM orders ORDER BY created_at, id"
+                " confirmed_at, buyer_confirmed_at, seller_confirmed_at, funded_at, ready_at,"
+                " shipped_at, delivered_at, delivered_weight_kg, version, state_before_dispute"
+                " FROM orders ORDER BY created_at, id"
             )
             return list(cursor.fetchall())
 
@@ -1062,6 +1063,48 @@ def backdate_confirmation(postgres_url: str) -> Callable[[str], None]:
             )
 
     return _backdate_confirmation
+
+
+@pytest.fixture()
+def backdate_ready(postgres_url: str) -> Callable[[str], None]:
+    """Move a pickup order's readiness into the past, behind the API's back.
+
+    The alternative is waiting twenty-four hours, and a test that cannot be run is not a test.
+    This writes the one column the pickup window is measured from, which is exactly what the
+    clock would have done to it — and nothing else, so a test about auto-confirmation cannot pass
+    by having quietly changed the order's status as well.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _backdate_ready(order_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE orders SET ready_at = now() - interval '25 hours' WHERE id = %s",
+                (order_id,),
+            )
+
+    return _backdate_ready
+
+
+@pytest.fixture()
+def backdate_shipped(postgres_url: str) -> Callable[[str], None]:
+    """Move a shipment's departure into the past, behind the API's back.
+
+    The alternative is waiting a crop's whole holding window, and a test that cannot be run is
+    not a test. This writes the one column the shipment window is measured from, which is
+    exactly what the clock would have done to it — and nothing else, so a test about automatic
+    release cannot pass by having quietly changed the order's status as well.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _backdate_shipped(order_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE orders SET shipped_at = now() - interval " "'73 hours' WHERE id = %s",
+                (order_id,),
+            )
+
+    return _backdate_shipped
 
 
 @pytest.fixture()

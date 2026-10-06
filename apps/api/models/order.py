@@ -178,7 +178,10 @@ class Order(TimestampMixin, Base):
     # Six digits, shown to the buyer and read back by the seller to confirm a pickup. Generated
     # for every order whether or not it will ever be needed, because a code that exists only on
     # the orders that happen to be picked up is a code that is missing on the one that is.
-    pickup_code: Mapped[str] = mapped_column(String(length=6), nullable=False)
+    # Null once the code has been spent: counting one pickup against two uses would be two
+    # handovers for one code, and a seller with a spare code they never gave out has still only
+    # handed the goods over once.
+    pickup_code: Mapped[str | None] = mapped_column(String(length=6), nullable=True)
     status: Mapped[OrderStatus] = mapped_column(
         SqlEnum(OrderStatus, name="order_status", values_callable=stored_values),
         nullable=False,
@@ -191,6 +194,10 @@ class Order(TimestampMixin, Base):
         nullable=True,
     )
     funded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the seller said the goods were ready for the buyer to collect (FR-605). The pickup
+    # auto-confirm window is measured from this instant, lazily, exactly as the funding window
+    # is measured from `created_at`.
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # What actually arrived, which is not always what was ordered. Null until delivery.

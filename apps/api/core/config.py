@@ -110,6 +110,19 @@ class Settings(BaseSettings):
         description="Whether buyers may pay for an order on delivery instead of funding it.",
     )
 
+    # By how much the delivered kilos may fall short of the ordered kilos before a buyer's
+    # confirmation of delivery is refused (FR-2507). A crop loses weight in transit, and some
+    # of that is the buyer's to accept; two percent is what a pilot will accept before handing
+    # the numbers to a dispute. Read once by the order service and handed in as a value, like
+    # `fee_payer`, so one request cannot see two answers.
+    transit_shrinkage_tolerance_pct: float = Field(
+        default=2.0,
+        description=(
+            "Percentage of the ordered weight a delivered order may fall short by before a "
+            "buyer's delivery confirmation is refused."
+        ),
+    )
+
     terms_version: str = Field(
         description="Version stamped on every terms acceptance recorded from now on.",
     )

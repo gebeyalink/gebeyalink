@@ -239,6 +239,7 @@ def get_order_service(
         cod_enabled=settings.cod_enabled,
         codes=CrockfordOrderCode(orders.short_code_exists),
         idempotency=IdempotencyStore(get_client()),
+        tolerance_pct=settings.transit_shrinkage_tolerance_pct,
     )
 
 

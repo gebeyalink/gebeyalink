@@ -57,13 +57,51 @@ class OrderBuyNowBody(OrderAcceptBody):
     payment_mode: PaymentMode = PaymentMode.ESCROW
 
 
+class PickupConfirmBody(BaseModel):
+    """The six digits a seller reads back from a buyer at the roadside.
+
+    Digits only, because the code is read aloud in a market by somebody who is not typing into
+    a form. `extra="forbid"` is what keeps a pickup confirmation honest: a code and nothing
+    else is all this move needs, and a body carrying more is the beginning of a pickup being
+    confirmed by something other than the code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pickup_code: str = Field(
+        min_length=6,
+        max_length=6,
+        pattern="^[0-9]{6}$",
+        description="The code the buyer was shown when the order was created.",
+    )
+
+
+class WeightBody(BaseModel):
+    """The delivered weight, in whole kilograms, recorded by the seller.
+
+    The upper bound is enforced twice — here by a flywheel that stops a nonsense figure from
+    reaching the service, and again in the service against the ordered amount (a thousand
+    kilos ordered can never deliver twelve hundred) — because the first bound is about the
+    shape of the number and the second is about the trade it belongs to.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    delivered_weight_kg: int = Field(
+        ge=1, le=1_000_000, description="Whole kilograms actually handed over."
+    )
+
+
 class OrderResponse(BaseModel):
     """An order as it is read back.
 
     The money figures are the frozen ones, so a client showing "what I pay" shows what will
     actually be taken. `pickup_code` is here because it is the buyer's to keep and the seller's
-    to ask for; `cancel_reason` is here because "it expired" and "I cancelled it" are different
-    things to the buyer looking at a list, and one word for both would lose that.
+    to ask for — but only to the buyer: the seller's copy of the order does not carry the code
+    they are supposed to be asking it for, because a code visible to the party being verified is
+    a code the verification proves nothing about. `cancel_reason` is here because "it expired"
+    and "I cancelled it" are different things to the buyer looking at a list, and one word for
+    both would lose that.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -83,10 +121,11 @@ class OrderResponse(BaseModel):
     total_santim: int
     buyer_address_woreda_id: int
     buyer_address_text: str
-    pickup_code: str
+    pickup_code: str | None
     status: OrderStatus
     state_before_dispute: OrderStatus | None
     funded_at: datetime | None
+    ready_at: datetime | None
     shipped_at: datetime | None
     delivered_at: datetime | None
     delivered_weight_kg: int | None

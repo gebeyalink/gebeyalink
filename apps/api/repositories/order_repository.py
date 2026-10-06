@@ -21,6 +21,8 @@ from datetime import datetime
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.models.crop import Crop
+from apps.api.models.listing import Listing
 from apps.api.models.order import Order, OrderStatus
 from apps.api.models.quantity_reservation import QuantityReservation
 
@@ -128,6 +130,44 @@ class OrderRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def crop_hold_hours_for_order(self, order_id: uuid.UUID) -> int | None:
+        """The hours an escrow on this order's crop is held before it may be released.
+
+        Read through the order's listing, because the holding window belongs to what was sold
+        (FR-2508): grain keeps for two weeks while greens last for two days, and one
+        platform-wide window would make the wrong promise to one of them. No crop row is
+        `None` on a real order, but a lookup that cannot find one answers `None` rather than
+        guessing, and the caller treats "unknown" as "none derived".
+        """
+        stmt = (
+            select(Crop.escrow_hold_hours)
+            .select_from(Order)
+            .join(Listing, Listing.id == Order.listing_id)
+            .join(Crop, Crop.id == Listing.crop_id)
+            .where(Order.id == order_id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def crop_hold_hours_for_orders(self, order_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Escrow hold hours for several orders at once, keyed by order.
+
+        One statement for the whole batch, because a page of an order list is twenty rows and
+        the shipped window is derived for each of them: a lookup per row would be a slow
+        request at just the moment the reader asked for their whole order history.
+        """
+        if not order_ids:
+            return {}
+        stmt = (
+            select(Order.id, Crop.escrow_hold_hours)
+            .select_from(Order)
+            .join(Listing, Listing.id == Order.listing_id)
+            .join(Crop, Crop.id == Listing.crop_id)
+            .where(Order.id.in_(order_ids))
+        )
+        result = await self._session.execute(stmt)
+        return dict(result.all())
 
     async def commit(self) -> None:
         await self._session.commit()

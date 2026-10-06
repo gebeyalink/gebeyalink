@@ -123,7 +123,13 @@ def test_both_parties_can_read_an_order_and_nobody_else_can(
     order_body: Callable[..., dict[str, object]],
     idempotency_key: Callable[[], str],
 ) -> None:
-    """The buyer and the seller, and the distinction between them is the reason.
+    """The buyer and the seller, and the distinction between them is the whole point.
+
+    The two parties to an order read the same row, and the one field they do not read the same
+    is the pickup code: it is how a seller verifies the handover, and a code the party being
+    verified can see is a code the verification proves nothing about — so the seller's copy
+    carries `None` where the buyer's carries the code, and the two reads are otherwise
+    identical.
 
     403 rather than 404 for the stranger, and deliberately: the short code in a text message is
     the only route anybody has to an order, so a caller who may not read a row still needs to be
@@ -142,7 +148,13 @@ def test_both_parties_can_read_an_order_and_nobody_else_can(
 
     assert as_buyer.status_code == 200, as_buyer.text
     assert as_seller.status_code == 200, as_seller.text
-    assert as_buyer.json() == as_seller.json()
+    buyer_body = as_buyer.json()
+    seller_body = as_seller.json()
+    assert PICKUP_CODE.match(str(buyer_body["pickup_code"])), buyer_body["pickup_code"]
+    assert seller_body["pickup_code"] is None
+    assert buyer_body.pop("pickup_code") is not None
+    assert seller_body.pop("pickup_code") is None
+    assert buyer_body == seller_body
     assert as_stranger.status_code == 403, as_stranger.text
     assert as_stranger.json()["error"]["details"]["reason"] == "not_a_party_to_this_order"
 
