@@ -20,6 +20,7 @@ from apps.api.routers import auth as auth_routes
 from apps.api.routers import health as health_routes
 from apps.api.routers import listing as listing_routes
 from apps.api.routers import offer as offer_routes
+from apps.api.routers import order as order_routes
 from apps.api.routers import profile as profile_routes
 from apps.api.routers import reference as reference_routes
 
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(profile_routes.router, prefix=API_PREFIX)
     app.include_router(listing_routes.router, prefix=API_PREFIX)
     app.include_router(offer_routes.router, prefix=API_PREFIX)
+    app.include_router(order_routes.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def stamp_request_context(

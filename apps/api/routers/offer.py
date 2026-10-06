@@ -1,13 +1,13 @@
 """Bidding on a listing, and the two ways a negotiation ends.
 
-Six routes for one resource, and none of them takes a status. A bid is placed, answered, or
-taken back; it is never *set* to something. That keeps the state table in the service where
-every move has to go through it, rather than spread across routes as a parameter a client could
-send.
+Five routes for one resource, and none of them takes a status. A bid is placed, answered, or taken
+back; it is never *set* to something. That keeps the state table in the service where every move has
+to go through it, rather than spread across routes as a parameter a client could send.
 
-The five in scope are here. Acceptance is not: `POST /offers/{id}/accept` creates an order and
-reserves stock atomically, and shipping it before the orders slice would be an endpoint that
-returned a success it could not honour. The route will be added with the work that backs it.
+The sixth, `POST /offers/{id}/accept`, is in the orders router and not here: it is the one move out
+of this resource that writes a row of another kind. It creates an order, reserves stock, and moves
+the listing in a single transaction, so it belongs beside the orders it produces rather than here,
+where a reader would come looking only to find the route elsewhere.
 """
 
 from __future__ import annotations

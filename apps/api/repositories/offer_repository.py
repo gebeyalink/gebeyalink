@@ -52,6 +52,25 @@ class OfferRepository:
             return None
         return OfferInContext(offer=row[0], listing=row[1])
 
+    async def refresh(self, offer_id: uuid.UUID) -> Offer | None:
+        """Read this offer again, overwriting what the session is holding for it.
+
+        Needed because a row read before a lock is not the row the lock protected. Two sellers
+        accepting two different bids on one listing queue up on the listing's lock, and the
+        second one comes off the wait holding an offer it read before either of them had
+        committed — a snapshot of the negotiation as it was, not as it is. `populate_existing`
+        is the part that matters: without it the query would run and the session would keep
+        serving the object it already had, which is exactly the stale row this exists to replace.
+
+        Not a row lock. Every path that reaches an offer's status does so either under this
+        listing's lock or under the offer's own, so re-reading under the listing's lock is
+        enough, and taking a second lock in the other order would be a deadlock waiting for a
+        thread that needs both rows.
+        """
+        stmt = select(Offer).where(Offer.id == offer_id).execution_options(populate_existing=True)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_for_listing(self, listing_id: uuid.UUID) -> list[Offer]:
         """Every offer on a listing, oldest first.
 

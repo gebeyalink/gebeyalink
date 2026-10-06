@@ -126,6 +126,12 @@ class ListingResponse(BaseModel):
     crop_id: int
     quantity_kg: int
     sold_kg: int
+    # What is actually left, counted from the reservations rather than read off a counter. FR-1901
+    # makes the listing's own quantity the ceiling and every other claim on it a row in another
+    # table, so this is the number a client needs and the one `quantity_kg - sold_kg` would get
+    # wrong: a held order's kilos are neither sold nor still there. `None` on the paths that do
+    # not count reservations, which is how a caller can tell "not asked" from "zero left".
+    available_kg: int | None
     min_order_kg: int
     unit_price_santim: int
     harvest_date: date

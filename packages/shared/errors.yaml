@@ -74,10 +74,24 @@ OFFER_LIMIT:
   raises: true
   message: offer_limit
 
+# Availability, not protocol. AC-19.1 and FR-1903 both say an offer that no longer fits what
+# is left is a validation failure answered with 422 and the available weight in `details`, and
+# that the offer stays OPEN; the 409 this code once carried was AC-5.1's answer to a race, which
+# a blocking row lock makes unobservable - the loser waits, re-reads availability, and fails
+# this same validation. The catalog was changed to match the acceptance criteria, not the other
+# way round.
 OFFER_CONFLICT:
-  status: 409
+  status: 422
   raises: true
   message: offer_conflict
+
+# A listing edit that would push committed stock below zero (FR-1904, AC-3.3). 422 for the same
+# reason: the request is well formed and the thing it names no longer fits. `details` carries the
+# blocking orders so the seller can see which order is holding the weight.
+ORDER_CONFLICT:
+  status: 422
+  raises: true
+  message: order_conflict
 
 OFFER_EXPIRED:
   status: 409

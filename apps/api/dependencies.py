@@ -19,15 +19,19 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.core.config import Settings
+from apps.api.core.idempotency import IdempotencyStore
 from apps.api.core.redis_client import get_client
 from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, VerifiedToken
+from apps.api.core.short_codes import CrockfordOrderCode
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.offer_repository import OfferRepository
+from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
+from apps.api.repositories.reservation_repository import ReservationRepository
 from apps.api.repositories.session_repository import SessionRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
@@ -35,6 +39,7 @@ from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.services.auth_service import AuthService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.offer_service import OfferService
+from apps.api.services.order_service import OrderService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
@@ -158,12 +163,14 @@ ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
 def get_listing_service(db_session: db_session_dep) -> ListingService:
     """Postings, their lifecycle, and the price index they are judged against.
 
-    One session for both repositories, so that a listing and the index row read while
-    creating it are seen in the same transaction as the listing itself.
+    One session for all three repositories, so that a listing, the index row read while creating
+    it and the reservations that decide whether it may be edited are all seen in the same
+    transaction as the listing itself.
     """
     return ListingService(
         listings=ListingRepository(db_session),
         price_indices=PriceIndexRepository(db_session),
+        reservations=ReservationRepository(db_session),
     )
 
 
@@ -173,7 +180,7 @@ ListingServiceDep = Annotated[ListingService, Depends(get_listing_service)]
 def get_offer_service(db_session: db_session_dep) -> OfferService:
     """Bids on a listing, and the listing they are bounded by.
 
-    One session for both repositories, for the reason the listing service has one for two: a
+    One session for both repositories, for the reason the listing service has one for three: a
     counter writes an offer and reads the listing it must satisfy the rules of, and those two
     statements have to describe the same listing.
     """
@@ -184,3 +191,32 @@ def get_offer_service(db_session: db_session_dep) -> OfferService:
 
 
 OfferServiceDep = Annotated[OfferService, Depends(get_offer_service)]
+
+
+def get_order_service(
+    db_session: db_session_dep, settings: settings_dep, redis: redis_dep
+) -> OrderService:
+    """Orders, the reservations that hold their stock, and the offers they came from.
+
+    One session for all four repositories, and that is not tidiness. Accepting an offer writes an
+    order, a reservation, the offer and possibly the listing's status, and reads the reservations
+    it must be sure of; the whole of that is one commit or none of it, and separate sessions
+    would let half of it land.
+
+    The fee payer is read once here, from configuration, and handed to the service as a value
+    rather than as a settings object, so that the service cannot reach back into configuration
+    and read a different answer for a second order in the same process.
+    """
+    orders = OrderRepository(db_session)
+    return OrderService(
+        orders=orders,
+        listings=ListingRepository(db_session),
+        offers=OfferRepository(db_session),
+        reservations=ReservationRepository(db_session),
+        fee_payer=settings.fee_payer,
+        codes=CrockfordOrderCode(orders.short_code_exists),
+        idempotency=IdempotencyStore(get_client()),
+    )
+
+
+OrderServiceDep = Annotated[OrderService, Depends(get_order_service)]

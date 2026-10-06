@@ -293,3 +293,89 @@ def test_looking_at_your_own_list_needs_a_signature(
 ) -> None:
     """Nobody's list is available to everybody, because it is nobody else's business."""
     assert client.get("/v1/listings/mine").status_code == 401
+
+
+def test_a_listing_whose_stock_is_all_committed_reads_as_sold_out_without_anything_running(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+    stored_listings: Callable[[], list[dict[str, object]]],
+) -> None:
+    """FR-306's second trigger: availability reaching zero, from any direction.
+
+    A sale that empties a listing writes `SOLD_OUT` in its own transaction, but the write is not
+    the only way a listing can reach zero - and the case here is one a sale cannot produce: an
+    edit that cuts the listing down to exactly what its orders already hold. Nobody ran anything,
+    the stored column still says `ACTIVE`, and the listing reads as sold out.
+    """
+    headers = signed_in()
+    created = client.post(
+        "/v1/listings",
+        headers=headers,
+        json=listing_body(quantity_kg=800, min_order_kg=100),
+    ).json()
+    bought = client.post(
+        f"/v1/listings/{created['id']}/buy-now",
+        headers={**signed_in("+251911000003"), "Idempotency-Key": idempotency_key()},
+        json=order_body(quantity_kg=400),
+    )
+    assert bought.status_code == 201, bought.text
+    assert [row["status"] for row in stored_listings()] == ["ACTIVE"]
+
+    edited = client.patch(
+        f"/v1/listings/{created['id']}",
+        headers=headers,
+        json={"version": created["version"], "quantity_kg": 400},
+    )
+
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["available_kg"] == 0
+    assert edited.json()["status"] == "SOLD_OUT"
+    listed = client.get("/v1/listings/mine", headers=headers).json()
+    assert listed["data"][0]["status"] == "SOLD_OUT"
+    # Derived, not written: a status a read wrote would depend on who had looked and when.
+    assert [row["status"] for row in stored_listings()] == ["ACTIVE"]
+
+
+def test_a_paused_listing_with_nothing_left_stays_paused(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+) -> None:
+    """The system transition does not overrule the seller's own statement about their listing.
+
+    §10.1 has no edge into `SOLD_OUT` from anywhere but `ACTIVE`, so a listing emptied while it was
+    paused reads as paused. It is not for sale, which is what the seller asked for, and the seller
+    who resumes it and finds nothing left has been told the truth by the arithmetic rather than by a
+    status that changed while they were not looking.
+    """
+    headers = signed_in()
+    created = client.post(
+        "/v1/listings",
+        headers=headers,
+        json=listing_body(quantity_kg=800, min_order_kg=100),
+    ).json()
+    bought = client.post(
+        f"/v1/listings/{created['id']}/buy-now",
+        headers={**signed_in("+251911000003"), "Idempotency-Key": idempotency_key()},
+        json=order_body(quantity_kg=400),
+    )
+    assert bought.status_code == 201, bought.text
+    paused = client.post(f"/v1/listings/{created['id']}/pause", headers=headers)
+    assert paused.status_code == 200, paused.text
+
+    edited = client.patch(
+        f"/v1/listings/{created['id']}",
+        headers=headers,
+        json={"version": paused.json()["version"], "quantity_kg": 400},
+    )
+    assert edited.status_code == 200, edited.text
+
+    read = client.get(f"/v1/listings/{created['id']}", headers=headers)
+
+    assert read.json()["status"] == "PAUSED"
+    assert read.json()["available_kg"] == 0

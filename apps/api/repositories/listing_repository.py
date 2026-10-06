@@ -47,6 +47,36 @@ class ListingRepository:
         photographs = await self._photos_for([row.id])
         return LoadedListing(listing=row, photos=photographs.get(row.id, []))
 
+    async def find_by_id_for_update(self, listing_id: uuid.UUID) -> LoadedListing | None:
+        """One listing by its internal identity, with the row locked until this transaction ends.
+
+        Locked *before* availability is computed rather than after. Everything that follows -
+        what is left, whether a competing offer still fits, whether this sale empties the listing
+        - is derived from `quantity_kg`, so two sales could otherwise both read the same
+        remaining kilos and both believe they had them. The second one waits here and reads what
+        the first one left.
+
+        `populate_existing` because the row may already be in this session's identity map from an
+        earlier read in the same request. Without it the locked read would return the copy held
+        in memory, which is the value read *before* the lock was taken, and the lock would be
+        held over a stale quantity - the one thing the lock is for.
+
+        Not using `find_by_id` because that one is also the entry point to reading a listing for
+        display, where a lock would be held by a request that had no reason to hold one.
+        """
+        stmt = (
+            select(Listing)
+            .where(Listing.id == listing_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        result = await self._session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        photographs = await self._photos_for([row.id])
+        return LoadedListing(listing=row, photos=photographs.get(row.id, []))
+
     async def page_for_seller(
         self,
         seller_id: uuid.UUID,

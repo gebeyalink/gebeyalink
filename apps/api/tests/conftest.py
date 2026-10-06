@@ -18,7 +18,8 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from redis import Redis as SyncRedis
 from apps.api.core.config import Settings
 from apps.api.main import create_app
 from apps.api.providers.sms import RecordingSmsProvider
+from packages.shared.money import FeePayer
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -620,6 +622,252 @@ def lapse_offer(postgres_url: str) -> Callable[[str], None]:
             )
 
     return _lapse_offer
+
+
+@pytest.fixture(scope="session")
+def seller_pays_settings(
+    postgres_url: str, redis_url: str, signing_keys: tuple[str, str]
+) -> Settings:
+    """The same configuration with the platform fee billed to the seller.
+
+    AC-6.4 asks for the snapshot to be proven under both payers, and which side pays is
+    configuration. A test that could only ever see the default would be testing one of the two
+    policies the snapshot exists to distinguish.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        terms_version=TERMS_VERSION,
+        fee_payer=FeePayer.SELLER,
+    )
+
+
+@pytest.fixture()
+def seller_pays_client(
+    seller_pays_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> Iterator[TestClient]:
+    """The application with the seller paying the platform fee."""
+    application: FastAPI = create_app(seller_pays_settings)
+    with TestClient(application) as test_client:
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture()
+def seller_pays_sign_in(
+    seller_pays_client: TestClient, code_for: Callable[[str], str]
+) -> Callable[..., httpx.Response]:
+    """Sign a trader in against the seller-pays application.
+
+    Written out again rather than shared with `sign_in`, and the reason matters: the engine and
+    the Redis client are process-global singletons bound to the event loop their application's
+    lifespan started, so a test may not drive two of these clients at once. Signing in through
+    the default client and then making the request through this one would leave the second app
+    querying a connection pool owned by the first app's loop, which fails in a way that looks
+    nothing like the mistake it is.
+    """
+
+    def _seller_pays_sign_in(phone_e164: str = "+251911000001", **kwargs: object) -> httpx.Response:
+        headers = (
+            {"x-forwarded-for": kwargs.pop("from_address")} if "from_address" in kwargs else {}
+        )
+        requested = seller_pays_client.post(
+            "/v1/auth/otp/request", json={"phone_e164": phone_e164}, headers=headers
+        )
+        assert requested.status_code == 200, requested.text
+        body: dict[str, object] = {
+            "phone_e164": phone_e164,
+            "code": code_for(phone_e164),
+            "terms_version": TERMS_VERSION,
+        }
+        verified: httpx.Response = seller_pays_client.post(
+            "/v1/auth/otp/verify", json=body, headers=headers
+        )
+        return verified
+
+    return _seller_pays_sign_in
+
+
+@pytest.fixture()
+def seller_pays_signed_in(
+    seller_pays_sign_in: Callable[..., httpx.Response],
+) -> Callable[..., dict[str, str]]:
+    """Headers for a trader signed in against the seller-pays application."""
+
+    def _seller_pays_signed_in(
+        phone_e164: str = "+251911000001", **kwargs: object
+    ) -> dict[str, str]:
+        verified = seller_pays_sign_in(phone_e164, **kwargs)
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _seller_pays_signed_in
+
+
+@pytest.fixture()
+async def concurrent_client(
+    settings: Settings, clean_database: None, clean_store: None, sms_recorder: RecordingSmsProvider
+) -> AsyncIterator[httpx.AsyncClient]:
+    """An HTTP client that can have two requests genuinely in flight at the same time.
+
+    The synchronous client drives the application through one portal on one event loop, so two
+    requests made from two threads still take their turns: they would never be inside the listing
+    lock together, and a test built on that would prove nothing about row locking. This drives the
+    ASGI application directly, so two coroutines really do overlap and really do hold two database
+    connections while they do.
+
+    The application's lifespan runs inside the test's own event loop, which is what keeps the
+    engine and the store belonging to the loop that is using them.
+    """
+    application: FastAPI = create_app(settings)
+    async with application.router.lifespan_context(application):
+        application.state.sms_provider = sms_recorder
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://concurrent.test"
+        ) as async_http:
+            yield async_http
+
+
+@pytest.fixture()
+async def signed_in_concurrently(
+    concurrent_client: httpx.AsyncClient, code_for: Callable[[str], str]
+) -> Callable[..., Awaitable[dict[str, str]]]:
+    """Sign a trader in over the concurrent client, so the tokens belong to the same run.
+
+    Signed in through the synchronous client this would be a token from another process's event
+    loop, which happens to work and is not a thing a test should rely on.
+    """
+
+    async def _sign_in(phone_e164: str = "+251911000001") -> dict[str, str]:
+        requested = await concurrent_client.post(
+            "/v1/auth/otp/request", json={"phone_e164": phone_e164}
+        )
+        assert requested.status_code == 200, requested.text
+        verified = await concurrent_client.post(
+            "/v1/auth/otp/verify",
+            json={
+                "phone_e164": phone_e164,
+                "code": code_for(phone_e164),
+                "terms_version": TERMS_VERSION,
+            },
+        )
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _sign_in
+
+
+@pytest.fixture()
+def idempotency_key() -> Callable[[], str]:
+    """A fresh idempotency key.
+
+    A callable rather than a value because the whole point of the header is that two requests
+    sharing one key are the same request: a test that wanted two separate orders has to be given
+    two separate keys, and getting that wrong would show up as an order silently not being
+    created rather than as a failure of the code under test.
+    """
+    return lambda: str(uuid.uuid4())
+
+
+@pytest.fixture()
+def order_body() -> Callable[..., dict[str, object]]:
+    """A valid acceptance or buy-now body, with any field replaced.
+
+    PICKUP and a free delivery fee, because a delivery method the listing has to offer and a fee
+    somebody chose are two more rules for a test about a third one to trip over. The address is
+    the pilot woreda's, because the column is a foreign key into the seeded reference data and an
+    address nobody could have written is not a thing a handset can send.
+    """
+
+    def _order_body(**overrides: object) -> dict[str, object]:
+        body: dict[str, object] = {
+            "delivery_method": "PICKUP",
+            "buyer_address_woreda_id": 1,
+            "buyer_address_text": "Adaa, East Shewa",
+        }
+        body.update(overrides)
+        return body
+
+    return _order_body
+
+
+@pytest.fixture()
+def stored_orders(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read order rows straight out of PostgreSQL.
+
+    For the same reason the listing and offer rows are read this way: the database's own account
+    of what was stored is evidence the service cannot fake, and the money frozen onto an order is
+    the kind of thing worth reading back from something other than the code that wrote it.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored_orders() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT id, short_code, buyer_id, seller_id, listing_id, offer_id, quantity_kg,"
+                " unit_price_santim, delivery_method, delivery_fee_santim, platform_fee_santim,"
+                " vat_santim, total_santim, fee_payer, buyer_address_woreda_id,"
+                " buyer_address_text, pickup_code, status, cancel_reason, payment_mode, version,"
+                " state_before_dispute FROM orders ORDER BY created_at, id"
+            )
+            return list(cursor.fetchall())
+
+    return _stored_orders
+
+
+@pytest.fixture()
+def stored_reservations(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read quantity reservation rows straight out of PostgreSQL.
+
+    Availability is the sum of these and nothing else, so a test that asks the API how much of a
+    listing is left is asking the thing under test to grade its own arithmetic. What is reserved,
+    by what, and in what state, is read from the rows themselves.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored_reservations() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT id, listing_id, holder_type, holder_id, quantity_kg, state, created_at,"
+                " updated_at FROM quantity_reservations ORDER BY created_at, id"
+            )
+            return list(cursor.fetchall())
+
+    return _stored_reservations
+
+
+@pytest.fixture()
+def lapse_order(postgres_url: str) -> Callable[[str], None]:
+    """Move an order's funding window into the past, behind the API's back.
+
+    The alternative is waiting forty-eight hours, and a test that cannot be run is not a test.
+    This writes the one column the window is measured from, which is exactly what the clock would
+    have done to it — and nothing else, so a test about expiry cannot pass by having quietly
+    changed the order's status as well.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _lapse_order(order_id: str) -> None:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE orders SET created_at = now() - interval '49 hours' WHERE id = %s",
+                (order_id,),
+            )
+
+    return _lapse_order
 
 
 @pytest.fixture()

@@ -21,6 +21,15 @@ flagged", because neither is evidence of anything.
 Editing is guarded by the version the caller last saw. Two phones can hold the same listing,
 and the second write wins silently otherwise; here the loser is told, and is handed the row
 that beat them so it can reconcile rather than retry blindly.
+
+Editing is also guarded by what has already been sold. FR-1904 puts the availability invariant
+in the same transaction that writes the listing, so an edit that would push availability below
+zero is refused by name, listing the orders holding the kilos. Open offers are not part of that
+judgement, because an offer reserves nothing.
+
+A listing whose availability has reached zero reads as sold out. FR-306's trigger is a fact
+about the kilos, and this module derives that fact on the way out rather than trusting a column
+that a cancellation, an expiry or an absent cron may have left behind.
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from apps.api.core.short_codes import CROCKFORD_BASE32
 from apps.api.models.listing import (
     DeliveryOption,
     Listing,
@@ -44,6 +54,7 @@ from apps.api.models.listing import (
 from apps.api.models.price_index import PriceIndex
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
 from apps.api.repositories.price_index_repository import PriceIndexRepository
+from apps.api.repositories.reservation_repository import ReservationRepository
 from apps.api.schemas.listing import ListingResponse, PhotoResponse
 from packages.shared.errors import ApiError, ErrorCode
 
@@ -51,8 +62,9 @@ logger = logging.getLogger("gebeyalink.api")
 
 #: Crockford's alphabet, which leaves out I, L, O and U so that a code written down from a
 #: text message and read aloud cannot be misheard as a different code. That property is the
-#: whole reason this alphabet is used instead of the whole alphabet.
-CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTWXYZ"
+#: whole reason this alphabet is used instead of the whole alphabet. It lives with the other
+#: code rules rather than here, because an order's code is drawn from the same alphabet and two
+#: copies of it would eventually be two alphabets.
 
 #: Six characters, thirty bits, with no prefix. An order's code is prefixed and longer, so
 #: the two can be told apart by shape without stripping a marker off one of them.
@@ -158,6 +170,28 @@ def effective_status(listing: Listing, now: datetime | None = None) -> ListingSt
     return listing.status
 
 
+def status_for_availability(
+    listing: Listing, available_kg: int, now: datetime | None = None
+) -> ListingStatus:
+    """A listing's status with FR-306's trigger applied, from availability rather than a column.
+
+    A listing whose committed kilos have reached its quantity reads as sold out. The sale that
+    took the last of it also writes `SOLD_OUT`, so this is a second door onto the same answer
+    rather than a competing definition of it - and it is needed because the write is not the only
+    way availability can reach zero: a cancellation hands kilos back, an expiry releases a hold,
+    and the cron FR-306 asks for does not exist yet.
+
+    Only from `ACTIVE`, because the state table has no edge into `SOLD_OUT` from anywhere else.
+    A paused listing with nothing left stays paused, which is right: pausing is the seller's own
+    statement about whether the listing is for sale, and a system transition must not overrule
+    it.
+    """
+    status = effective_status(listing, now=now)
+    if status is ListingStatus.ACTIVE and available_kg <= 0:
+        return ListingStatus.SOLD_OUT
+    return status
+
+
 def is_price_outlier(unit_price_santim: int, average_santim: int | None) -> bool:
     """Whether a price is far enough from what that crop last cost to be worth flagging.
 
@@ -221,9 +255,11 @@ class ListingService:
         self,
         listings: ListingRepository,
         price_indices: PriceIndexRepository,
+        reservations: ReservationRepository,
     ) -> None:
         self._listings = listings
         self._price_indices = price_indices
+        self._reservations = reservations
 
     async def create(self, seller_id: UUID, body: dict[str, Any]) -> ListingResponse:
         """Post a listing, live, under a code nobody else holds."""
@@ -250,11 +286,21 @@ class ListingService:
         await self._listings.add(listing)
         photos = await self._listings.replace_photos(listing.id, list(values.photos))
         await self._listings.commit()
-        return to_response(LoadedListing(listing=listing, photos=photos))
+        return to_response(
+            LoadedListing(listing=listing, photos=photos), available_kg=values.quantity_kg
+        )
 
     async def read(self, listing_id: UUID) -> ListingResponse:
-        """A listing as any signed-in caller may see it."""
-        return to_response(await self._require(listing_id))
+        """A listing as any signed-in caller may see it.
+
+        Availability is asked for and the status is judged against it, so a listing whose stock
+        an order has taken to zero reads as sold out whether or not anything has got round to
+        writing that down. FR-306's trigger is a fact about the kilos, and a fact about the kilos
+        is derived rather than stored.
+        """
+        loaded = await self._require(listing_id)
+        reserved = await self._reservations.reserved_kg_for_listing(loaded.listing.id)
+        return to_response(loaded, available_kg=loaded.listing.quantity_kg - reserved)
 
     async def read_mine(
         self, seller_id: UUID, cursor: str | None, limit: int
@@ -262,14 +308,37 @@ class ListingService:
         """One page of the caller's own listings, newest first."""
         after = decode_cursor(cursor) if cursor else None
         rows, has_more = await self._listings.page_for_seller(seller_id, after, limit)
+        # One statement for the whole page. Availability is read per listing for the status to be
+        # judged against it, and asking the database once per listing would make this the slowest
+        # read in the API for a seller with twenty postings.
+        reserved = await self._reservations.reserved_kg_for_listings(
+            [row.listing.id for row in rows[:limit]]
+        )
         next_cursor = encode_cursor(rows[-1].listing) if has_more and rows else None
-        return [to_response(row) for row in rows], next_cursor, has_more
+        return (
+            [
+                to_response(
+                    row,
+                    available_kg=row.listing.quantity_kg - reserved.get(row.listing.id, 0),
+                )
+                for row in rows[:limit]
+            ],
+            next_cursor,
+            has_more,
+        )
 
     async def update(
         self, listing_id: UUID, caller_id: UUID, body: dict[str, Any]
     ) -> ListingResponse:
-        """Apply the fields that were sent, if the caller still holds the version they read."""
-        loaded = await self._require_owned(listing_id, caller_id)
+        """Apply the fields that were sent, if the caller still holds the version they read.
+
+        Read under a row lock, because the one edit this service cannot perform is an edit that
+        would sell stock somebody has already agreed to buy: FR-1904 puts that enforcement in the
+        same transaction that writes the listing, and the sales that hold kilos take the same
+        lock. An edit judged against an unlocked read would be judged against a quantity that a
+        sale accepted on the other side of the database has already changed.
+        """
+        loaded = await self._require_owned(listing_id, caller_id, lock=True)
         listing = loaded.listing
         now = datetime.now(UTC)
         expected_version = _required_int(body, "version")
@@ -283,7 +352,9 @@ class ListingService:
                 details={
                     "listing_id": str(listing.id),
                     "expected_version": expected_version,
-                    "current": to_response(loaded).model_dump(mode="json"),
+                    "current": to_response(
+                        loaded, available_kg=await self._available_kg(loaded.listing)
+                    ).model_dump(mode="json"),
                 },
             )
 
@@ -301,15 +372,20 @@ class ListingService:
 
         merged = self._merge(loaded, body)
         validate_listing_values(merged, now=now)
+        await self._require_stock_survives_edit(listing, merged.quantity_kg)
 
         if merged == self._values_of(loaded):
             # Nothing actually changed. The version stays where it is so that two callers who
             # both send the same no-op edit do not invalidate each other forever.
-            return to_response(loaded)
+            return to_response(loaded, available_kg=await self._available_kg(listing))
 
         photos = await self._apply(listing, merged)
         await self._listings.commit()
-        return to_response(LoadedListing(listing=listing, photos=photos))
+        return to_response(
+            LoadedListing(listing=listing, photos=photos),
+            available_kg=merged.quantity_kg
+            - await self._reservations.reserved_kg_for_listing(listing.id),
+        )
 
     async def pause(self, listing_id: UUID, caller_id: UUID) -> ListingResponse:
         """Hide a live listing from search without closing it."""
@@ -334,7 +410,16 @@ class ListingService:
         loaded = await self._require_owned(listing_id, caller_id)
         transition_listing_status(loaded.listing, target)
         await self._listings.commit()
-        return to_response(loaded)
+        return to_response(loaded, available_kg=await self._available_kg(loaded.listing))
+
+    async def _available_kg(self, listing: Listing) -> int:
+        """What is left of this listing: its total less every reservation still counting.
+
+        One number with one definition, used by every path that answers with a listing. It is
+        asked for rather than kept on the row because FR-1901 puts availability in the
+        reservations: a counter that was also maintained would be a second thing to keep true.
+        """
+        return listing.quantity_kg - await self._reservations.reserved_kg_for_listing(listing.id)
 
     async def _apply(self, listing: Listing, values: ListingValues) -> list[ListingPhoto]:
         """Write a validated set of values onto the row and move the version on.
@@ -354,19 +439,75 @@ class ListingService:
             raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "listing"})
         return loaded
 
-    async def _require_owned(self, listing_id: UUID, caller_id: UUID) -> LoadedListing:
+    async def _require_owned(
+        self, listing_id: UUID, caller_id: UUID, *, lock: bool = False
+    ) -> LoadedListing:
         """The listing, and a refusal when it belongs to somebody else.
 
         Existence is answered before ownership on purpose: a caller who may not touch a row
         still needs to know whether it is there, because the detail view will tell them.
+
+        `lock` for the write paths, because the alternative is judging an edit against a
+        quantity that a sale accepted a moment later has already changed.
         """
-        loaded = await self._require(listing_id)
+        loaded = (
+            await self._listings.find_by_id_for_update(listing_id)
+            if lock
+            else await self._listings.find_by_id(listing_id)
+        )
+        if loaded is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "listing"})
         if loaded.listing.seller_id != caller_id:
             raise ApiError(
                 ErrorCode.FORBIDDEN,
                 details={"resource": "listing", "reason": "not_the_seller"},
             )
         return loaded
+
+    async def _require_stock_survives_edit(self, listing: Listing, quantity_kg: int) -> None:
+        """Refuse a quantity that would put availability below zero, and name what is in the way.
+
+        The invariant is `available = quantity_kg - held - converted - consumed >= 0`, so the
+        only question an edit can get wrong is whether the new total is still at least what
+        orders have already been given. Raising the quantity is always safe; lowering it is not,
+        and the refusal names the orders holding the kilos rather than only reporting a number,
+        because a seller who is told "there are 80 kilos committed" still has to work out which
+        of four orders that is, and the four are right there.
+
+        Open offers are not consulted, and their not being consulted is the point (AC-3.3): an
+        offer reserves nothing, so a seller is free to reduce stock under an unanswered bid, and
+        if that leaves the offer too large then its acceptance fails validation later - which is
+        the seller refusing it, by arithmetic rather than by a message.
+        """
+        committed = await self._reservations.reserved_kg_for_listing(listing.id)
+        if quantity_kg >= committed:
+            return
+
+        blocking = await self._reservations.blocking_for_listing(listing.id)
+        logger.warning(
+            "refused listing edit listing_id=%s requested_quantity_kg=%s committed_kg=%s",
+            listing.id,
+            quantity_kg,
+            committed,
+        )
+        raise ApiError(
+            ErrorCode.ORDER_CONFLICT,
+            details={
+                "listing_id": str(listing.id),
+                "requested_quantity_kg": quantity_kg,
+                "committed_kg": committed,
+                "blocking_orders": [
+                    {
+                        "order_id": str(held.order.id),
+                        "short_code": held.order.short_code,
+                        "quantity_kg": held.reservation.quantity_kg,
+                        "state": held.reservation.state.value,
+                        "status": held.order.status.value,
+                    }
+                    for held in blocking
+                ],
+            },
+        )
 
     async def _allocate_short_code(self) -> str:
         """A code no other listing holds.
@@ -486,19 +627,31 @@ def validate_listing_values(values: ListingValues, now: datetime) -> None:
         raise ApiError(ErrorCode.VALIDATION_ERROR, details={"fields": problems})
 
 
-def to_response(loaded: LoadedListing) -> ListingResponse:
-    """Read a listing out for a caller, with its status judged against the clock.
+def to_response(loaded: LoadedListing, available_kg: int | None = None) -> ListingResponse:
+    """Read a listing out for a caller, with its status judged against the clock and its stock.
 
     The photographs come out in their stored order, which is the order the seller chose, and
     the status is the derived one so that a lapsed listing never reads as live.
+
+    `available_kg` is what is left of this listing right now, when the caller has asked. It is
+    passed in rather than looked up here because a page of listings needs it for twenty rows at
+    once, and twenty separate queries to answer one question is not a trade worth making. Left
+    out, the status is judged on the clock alone, which is what the paths that do not care about
+    stock need.
     """
     listing = loaded.listing
+    status = (
+        effective_status(listing)
+        if available_kg is None
+        else status_for_availability(listing, available_kg)
+    )
     return ListingResponse(
         id=listing.id,
         short_code=listing.short_code,
         crop_id=listing.crop_id,
         quantity_kg=listing.quantity_kg,
         sold_kg=listing.sold_kg,
+        available_kg=available_kg,
         min_order_kg=listing.min_order_kg,
         unit_price_santim=listing.unit_price_santim,
         harvest_date=listing.harvest_date,
@@ -519,7 +672,7 @@ def to_response(loaded: LoadedListing) -> ListingResponse:
             )
             for photo in sorted(loaded.photos, key=lambda photo: photo.sort_order)
         ],
-        status=effective_status(listing),
+        status=status,
         price_outlier=listing.price_outlier,
         listing_attributes=dict(listing.listing_attributes),
         version=listing.version,
