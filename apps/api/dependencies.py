@@ -32,6 +32,7 @@ from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.search_repository import SearchRepository
 from apps.api.repositories.session_repository import SessionRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
@@ -43,6 +44,7 @@ from apps.api.services.order_service import OrderService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
+from apps.api.services.search_service import SearchService
 from packages.shared.errors import ApiError, ErrorCode
 
 
@@ -175,6 +177,26 @@ def get_listing_service(db_session: db_session_dep) -> ListingService:
 
 
 ListingServiceDep = Annotated[ListingService, Depends(get_listing_service)]
+
+
+def get_search_service(db_session: db_session_dep) -> SearchService:
+    """Discovery: what is on the market, and what of it this trader may be shown.
+
+    One session for all four repositories, for the reason the listing service has three:
+    a page reads the listings, the photographs that go with them, the kilos an order is
+    already holding against them, and whether the trader asking has a point to measure
+    distance from, and those have to be the answers as of one moment rather than as of
+    four.
+    """
+    return SearchService(
+        search=SearchRepository(db_session),
+        listings=ListingRepository(db_session),
+        reservations=ReservationRepository(db_session),
+        profiles=ProfileRepository(db_session),
+    )
+
+
+SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
 
 
 def get_offer_service(db_session: db_session_dep) -> OfferService:

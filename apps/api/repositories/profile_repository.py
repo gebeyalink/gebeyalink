@@ -24,6 +24,18 @@ class ProfileRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def has_gps(self, user_id: uuid.UUID) -> bool:
+        """Whether this trader has given a point that anything may be measured from.
+
+        Asked of the database rather than read off a loaded profile: the coordinate is
+        stored as geography and is deliberately not decoded on the way out, so a question
+        about whether there is one is a question only the statement that can see the column
+        can answer without pulling the point into Python first.
+        """
+        stmt = select(Profile.user_id).where(Profile.user_id == user_id, Profile.gps.is_not(None))
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
     async def create(self, profile: Profile) -> Profile:
         self._session.add(profile)
         await self._session.flush()

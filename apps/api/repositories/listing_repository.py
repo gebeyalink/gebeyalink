@@ -44,7 +44,7 @@ class ListingRepository:
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        photographs = await self._photos_for([row.id])
+        photographs = await self.photos_for([row.id])
         return LoadedListing(listing=row, photos=photographs.get(row.id, []))
 
     async def find_by_id_for_update(self, listing_id: uuid.UUID) -> LoadedListing | None:
@@ -74,7 +74,7 @@ class ListingRepository:
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        photographs = await self._photos_for([row.id])
+        photographs = await self.photos_for([row.id])
         return LoadedListing(listing=row, photos=photographs.get(row.id, []))
 
     async def page_for_seller(
@@ -97,7 +97,7 @@ class ListingRepository:
         result = await self._session.execute(stmt)
         rows = list(result.scalars().all())
 
-        photographs = await self._photos_for([row.id for row in rows[:limit]])
+        photographs = await self.photos_for([row.id for row in rows[:limit]])
         return [
             LoadedListing(listing=row, photos=photographs.get(row.id, [])) for row in rows[:limit]
         ], len(rows) > limit
@@ -148,9 +148,7 @@ class ListingRepository:
     async def flush(self) -> None:
         await self._session.flush()
 
-    async def _photos_for(
-        self, listing_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, list[ListingPhoto]]:
+    async def photos_for(self, listing_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[ListingPhoto]]:
         """Every photograph belonging to these listings, grouped and in stored order."""
         if not listing_ids:
             return {}

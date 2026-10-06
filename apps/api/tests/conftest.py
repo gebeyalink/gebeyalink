@@ -559,6 +559,72 @@ def lapse_listing(postgres_url: str) -> Callable[[str], None]:
 
 
 @pytest.fixture()
+def woredas_with_boundaries(postgres_url: str) -> Iterator[None]:
+    """Three more woredas: one a short ride from the point traders give, one far off, one
+    nobody has mapped.
+
+    A radius is a statement about geography, and the pilot woreda on its own cannot show
+    what one does: its boundary is deliberately empty, so every listing in it is unmeasured
+    and a filter that quietly kept everything or quietly dropped everything would look
+    exactly like one working. The three rows here make those two failures different. Two
+    sit at known coordinates - one about a kilometre from the Addis point the tests give a
+    trader, one about a hundred and eighty - and one carries no boundary at all, which is
+    the state every woreda is in until the boundaries dataset lands.
+
+    The rows come out again on the way out because nothing truncates this table: the seed
+    integrity test counts the pilot woreda, so a leftover here would read as a change to the
+    reference data rather than as one test's own footprint.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+    # Envelopes rather than hand-drawn rings: the shape only has to have a centroid where a
+    # test can reason about it, and a box gives that centroid exactly.
+    with psycopg.connect(sync_url, autocommit=True) as connection:
+        connection.execute(
+            "INSERT INTO woredas (id, name, region_code, zone, geog) VALUES"
+            " (%s, %s, %s, %s, ST_Multi(ST_MakeEnvelope(%s, %s, %s, %s, 4326))::geography),"
+            " (%s, %s, %s, %s, ST_Multi(ST_MakeEnvelope(%s, %s, %s, %s, 4326))::geography),"
+            " (%s, %s, %s, %s, NULL)",
+            (
+                2,
+                "Fentale",
+                "OR",
+                "East Shewa",
+                38.74,
+                9.02,
+                38.76,
+                9.04,
+                3,
+                "Dendi",
+                "OR",
+                "West Shewa",
+                39.99,
+                7.99,
+                40.01,
+                8.01,
+                4,
+                "Amuru",
+                "OR",
+                "West Shewa",
+            ),
+        )
+    yield
+    with psycopg.connect(sync_url, autocommit=True) as connection:
+        for statement in (
+            "DELETE FROM quantity_reservations WHERE listing_id IN"
+            " (SELECT id FROM listings WHERE woreda_id IN (2, 3, 4))",
+            "DELETE FROM orders WHERE listing_id IN"
+            " (SELECT id FROM listings WHERE woreda_id IN (2, 3, 4))",
+            "DELETE FROM offers WHERE listing_id IN"
+            " (SELECT id FROM listings WHERE woreda_id IN (2, 3, 4))",
+            "DELETE FROM listing_photos WHERE listing_id IN"
+            " (SELECT id FROM listings WHERE woreda_id IN (2, 3, 4))",
+            "DELETE FROM listings WHERE woreda_id IN (2, 3, 4)",
+            "DELETE FROM woredas WHERE id IN (2, 3, 4)",
+        ):
+            connection.execute(statement)
+
+
+@pytest.fixture()
 def offer_body() -> Callable[..., dict[str, object]]:
     """A valid offer body, with any field replaced.
 

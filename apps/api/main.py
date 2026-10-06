@@ -23,6 +23,7 @@ from apps.api.routers import offer as offer_routes
 from apps.api.routers import order as order_routes
 from apps.api.routers import profile as profile_routes
 from apps.api.routers import reference as reference_routes
+from apps.api.routers import search as search_routes
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(listing_routes.router, prefix=API_PREFIX)
     app.include_router(offer_routes.router, prefix=API_PREFIX)
     app.include_router(order_routes.router, prefix=API_PREFIX)
+    app.include_router(search_routes.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def stamp_request_context(
