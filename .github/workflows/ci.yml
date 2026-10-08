@@ -486,6 +486,8 @@ jobs:
           # trying to repair it in the shell afterwards.
           { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; } >> "$GITHUB_ENV"
           { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; } >> "$GITHUB_ENV"
+          # Throwaway for this job, for the same reason the signing keys are.
+          python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')" >> "$GITHUB_ENV"
           rm -f /tmp/test-private.pem /tmp/test-public.pem
       # Every setting the app reads is now resolved from two sources and no others: the
       # job-level env above (database_url, redis_url, terms_version) and the two keys the

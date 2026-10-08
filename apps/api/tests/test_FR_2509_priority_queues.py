@@ -74,6 +74,18 @@ _ANOTHER_CHANNEL_YAML = """\
     en: "Welcome {crop}"
 """
 
+_USSD_CHANNEL_YAML = """\
+- id: ussd_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [ussd]
+  variants:
+    am: "ዝርዝር {ussd}"
+    om: "Tarree {ussd}"
+    en: "Menu {ussd}"
+"""
+
 _MISSING_AM_YAML = """\
 - id: order_funded
   channel: sms
@@ -193,19 +205,43 @@ def test_priority_for_returns_the_priority_the_yaml_declares() -> None:
 
 
 def test_the_classified_lanes_match_the_product_rules() -> None:
-    """Q1 auth, Q2 order-and-offer, Q3 digests — and no lane is left undecided."""
+    """Q1 auth and action tokens, Q2 order-and-offer, Q3 digests — every id in one set.
+
+    Spelled out rather than inferred from a prefix: a reply whose id happens to start with
+    `offer_` is not order-and-offer traffic by that accident, and a new id added without a
+    lane decision must fail here rather than fall through a pattern that happens to match.
+    """
     registry = load_templates()
-    q1_ids = frozenset({"auth_otp"})
+    q1_ids = frozenset({"auth_otp", "action_token_invalid"})
     q3_ids = frozenset({"price_digest_daily", "saved_search_digest"})
+    q2_ids = frozenset(
+        {
+            "help",
+            "register_prompt",
+            "price",
+            "price_unavailable",
+            "post_success",
+            "post_failure",
+            "offer_placed",
+            "cancel_confirmed",
+            "status",
+            "payout_history_empty",
+            "profile_incomplete_for_order",
+            "order_funded",
+            "order_ready_for_pickup",
+            "order_shipped",
+            "order_delivered",
+            "offer_received",
+            "offer_accepted",
+            "offer_rejected",
+        }
+    )
+    expected = dict.fromkeys(q1_ids, SmsPriority.Q1)
+    expected |= dict.fromkeys(q3_ids, SmsPriority.Q3)
+    expected |= dict.fromkeys(q2_ids, SmsPriority.Q2)
+    assert set(registry) == set(expected), sorted(set(registry) ^ set(expected))
     for template_id, template in registry.items():
-        if template_id in q1_ids:
-            assert template.priority is SmsPriority.Q1, template_id
-        elif template_id in q3_ids:
-            assert template.priority is SmsPriority.Q3, template_id
-        elif template_id.startswith(("order_", "offer_")):
-            assert template.priority is SmsPriority.Q2, template_id
-        else:
-            raise AssertionError(f"{template_id} falls into no product lane")
+        assert template.priority is expected[template_id], (template_id, template.priority)
 
 
 def test_a_template_with_no_priority_is_refused_and_named(tmp_path: Path) -> None:
@@ -239,6 +275,13 @@ def test_a_channel_this_registry_does_not_carry_is_refused(tmp_path: Path) -> No
     with pytest.raises(ValueError) as failure:
         load_templates(tmp_path)
     assert "push" in str(failure.value)
+
+
+def test_a_ussd_template_loads(tmp_path: Path) -> None:
+    """USSD shares this registry and its budgets: a menu prompt is a message by the same rules."""
+    _write_registry(tmp_path, _USSD_CHANNEL_YAML)
+    registry = load_templates(tmp_path)
+    assert registry["ussd_menu"].channel == "ussd"
 
 
 def test_a_template_missing_a_required_variant_is_refused(tmp_path: Path) -> None:

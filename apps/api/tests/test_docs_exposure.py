@@ -41,6 +41,7 @@ def _settings(**overrides: object) -> Settings:
         "redis_url": "redis://127.0.0.1:1/0",
         "signing_private_key": SecretStr("unused-outside-the-application"),
         "signing_public_key": SecretStr("unused-outside-the-application"),
+        "gateway_secret": SecretStr("unused-outside-the-application"),
         "terms_version": "2026-01-01",
     }
     return Settings(**values, **overrides)  # type: ignore[arg-type]

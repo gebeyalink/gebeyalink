@@ -142,6 +142,21 @@ class ListingRepository:
         count = result.scalar_one()
         return bool(count)
 
+    async def find_by_short_code(self, short_code: str) -> Listing | None:
+        """The live listing a person named by reading a code aloud.
+
+        This is the SMS channel's one read by code, and it exists only because a text message
+        has nowhere else to put a listing: the code is the entire handle a sender can type.
+        Every other read of a listing is by primary key or by owner. The code is normalised to
+        the stored upper case here, because a handset may send it in either.
+
+        Nothing about ownership is decided by this method; the caller applies the rules about
+        who may act on what. It answers only "does a listing carry this code".
+        """
+        stmt = select(Listing).where(Listing.short_code == short_code.strip().upper())
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def commit(self) -> None:
         await self._session.commit()
 

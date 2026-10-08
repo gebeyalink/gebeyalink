@@ -23,13 +23,21 @@ from packages.shared.i18n.templates import MessageTemplate, load_templates
 pytestmark = pytest.mark.unit
 
 #: Placeholder fixtures the budget is measured against: six characters for a code, nine
-#: for an order code, four for a quantity and a price.
+#: for an order code, four for a quantity and a price. The SMS-command templates add a short
+#: code, a status, a token and a field name, each as wide as the value it will carry.
 PLACEHOLDER_FIXTURES: Final[dict[str, str]] = {
     "code": "123456",
     "order_code": "GL-123456",
     "quantity_kg": "1000",
     "crop": "Teff",
     "price": "2450",
+    "ussd": "*851#",
+    "price_per_quintal": "4850",
+    "field": "quantity_kg",
+    "status": "READY_FOR_PICKUP",
+    "count": "0",
+    "token": "A1B2C3D4",
+    "missing": "address",
 }
 
 #: What one SMS segment carries per writing system: Latin characters are GSM, Ge'ez is

@@ -91,6 +91,7 @@ def test_the_docs_routes_inherit_it_when_they_are_served() -> None:
                 redis_url="redis://127.0.0.1:1/0",
                 signing_private_key=SecretStr("unused-outside-the-application"),
                 signing_public_key=SecretStr("unused-outside-the-application"),
+                gateway_secret=SecretStr("unused-outside-the-application"),
                 terms_version="2026-01-01",
                 expose_docs=True,
             )

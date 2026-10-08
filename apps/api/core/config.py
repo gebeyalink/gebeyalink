@@ -45,6 +45,14 @@ class Settings(BaseSettings):
         description="Identifier stamped into issued tokens so a rotated key can be told apart.",
     )
 
+    # The shared secret the SMS gateway signs its inbound callbacks with. Required, with no
+    # default, for the same reason the signing keys have none: a deployment that forgot to
+    # inject it would otherwise start up checking every callback against a value in the
+    # source tree, which is a check an attacker who can read the source already passes.
+    gateway_secret: SecretStr = Field(
+        description="Shared secret for verifying the HMAC on inbound SMS gateway callbacks.",
+    )
+
     access_token_lifetime_seconds: int = Field(
         default=15 * 60,
         description="How long a freshly issued access token stays usable.",

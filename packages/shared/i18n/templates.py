@@ -40,7 +40,11 @@ _REQUIRED_FIELDS: Final[tuple[str, ...]] = (
 )
 _REQUIRED_VARIANTS: Final[tuple[str, ...]] = ("am", "om", "en")
 _KNOWN_VARIANTS: Final[frozenset[str]] = frozenset({"am", "om", "en", "ti"})
-_SMS_CHANNEL: Final[str] = "sms"
+#: The channels this registry carries. SMS is the whole of it today; USSD is admitted because
+#: the two channels share this registry and its language budget, and a USSD menu prompt is a
+#: message by the same rules. A channel outside this set — push, email — is refused with its
+#: name in the failure, so that "we do not carry this" is never silent.
+_KNOWN_CHANNELS: Final[frozenset[str]] = frozenset({"sms", "ussd"})
 
 
 class TemplateReview(StrEnum):
@@ -110,10 +114,10 @@ def _validate_template(path: Path, parsed: Any) -> MessageTemplate:
         raise ValueError(f"{path}: template id must be a non-empty string, got {template_id!r}")
 
     channel = parsed["channel"]
-    if channel != _SMS_CHANNEL:
+    if channel not in _KNOWN_CHANNELS:
         raise ValueError(
             f"{path}: template {template_id!r} declares channel {channel!r}; "
-            f"this registry knows only {_SMS_CHANNEL!r}"
+            f"this registry knows only {', '.join(sorted(_KNOWN_CHANNELS))}"
         )
 
     return MessageTemplate(

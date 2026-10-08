@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -195,3 +196,37 @@ def fingerprint_of(*parts: Any) -> str:
     """
     material = json.dumps(parts, separators=(",", ":"), sort_keys=True, default=str)
     return hashlib.sha256(material.encode()).hexdigest()
+
+
+async def once[T](
+    store: IdempotencyStore,
+    *,
+    account_id: str,
+    key: str,
+    fingerprint: str,
+    work: Callable[[], Awaitable[T]],
+    encode: Callable[[T], tuple[int, dict[str, Any]]],
+    decode: Callable[[dict[str, Any]], T],
+) -> T:
+    """Run a mutation once under a key, whatever the client does about sending it again.
+
+    The shape every idempotent endpoint shares, pulled out so that an order, an offer and a
+    listing all claim, work, record and release the same way rather than three times by
+    resemblance. The caller supplies only what differs: the work, how to turn its result into
+    a stored response, and how to turn a stored response back. A failure hands the key straight
+    back, because caching a validation failure would make a typo permanent for a day.
+
+    The value returned on a replay is decoded from the stored body, so a second request gets the
+    first request's answer rather than a recomputation of it.
+    """
+    guard = await store.claim(account_id, key, fingerprint)
+    if isinstance(guard, ReplayedResponse):
+        return decode(guard.body)
+    try:
+        value = await work()
+    except BaseException:
+        await guard.release()
+        raise
+    status_code, body = encode(value)
+    await guard.record(status_code, body)
+    return value

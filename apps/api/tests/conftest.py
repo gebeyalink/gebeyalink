@@ -22,6 +22,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlencode
 
 import httpx
 import psycopg
@@ -37,6 +38,8 @@ from redis import Redis as SyncRedis
 from apps.api.core.config import Settings
 from apps.api.main import create_app
 from apps.api.providers.sms import RecordingSmsProvider
+from packages.shared.messaging.action_tokens import hash_token
+from packages.shared.messaging.signature import sign_gateway_body
 from packages.shared.money import FeePayer
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -44,6 +47,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTAINER_PREFIX = "gebeyalink-test"
 
 TERMS_VERSION = "2026-01-01"
+
+#: The shared secret every test application checks inbound SMS signatures against. A throwaway:
+#: it exists so a test can sign a body the gateway way, and it protects nothing but the run.
+GATEWAY_SECRET = "test-gateway-secret"
 
 if sys.platform == "win32":  # pragma: no cover - platform specific
     # The database driver waits on ordinary sockets, and Windows' default loop cannot.
@@ -191,6 +198,7 @@ def inert_settings() -> Settings:
         signing_private_key=SecretStr("unused-outside-the-application"),
         signing_public_key=SecretStr("unused-outside-the-application"),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
     )
 
@@ -210,6 +218,7 @@ def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -
         signing_private_key=SecretStr(private_pem),
         signing_public_key=SecretStr(public_pem),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
     )
 
@@ -226,6 +235,7 @@ def impatient_settings(
         signing_private_key=SecretStr(private_pem),
         signing_public_key=SecretStr(public_pem),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         otp_ttl_seconds=2,
         otp_resend_cooldown_seconds=1,
@@ -247,6 +257,7 @@ def spray_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, s
         signing_private_key=SecretStr(private_pem),
         signing_public_key=SecretStr(public_pem),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         auth_endpoint_limit_per_minute_per_ip=100,
     )
@@ -279,6 +290,7 @@ def migrated_database(postgres_url: str) -> Iterator[None]:
         "REDIS_URL": "redis://127.0.0.1:1/0",
         "SIGNING_PRIVATE_KEY": "unused-outside-the-application",
         "SIGNING_PUBLIC_KEY": "unused-outside-the-application",
+        "GATEWAY_SECRET": GATEWAY_SECRET,
         "TERMS_VERSION": TERMS_VERSION,
     }
     result = subprocess.run(
@@ -707,6 +719,7 @@ def seller_pays_settings(
         signing_private_key=SecretStr(private_pem),
         signing_public_key=SecretStr(public_pem),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         fee_payer=FeePayer.SELLER,
     )
@@ -792,6 +805,7 @@ def cod_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str
         signing_private_key=SecretStr(private_pem),
         signing_public_key=SecretStr(public_pem),
         signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         cod_enabled=True,
     )
@@ -1188,8 +1202,8 @@ def signed_in_as_buyer(
     """
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
 
-    def _signed_in_as_buyer(phone_e164: str = "+251911000003") -> dict[str, str]:
-        headers = signed_in(phone_e164)
+    def _signed_in_as_buyer(phone_e164: str = "+251911000003", **kwargs: object) -> dict[str, str]:
+        headers = signed_in(phone_e164, **kwargs)
         with psycopg.connect(sync_url, autocommit=True) as connection:
             connection.execute(
                 "UPDATE users SET role = 'BUYER' WHERE phone_e164 = %s", (phone_e164,)
@@ -1197,3 +1211,100 @@ def signed_in_as_buyer(
         return headers
 
     return _signed_in_as_buyer
+
+
+@pytest.fixture()
+def gateway_secret() -> str:
+    """The shared secret the built application checks inbound SMS signatures against."""
+    return GATEWAY_SECRET
+
+
+@pytest.fixture()
+def sms_inbound() -> Callable[..., httpx.Response]:
+    """Deliver a text message to the gateway webhook the way the gateway delivers one.
+
+    Signed over the exact bytes posted, because that is the seam under test: the body is built
+    once here and both the signature and the request use it, so the check is against these
+    bytes and not against a re-rendering of them.
+    """
+
+    def _sms_inbound(
+        client: TestClient,
+        text: str,
+        *,
+        from_phone: str = "+251911000001",
+        secret: str = GATEWAY_SECRET,
+        signature: str | None = None,
+        omit_signature: bool = False,
+        raw_body: bytes | None = None,
+    ) -> httpx.Response:
+        body = (
+            raw_body
+            if raw_body is not None
+            else urlencode({"from": from_phone, "text": text}).encode("utf-8")
+        )
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if not omit_signature:
+            headers["X-AT-Signature"] = (
+                signature if signature is not None else sign_gateway_body(secret, body)
+            )
+        response: httpx.Response = client.post("/v1/sms/inbound", content=body, headers=headers)
+        return response
+
+    return _sms_inbound
+
+
+@pytest.fixture()
+def issue_action_token(postgres_url: str) -> Callable[..., str]:
+    """Mint an action token straight into the table, because issuance is a later slice.
+
+    The token is written the way the platform would write it - hashed, with a purpose and an
+    expiry - so the handler under test consumes a row indistinguishable from a real one. The
+    raw value is returned so the test can type it into a message.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _issue(
+        phone_e164: str,
+        purpose: str,
+        *,
+        token: str | None = None,
+        ttl: timedelta = timedelta(hours=24),
+        used_at: datetime | None = None,
+    ) -> str:
+        raw = token or uuid.uuid4().hex[:8].upper()
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "INSERT INTO action_tokens (id, user_id, token_hash, purpose, expires_at, used_at)"
+                " SELECT %s, id, %s, %s, %s, %s FROM users WHERE phone_e164 = %s",
+                (
+                    uuid.uuid4(),
+                    hash_token(raw),
+                    purpose,
+                    datetime.now(UTC) + ttl,
+                    used_at,
+                    phone_e164,
+                ),
+            )
+        return raw
+
+    return _issue
+
+
+@pytest.fixture()
+def stored_action_tokens(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
+    """Read action-token rows straight out of PostgreSQL."""
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _stored() -> list[dict[str, object]]:
+        with (
+            psycopg.connect(sync_url) as connection,
+            connection.cursor(row_factory=psycopg.rows.dict_row) as cursor,
+        ):
+            cursor.execute(
+                "SELECT user_id, token_hash, purpose, expires_at, used_at"
+                " FROM action_tokens ORDER BY created_at"
+            )
+            return list(cursor.fetchall())
+
+    return _stored

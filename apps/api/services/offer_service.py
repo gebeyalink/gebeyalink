@@ -42,6 +42,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from apps.api.core.idempotency import IdempotencyStore, once
+from apps.api.core.idempotency import fingerprint_of as _fingerprint
 from apps.api.models.listing import Listing, ListingStatus
 from apps.api.models.offer import (
     MAX_THREAD_DEPTH,
@@ -212,17 +214,41 @@ def may_answer(offer: Offer, listing: Listing, caller_id: UUID) -> bool:
 
 
 class OfferService:
-    def __init__(self, offers: OfferRepository, listings: ListingRepository) -> None:
+    def __init__(
+        self,
+        offers: OfferRepository,
+        listings: ListingRepository,
+        idempotency: IdempotencyStore,
+    ) -> None:
         self._offers = offers
         self._listings = listings
+        self._idempotency = idempotency
 
-    async def place(self, listing_id: UUID, buyer_id: UUID, body: dict[str, Any]) -> OfferResponse:
+    async def place(
+        self, listing_id: UUID, buyer_id: UUID, body: dict[str, Any], key: str | None = None
+    ) -> OfferResponse:
         """Put a buyer's terms on a live listing.
 
         Bounded by the listing on three axes at once — its floor, its total quantity, and twice
         its asking price — because an offer that ignored any of them would be a second route to
         posting a listing on terms the listing service would have refused.
+
+        ``key`` is the SMS channel's idempotency key and is absent on the app path; when it is
+        present the whole placement runs under it, so a gateway retry places one bid.
         """
+        if key is None:
+            return await self._place(listing_id, buyer_id, body)
+        return await once(
+            self._idempotency,
+            account_id=str(buyer_id),
+            key=key,
+            fingerprint=_fingerprint("offer", str(listing_id), body),
+            work=lambda: self._place(listing_id, buyer_id, body),
+            encode=lambda response: (201, response.model_dump(mode="json")),
+            decode=OfferResponse.model_validate,
+        )
+
+    async def _place(self, listing_id: UUID, buyer_id: UUID, body: dict[str, Any]) -> OfferResponse:
         now = datetime.now(UTC)
         listing = await self._require_live_listing(listing_id, now)
 
@@ -296,7 +322,9 @@ class OfferService:
         rows = await self._offers.list_for_listing(listing_id)
         return [to_response(offer, now=moment) for offer in rows]
 
-    async def reject(self, offer_id: UUID, caller_id: UUID) -> OfferResponse:
+    async def reject(
+        self, offer_id: UUID, caller_id: UUID, key: str | None = None
+    ) -> OfferResponse:
         """The seller's answer that ends the negotiation: no.
 
         The seller's alone, at any depth, including against the seller's own counter. A refusal
@@ -307,7 +335,22 @@ class OfferService:
         been paused or closed. Refusing an offer proposes nothing on the listing and reserves
         nothing, so a seller must never be unable to close out a bid just because the listing
         behind it moved — that would leave a buyer's offer open on a listing nobody is selling.
+
+        ``key`` is the SMS channel's idempotency key and is absent on the app path.
         """
+        if key is None:
+            return await self._reject(offer_id, caller_id)
+        return await once(
+            self._idempotency,
+            account_id=str(caller_id),
+            key=key,
+            fingerprint=_fingerprint("reject", str(offer_id)),
+            work=lambda: self._reject(offer_id, caller_id),
+            encode=lambda response: (200, response.model_dump(mode="json")),
+            decode=OfferResponse.model_validate,
+        )
+
+    async def _reject(self, offer_id: UUID, caller_id: UUID) -> OfferResponse:
         context = await self._require_rejectable(offer_id, caller_id)
         now = datetime.now(UTC)
         transition_offer_status(

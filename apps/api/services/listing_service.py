@@ -43,6 +43,8 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from apps.api.core.idempotency import IdempotencyStore, once
+from apps.api.core.idempotency import fingerprint_of as _fingerprint
 from apps.api.core.short_codes import CROCKFORD_BASE32
 from apps.api.models.listing import (
     DeliveryOption,
@@ -256,15 +258,39 @@ class ListingService:
         listings: ListingRepository,
         price_indices: PriceIndexRepository,
         reservations: ReservationRepository,
+        idempotency: IdempotencyStore,
     ) -> None:
         self._listings = listings
         self._price_indices = price_indices
         self._reservations = reservations
+        self._idempotency = idempotency
 
-    async def create(self, seller_id: UUID, body: dict[str, Any]) -> ListingResponse:
-        """Post a listing, live, under a code nobody else holds."""
+    async def create(
+        self, seller_id: UUID, body: dict[str, Any], key: str | None = None
+    ) -> ListingResponse:
+        """Post a listing, live, under a code nobody else holds.
+
+        ``key`` is the SMS channel's idempotency key and is absent on the app path, which has
+        no way to resend a creation it did not see an answer to. When it is present, the whole
+        creation runs under it, so a webhook retried by the gateway posts one listing.
+        """
+        if key is None:
+            return await self._create(seller_id, body)
+        return await once(
+            self._idempotency,
+            account_id=str(seller_id),
+            key=key,
+            fingerprint=_fingerprint("listing", body),
+            work=lambda: self._create(seller_id, body),
+            encode=lambda response: (201, response.model_dump(mode="json")),
+            decode=ListingResponse.model_validate,
+        )
+
+    async def _create(self, seller_id: UUID, body: dict[str, Any]) -> ListingResponse:
         now = datetime.now(UTC)
-        values = self._values_from(body, expires_at_default=_default_expiry(now))
+        values = self._values_from(
+            _with_sms_defaults(body, now), expires_at_default=_default_expiry(now)
+        )
         validate_listing_values(values, now=now)
 
         listing = Listing(
@@ -707,6 +733,24 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
 def _default_expiry(now: datetime) -> datetime:
     """When a listing lives if its seller did not say otherwise."""
     return now + DEFAULT_LIFETIME
+
+
+def _with_sms_defaults(body: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Fill the fields §14.4 says a text-message listing leaves unsaid.
+
+    A POST command carries a crop, a weight and a price and nothing else, and §14.4 says what
+    the rest of the listing is then: available now, no minimum order, pickup only. The HTTP
+    body already names every one of these fields — ``model_dump`` without ``exclude_unset``
+    sends them all — so these defaults fire on the SMS path and never overrule an app that
+    meant something else. A copy is taken rather than the caller's dict mutated, because a
+    body that arrived from a request is the request's to keep.
+    """
+    filled = {**body}
+    filled.setdefault("min_order_kg", 1)
+    filled.setdefault("harvest_date", now.date())
+    filled.setdefault("available_from", now)
+    filled.setdefault("delivery_options", [DeliveryOption.PICKUP.value])
+    return filled
 
 
 def _has_lapsed(listing: Listing, now: datetime) -> bool:

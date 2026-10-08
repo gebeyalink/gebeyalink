@@ -25,6 +25,8 @@ from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, 
 from apps.api.core.short_codes import CrockfordOrderCode
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
+from apps.api.repositories.action_token_repository import ActionTokenRepository
+from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
@@ -45,6 +47,7 @@ from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
 from apps.api.services.search_service import SearchService
+from apps.api.services.sms_command_gateway import SmsCommandGateway
 from packages.shared.errors import ApiError, ErrorCode
 
 
@@ -173,6 +176,7 @@ def get_listing_service(db_session: db_session_dep) -> ListingService:
         listings=ListingRepository(db_session),
         price_indices=PriceIndexRepository(db_session),
         reservations=ReservationRepository(db_session),
+        idempotency=IdempotencyStore(get_client()),
     )
 
 
@@ -209,6 +213,7 @@ def get_offer_service(db_session: db_session_dep) -> OfferService:
     return OfferService(
         offers=OfferRepository(db_session),
         listings=ListingRepository(db_session),
+        idempotency=IdempotencyStore(get_client()),
     )
 
 
@@ -244,3 +249,31 @@ def get_order_service(
 
 
 OrderServiceDep = Annotated[OrderService, Depends(get_order_service)]
+
+
+def get_sms_gateway(
+    db_session: db_session_dep, settings: settings_dep, redis: redis_dep
+) -> SmsCommandGateway:
+    """Everything the SMS command path needs, over the one session this request owns.
+
+    The three services are built the same way their own endpoints build them and share this
+    session, so a listing posted by text and one posted by app are written by the same code
+    against the same transaction. Nothing here is SMS-specific: the gateway is a caller, not a
+    second implementation.
+    """
+    return SmsCommandGateway(
+        users=UserRepository(db_session),
+        profiles=ProfileRepository(db_session),
+        crops=CropRepository(db_session),
+        price_indices=PriceIndexRepository(db_session),
+        listings=ListingRepository(db_session),
+        offers=OfferRepository(db_session),
+        orders=OrderRepository(db_session),
+        action_tokens=ActionTokenRepository(db_session),
+        listing_service=get_listing_service(db_session),
+        offer_service=get_offer_service(db_session),
+        order_service=get_order_service(db_session, settings, redis),
+    )
+
+
+SmsCommandGatewayDep = Annotated[SmsCommandGateway, Depends(get_sms_gateway)]

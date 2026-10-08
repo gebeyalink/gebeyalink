@@ -53,7 +53,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
 from uuid import UUID
 
-from apps.api.core.idempotency import IdempotencyStore, ReplayedResponse
+from apps.api.core.idempotency import IdempotencyStore, once
 from apps.api.core.idempotency import fingerprint_of as _fingerprint
 from apps.api.core.short_codes import OrderCodeSource, new_pickup_code
 from apps.api.models.listing import DeliveryOption, Listing, ListingStatus
@@ -1026,18 +1026,19 @@ class OrderService:
         order. A failure hands the key straight back: caching a validation failure would make a
         typo permanent for a day, which is not something idempotency is for.
         """
-        guard = await self._idempotency.claim(str(caller_id), key, _fingerprint(*what, body))
-        if isinstance(guard, ReplayedResponse):
-            logger.info("replayed idempotent response status=%s", guard.status_code)
-            return OrderResponse.model_validate(guard.body)
-        try:
-            order = await work()
-        except BaseException:
-            await guard.release()
-            raise
-        response = to_response(order, viewer_id=caller_id)
-        await guard.record(status_code, response.model_dump(mode="json"))
-        return response
+
+        async def run() -> OrderResponse:
+            return to_response(await work(), viewer_id=caller_id)
+
+        return await once(
+            self._idempotency,
+            account_id=str(caller_id),
+            key=key,
+            fingerprint=_fingerprint(*what, body),
+            work=run,
+            encode=lambda response: (status_code, response.model_dump(mode="json")),
+            decode=OrderResponse.model_validate,
+        )
 
     async def _lock_listing(self, listing_id: UUID) -> Listing:
         """The listing, with its row locked until this transaction ends, or a 404."""

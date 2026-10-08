@@ -20,6 +20,7 @@ from sqlalchemy.pool import NullPool
 
 from apps.api.core.config import get_settings
 from apps.api.db.base import Base
+from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)

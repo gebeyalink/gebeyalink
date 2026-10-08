@@ -24,6 +24,7 @@ from apps.api.routers import order as order_routes
 from apps.api.routers import profile as profile_routes
 from apps.api.routers import reference as reference_routes
 from apps.api.routers import search as search_routes
+from apps.api.routers import sms as sms_routes
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -77,6 +78,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(offer_routes.router, prefix=API_PREFIX)
     app.include_router(order_routes.router, prefix=API_PREFIX)
     app.include_router(search_routes.router, prefix=API_PREFIX)
+    # Also under the version prefix: the gateway is told exactly one URL, and it is
+    # /v1/sms/inbound per docs/openapi.yaml, so the version lives in the path the gateway
+    # already holds rather than being inferred from a header it does not send.
+    app.include_router(sms_routes.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def stamp_request_context(

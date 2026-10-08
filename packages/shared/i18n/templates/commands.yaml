@@ -1,0 +1,127 @@
+# The replies the SMS command path of §14.4 sends back.
+#
+# Every string here is authored by this team and awaits a native speaker: none of it is the
+# specification's verbatim copy. They are marked `unreviewed` for that reason, and O-3 is a
+# release blocker for all of them. The lane a reply sends in is declared, never inferred:
+# an action-token refusal is Q1 because it stands between a trader and a contested action,
+# and everything else is order-and-offer traffic that can wait out quiet hours.
+
+- id: help
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [ussd]
+  variants:
+    am: "እርዳታ: PRICE POST OFFER STATUS CANCEL PAYOUTS. USSD {ussd}"
+    om: "Gargaarsa: PRICE POST OFFER STATUS CANCEL PAYOUTS. USSD {ussd}"
+    en: "Help: PRICE POST OFFER STATUS CANCEL PAYOUTS. USSD {ussd}"
+
+- id: register_prompt
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [ussd]
+  variants:
+    am: "እንኳን ደህና መጡ። ለመመዝገብ USSD {ussd} ይደውሉ።"
+    om: "Baga nagaan dhufte. Galmaa'uuf USSD {ussd} bilbilaa."
+    en: "Welcome. To register, dial USSD {ussd}."
+
+- id: price
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [crop, price_per_quintal]
+  variants:
+    am: "{crop} ዛሬ {price_per_quintal} ብር/ኩንታል"
+    om: "Har'a {crop}: {price_per_quintal} qarshii/kuntaala"
+    en: "Today {crop}: {price_per_quintal} ETB/quintal"
+
+- id: price_unavailable
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [crop]
+  variants:
+    am: "የ{crop} ዋጋ አልተገኘም።"
+    om: "Gatii {crop} hin argamne."
+    en: "No price is available for {crop}."
+
+- id: post_success
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code]
+  variants:
+    am: "ማስታወቂያዎ ተለቀቀ። ኮድ {code}"
+    om: "Beeksisni kee baheera. Koodii {code}"
+    en: "Your listing is live. Code {code}"
+
+- id: post_failure
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [field]
+  variants:
+    am: "ማስታወቂያው አልተሳካም: {field}"
+    om: "Beeksisni hin milkoofne: {field}"
+    en: "Your listing was not accepted: {field}"
+
+- id: offer_placed
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code, quantity_kg, price]
+  variants:
+    am: "ቅናሽዎ ተልኳል: {code} {quantity_kg}ኪግ {price}ብር"
+    om: "Beezniiteen kee ergameera: {code} {quantity_kg}kg {price}ETB"
+    en: "Offer sent: {code} {quantity_kg}kg at {price} ETB/kg"
+
+- id: cancel_confirmed
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [order_code]
+  variants:
+    am: "ትዕዛዝ {order_code} ተሰርዟል።"
+    om: "Ajajni {order_code} haqameera."
+    en: "Order {order_code} has been cancelled."
+
+- id: status
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [order_code, status]
+  variants:
+    am: "ትዕዛዝ {order_code}: {status}"
+    om: "Ajajni {order_code}: {status}"
+    en: "Order {order_code} is {status}"
+
+- id: payout_history_empty
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [count]
+  variants:
+    am: "እስካሁን ክፍያ የለም። ({count})"
+    om: "Kaffaltiin amma hin jiru. ({count})"
+    en: "You have no payouts yet ({count})."
+
+- id: action_token_invalid
+  channel: sms
+  priority: Q1
+  review_status: unreviewed
+  placeholders: [token]
+  variants:
+    am: "የተግባር ኮዱ አልተሳካም: {token}"
+    om: "Koodiin hojii hin milkoofne: {token}"
+    en: "That action code did not work: {token}"
+
+- id: profile_incomplete_for_order
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [missing]
+  variants:
+    am: "ለትዕዛዝ መገለጫዎ ያልተሟላ ነው: {missing}"
+    om: "Odeeffannoon kee guutuu miti: {missing}"
+    en: "Your profile is not complete for an order: {missing}"

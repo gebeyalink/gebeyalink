@@ -5,6 +5,11 @@ never by short code. A short code is a handle for a human to say out loud, not a
 application trusts, and a repository that could look an order up by it would eventually be asked
 to look one up by something typed from a text message.
 
+There is exactly one exception, and it is the sentence above arriving at last: the SMS channel
+has nowhere else to put an order than its short code, so it gets one read by code —
+``find_by_short_code_for_party`` — and the lookup is scoped to a caller who is already a party.
+The code narrows which of *that caller's own* orders is meant; it never grants access to one.
+
 The two locked reads exist because two rules have to read an order and then act on what they
 read. Accepting an offer reads the listing, not the order; cancelling reads the order it is
 about to cancel. Both are `FOR UPDATE` because "read the order, check it can move, move it" is
@@ -18,7 +23,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.crop import Crop
@@ -73,6 +78,23 @@ class OrderRepository:
         stmt = select(func.count()).select_from(Order).where(Order.short_code == short_code)
         result = await self._session.execute(stmt)
         return bool(result.scalar_one())
+
+    async def find_by_short_code_for_party(
+        self, short_code: str, party_id: uuid.UUID
+    ) -> Order | None:
+        """One of this party's own orders, named by the code they read aloud.
+
+        The one read by short code, and it is scoped rather than general: the caller must
+        already be the buyer or the seller, so the code can only narrow which of their orders
+        is meant, never reach somebody else's. Normalised to the stored upper case because a
+        handset may send either.
+        """
+        stmt = select(Order).where(
+            Order.short_code == short_code.strip().upper(),
+            or_(Order.buyer_id == party_id, Order.seller_id == party_id),
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def page_for_party(
         self,
