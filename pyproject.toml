@@ -70,7 +70,13 @@ packages = [
     "packages",
     "packages.shared",
     "packages.shared.i18n",
+    "packages.shared.messaging",
 ]
+
+[tool.setuptools.package-data]
+# Template YAML is runtime data, not Python: a wheel must carry it or the registry
+# loader fails at the first send.
+"packages.shared.i18n" = ["templates/*.yaml"]
 
 # ── SPEC §19: mypy strict on apps/api, packages/* ─────────────────────────────
 [tool.mypy]

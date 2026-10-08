@@ -9,6 +9,10 @@ The real gateway integration arrives with the merchant account and its credentia
 then the seam is deliberate rather than accidental: a service asks "send this message",
 never "call this vendor", so swapping the backend touches this file and nothing above it.
 
+The real adapter is declared here too — AfricasTalkingProvider — behind the messaging
+interface the delivery slices define, and it refuses to send until the credentials it
+needs resolve, so a message it is asked to carry is never silently dropped.
+
 Messages carry verification codes, so nothing here logs a body. Diagnostics record that a
 message was sent, to which number, and whether the backend accepted it — never its
 contents.
@@ -21,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from apps.api.core.hashing import generate_random_token
+from packages.shared.messaging.provider import SendResult
+from packages.shared.messaging.queues import SmsPriority
 
 logger = logging.getLogger("gebeyalink.sms")
 
@@ -81,6 +87,30 @@ class RecordingSmsProvider:
 
     def clear(self) -> None:
         self.sent.clear()
+
+
+class AfricasTalkingProvider:
+    """The real gateway's adapter, wired once the O-2 merchant credentials resolve.
+
+    It deliberately has no behaviour yet: implementing the wire protocol before the
+    credentials exist would mean inventing a sandbox to test it against, and an adapter
+    that pretends to send is worse than one that refuses. Until then, ``send`` raises, so
+    a message handed to it is never silently dropped, and the ``MessagingProvider``
+    protocol it satisfies is the seam a later slice wires into the dispatcher.
+    """
+
+    async def send(
+        self,
+        phone_e164: str,
+        body: str,
+        *,
+        priority: SmsPriority,
+        template_id: str,
+    ) -> SendResult:
+        """Send a rendered message to the gateway, or refuse to pretend this happened."""
+        raise NotImplementedError(
+            "the Africa's Talking adapter is wired once the O-2 merchant credentials resolve"
+        )
 
 
 def _mask(phone_e164: str) -> str:

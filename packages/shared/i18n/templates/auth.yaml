@@ -1,0 +1,13 @@
+# One message class per file. Every template declares the lane it sends in (priority),
+# the placeholders it needs filled, and its text in every language a user may read;
+# am, om and en are required, ti optional. packages/shared/i18n/templates.py reads this
+# directory as the source of truth for what the platform may say by SMS.
+
+- id: auth_otp
+  channel: sms
+  priority: Q1
+  placeholders: [code]
+  variants:
+    am: "የGebeyaLink የማረጋገጫ ኮድዎ {code} ነው። ይህን ኮድ ለማንም አይንገሩ።"
+    om: "Koodii mirkanaa GebeyaLink kee {code} dha. Koodii kana namaaf hin himin."
+    en: "Your GebeyaLink verification code is {code}. Never share this code."

@@ -1,0 +1,37 @@
+# The order lifecycle states a trader should hear about, one message per state.
+
+- id: order_funded
+  channel: sms
+  priority: Q2
+  placeholders: [order_code]
+  variants:
+    am: "ትዕዛዝዎ {order_code} ተረጋግጧል"
+    om: "Ajajni kee {order_code} gabaabbatee jira"
+    en: "Your order {order_code} has been funded"
+
+- id: order_ready_for_pickup
+  channel: sms
+  priority: Q2
+  placeholders: [order_code]
+  variants:
+    am: "ትዕዛዝዎ {order_code} ለመውሰድ ዝግጁ ነው"
+    om: "Ajajni kee {order_code} fudhachuuf qophii dha"
+    en: "Your order {order_code} is ready for pickup"
+
+- id: order_shipped
+  channel: sms
+  priority: Q2
+  placeholders: [order_code]
+  variants:
+    am: "ትዕዛዝዎ {order_code} ተልኳል"
+    om: "Ajajni kee {order_code} ergamee jira"
+    en: "Your order {order_code} has been shipped"
+
+- id: order_delivered
+  channel: sms
+  priority: Q2
+  placeholders: [order_code]
+  variants:
+    am: "ትዕዛዝዎ {order_code} ደርሷል"
+    om: "Ajajni kee {order_code} ga'eera"
+    en: "Your order {order_code} has been delivered"

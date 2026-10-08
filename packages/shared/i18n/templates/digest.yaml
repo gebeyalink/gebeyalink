@@ -1,0 +1,19 @@
+# Daily and saved-search digests: the driest lane, sent at most once a day.
+
+- id: price_digest_daily
+  channel: sms
+  priority: Q3
+  placeholders: [crop, price]
+  variants:
+    am: "ዛሬ ዋጋ: {crop} {price} ብር ነው"
+    om: "Har'a gatii: {crop} {price} qarshii dha"
+    en: "Today's price: {crop} is {price} birr/kg"
+
+- id: saved_search_digest
+  channel: sms
+  priority: Q3
+  placeholders: [crop, price]
+  variants:
+    am: "የተቀመጠ ፍለጋ: {crop} {price} ብር ነው"
+    om: "Barbaadni kee: {crop} {price} qarshii dha"
+    en: "Your saved search: {crop} is now {price} birr/kg"

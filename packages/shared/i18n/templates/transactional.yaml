@@ -1,0 +1,28 @@
+# Offer news a trader acted on or is waiting on.
+
+- id: offer_received
+  channel: sms
+  priority: Q2
+  placeholders: [crop, price]
+  variants:
+    am: "ለ{crop} ቅናሽ ደርሷል - አንድ ኪሎ {price} ብር ነው"
+    om: "Beezniitii {crop} ga'eera - kiiloo tokko {price} qarshii dha"
+    en: "You received an offer for {crop} at {price} birr/kg"
+
+- id: offer_accepted
+  channel: sms
+  priority: Q2
+  placeholders: [crop, price]
+  variants:
+    am: "ቅናሽዎ ተቀባይነት አግኝቷል - {crop} {price} ብር"
+    om: "Beezniiteen kee fudhatameera - {crop} {price} qarshii"
+    en: "Your offer for {crop} was accepted at {price} birr/kg"
+
+- id: offer_rejected
+  channel: sms
+  priority: Q2
+  placeholders: [crop]
+  variants:
+    am: "ቅናሽዎ ውድቅ ሆኗል - {crop}"
+    om: "Beezniiteen kee haqamte - {crop}"
+    en: "Your offer for {crop} is no longer available"
