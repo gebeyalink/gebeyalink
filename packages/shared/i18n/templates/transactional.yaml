@@ -3,6 +3,7 @@
 - id: offer_received
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [crop, price]
   variants:
     am: "ለ{crop} ቅናሽ ደርሷል - አንድ ኪሎ {price} ብር ነው"
@@ -12,6 +13,7 @@
 - id: offer_accepted
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [crop, price]
   variants:
     am: "ቅናሽዎ ተቀባይነት አግኝቷል - {crop} {price} ብር"
@@ -21,6 +23,7 @@
 - id: offer_rejected
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [crop]
   variants:
     am: "ቅናሽዎ ውድቅ ሆኗል - {crop}"

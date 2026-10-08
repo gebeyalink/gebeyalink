@@ -6,6 +6,7 @@
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: "የGebeyaLink የማረጋገጫ ኮድዎ {code} ነው። ይህን ኮድ ለማንም አይንገሩ።"

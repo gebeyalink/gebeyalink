@@ -117,6 +117,7 @@ def test_an_optional_geez_variant_is_measured_when_present_and_skipped_when_abse
         "- id: tigrinya_otp\n"
         "  channel: sms\n"
         "  priority: Q1\n"
+        "  review_status: unreviewed\n"
         "  placeholders: [code]\n"
         "  variants:\n"
         '    am: "ኮድዎ {code}"\n'

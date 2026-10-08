@@ -3,6 +3,7 @@
 - id: price_digest_daily
   channel: sms
   priority: Q3
+  review_status: unreviewed
   placeholders: [crop, price]
   variants:
     am: "ዛሬ ዋጋ: {crop} {price} ብር ነው"
@@ -12,6 +13,7 @@
 - id: saved_search_digest
   channel: sms
   priority: Q3
+  review_status: unreviewed
   placeholders: [crop, price]
   variants:
     am: "የተቀመጠ ፍለጋ: {crop} {price} ብር ነው"

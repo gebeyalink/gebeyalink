@@ -21,6 +21,7 @@ pytestmark = pytest.mark.unit
 _NO_PRIORITY_YAML = """\
 - id: offer_expired_reminder
   channel: sms
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝ አልቋል"
@@ -32,6 +33,7 @@ _DUPLICATE_ID_YAML = """\
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: "ኮድዎ {code}"
@@ -40,6 +42,7 @@ _DUPLICATE_ID_YAML = """\
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: "ኮድዎ {code}"
@@ -51,6 +54,7 @@ _UNKNOWN_PRIORITY_YAML = """\
 - id: offer_expired_reminder
   channel: sms
   priority: Q9
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝ አልቋል"
@@ -62,6 +66,7 @@ _ANOTHER_CHANNEL_YAML = """\
 - id: welcome_digest
   channel: push
   priority: Q3
+  review_status: unreviewed
   placeholders: [crop]
   variants:
     am: "እንኳን ደህና መጡ {crop}"
@@ -73,6 +78,7 @@ _MISSING_AM_YAML = """\
 - id: order_funded
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     om: "Ajajni kee {order_code} gabaabbatee jira"
@@ -83,6 +89,7 @@ _UNKNOWN_VARIANT_LANGUAGE_YAML = """\
 - id: order_funded
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝዎ {order_code} ተረጋግጧል"
@@ -109,6 +116,7 @@ _ID_NOT_A_STRING_YAML = """\
 - id: 12345
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: "ኮድዎ {code}"
@@ -120,6 +128,7 @@ _PRIORITY_NOT_A_STRING_YAML = """\
 - id: auth_otp
   channel: sms
   priority: [Q1]
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: "ኮድዎ {code}"
@@ -131,6 +140,7 @@ _PLACEHOLDERS_NOT_A_LIST_YAML = """\
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: code
   variants:
     am: "ኮድዎ {code}"
@@ -142,6 +152,7 @@ _VARIANTS_NOT_A_MAPPING_YAML = """\
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants: [am, om, en]
 """
@@ -150,6 +161,7 @@ _VARIANT_TEXT_NOT_A_STRING_YAML = """\
 - id: auth_otp
   channel: sms
   priority: Q1
+  review_status: unreviewed
   placeholders: [code]
   variants:
     am: [x]

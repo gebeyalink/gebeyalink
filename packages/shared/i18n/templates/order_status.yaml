@@ -3,6 +3,7 @@
 - id: order_funded
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝዎ {order_code} ተረጋግጧል"
@@ -12,6 +13,7 @@
 - id: order_ready_for_pickup
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝዎ {order_code} ለመውሰድ ዝግጁ ነው"
@@ -21,6 +23,7 @@
 - id: order_shipped
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝዎ {order_code} ተልኳል"
@@ -30,6 +33,7 @@
 - id: order_delivered
   channel: sms
   priority: Q2
+  review_status: unreviewed
   placeholders: [order_code]
   variants:
     am: "ትዕዛዝዎ {order_code} ደርሷል"
