@@ -56,7 +56,14 @@ class TemplateReview(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MessageTemplate:
-    """One message, fully described: what to say, in which lane, in which languages."""
+    """One message, fully described: what to say, in which lane, in which languages.
+
+    ``review_status`` labels the template as a whole; ``variant_review_status`` is the
+    per-language provenance and is always complete. When a template's languages do not all
+    share one provenance — the specification supplies the English and the Amharic of a menu
+    while the Oromo is this team's draft — the map says which variant is which, and a lone
+    label would have had to lie about two of the three.
+    """
 
     id: str
     channel: str
@@ -64,6 +71,7 @@ class MessageTemplate:
     placeholders: tuple[str, ...]
     variants: dict[str, str]
     review_status: TemplateReview
+    variant_review_status: dict[str, TemplateReview]
 
 
 def load_templates(directory: Path | None = None) -> dict[str, MessageTemplate]:
@@ -120,13 +128,18 @@ def _validate_template(path: Path, parsed: Any) -> MessageTemplate:
             f"this registry knows only {', '.join(sorted(_KNOWN_CHANNELS))}"
         )
 
+    variants = _parse_variants(template_id, path, parsed["variants"])
+    review_status = _parse_review_status(template_id, path, parsed["review_status"])
     return MessageTemplate(
         id=template_id,
         channel=channel,
         priority=_parse_priority(template_id, path, parsed["priority"]),
         placeholders=_parse_placeholders(template_id, path, parsed["placeholders"]),
-        variants=_parse_variants(template_id, path, parsed["variants"]),
-        review_status=_parse_review_status(template_id, path, parsed["review_status"]),
+        variants=variants,
+        review_status=review_status,
+        variant_review_status=_parse_variant_review_status(
+            template_id, path, variants, review_status, parsed.get("variant_review_status")
+        ),
     )
 
 
@@ -165,16 +178,59 @@ def _parse_review_status(template_id: str, path: Path, raw: Any) -> TemplateRevi
 
 
 def _parse_placeholders(template_id: str, path: Path, raw: Any) -> tuple[str, ...]:
-    """The names a sender must supply before the message is rendered."""
-    if (
-        not isinstance(raw, list)
-        or not raw
-        or not all(isinstance(name, str) and name for name in raw)
-    ):
+    """The names a sender must supply before the message is rendered.
+
+    A static prompt names none and says so with an empty list. The message below is kept
+    exactly as Task 15a pinned it, even though the check now admits ``[]``: the contract the
+    earlier test asserts is unchanged, and a string or a missing field is still refused.
+    """
+    if not isinstance(raw, list) or not all(isinstance(name, str) and name for name in raw):
         raise ValueError(
             f"{path}: template {template_id!r} placeholders must be a non-empty list of names"
         )
     return tuple(raw)
+
+
+def _parse_variant_review_status(
+    template_id: str,
+    path: Path,
+    variants: dict[str, str],
+    review_status: TemplateReview,
+    raw: Any,
+) -> dict[str, TemplateReview]:
+    """The provenance of each language variant, complete or not written at all.
+
+    When a template's languages do not all share one provenance, this map says which variant
+    is which. It must be complete — every variant language a key — because a language left
+    out would be a language whose words carry no honest label, which is the very thing this
+    field exists to prevent. A map naming a language the template does not carry is a typo
+    and is refused by name. When the field is absent, the template's single ``review_status``
+    labels every variant.
+    """
+    if raw is None:
+        return dict.fromkeys(variants, review_status)
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{path}: template {template_id!r} variant_review_status must map a language to "
+            f"its provenance, got {type(raw).__name__}"
+        )
+    provided = set(raw)
+    expected = set(variants)
+    missing = sorted(expected - provided)
+    if missing:
+        raise ValueError(
+            f"{path}: template {template_id!r} variant_review_status is missing "
+            f"variant(s): {', '.join(missing)}"
+        )
+    unknown = sorted(provided - expected)
+    if unknown:
+        raise ValueError(
+            f"{path}: template {template_id!r} variant_review_status names unknown "
+            f"variant(s): {', '.join(unknown)}"
+        )
+    return {
+        language: _parse_review_status(template_id, path, value) for language, value in raw.items()
+    }
 
 
 def _parse_variants(template_id: str, path: Path, raw: Any) -> dict[str, str]:

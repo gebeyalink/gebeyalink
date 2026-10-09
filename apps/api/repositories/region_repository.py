@@ -25,3 +25,19 @@ class RegionRepository:
         stmt = select(Region.code).where(Region.code == code)
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
+
+    async def find(self, code: str) -> Region | None:
+        """One region by its code, for a screen that needs its name."""
+        stmt = select(Region).where(Region.code == code)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_all(self) -> list[Region]:
+        """Every region the platform knows, in the order a menu should show them.
+
+        Ordered by English name so that the menu stays stable across calls and across
+        installs. Thirteen rows, seeded by migration and read whole.
+        """
+        stmt = select(Region).order_by(Region.name_en)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

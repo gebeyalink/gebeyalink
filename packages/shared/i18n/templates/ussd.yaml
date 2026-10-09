@@ -1,0 +1,545 @@
+# The USSD menus of SPEC §14.2–§14.3, in the same registry and the same language budget as
+# the SMS copy.
+#
+# A USSD prompt is a message by the same rules as a text: written once, in every language,
+# classified once, and marked with who wrote its words. The lane is Q2 because these strings
+# are replies that never enter a queue — the lane exists because the registry requires a
+# classification, not because the USSD path routes through one.
+#
+# Two shapes recur here, and both are decisions rather than conveniences.
+#
+# A screen that lists rows is two registry entries: a heading with no placeholders and the
+# shared `ussd_rows` sentence the pre-rendered rows are substituted into. The heading is a
+# sentence and the rows are data, and keeping them apart lets the same row template render a
+# listing, an offer or an order without a second copy of the layout.
+#
+# A reason line carries no marker. The renderer prepends `❌ `, so the sentence here reads as
+# a sentence and the error convention lives in exactly one place.
+
+- id: ussd_greeting
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: spec_supplied
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: "ገበያሊንክ እንኳን ደህና መጡ"
+    om: "Baga nagaan dhuftan GebeyaLink"
+    en: "Welcome to GebeyaLink"
+
+- id: ussd_language_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: |-
+      1. አማርኛ
+      2. English
+      3. Afaan Oromoo
+    om: |-
+      1. አማርኛ
+      2. English
+      3. Afaan Oromoo
+    en: |-
+      1. አማርኛ
+      2. English
+      3. Afaan Oromoo
+
+- id: ussd_resume_prompt
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: unreviewed
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: |-
+      1. ያለፈውን ማስታወቂያ ይቀጥሉ?
+      2. ዋና ምናሌ
+    om: |-
+      1. Beeksisa duraanii itti fufi?
+      2. Baafata Guddaa
+    en: |-
+      1. Resume previous listing?
+      2. Main Menu
+
+- id: ussd_main_menu
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: spec_supplied
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: |-
+      1. ዝግጅቶቼ
+      2. ምርቶችን ማየት
+      3. ትዕዛዞቼ
+      4. ዛሬ ዋጋ
+      5. እርዳታ
+    om: |-
+      1. Gabaa koo
+      2. Midhaan ilaaluu
+      3. Ajaja koo
+      4. Gatii har'aa
+      5. Gargaarsa
+    en: |-
+      1. My Listings
+      2. Browse Crops
+      3. My Orders
+      4. Today's Prices
+      5. Help
+
+- id: ussd_listings_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [active_count, paused_count]
+  variants:
+    am: |-
+      1. አዲስ ማስታወቂያ
+      2. ንቁ ({active_count})
+      3. ቆሟል ({paused_count})
+    om: |-
+      1. Beeksisa haaraa
+      2. Socho'aa ({active_count})
+      3. Dhaabate ({paused_count})
+    en: |-
+      1. New listing
+      2. Active ({active_count})
+      3. Paused ({paused_count})
+
+- id: ussd_new_listing_placeholder
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ከ USSD አዲስ ማስታወቂያ በቅርቡ ይመጣል። እባክዎ መተግበሪያውን ይጠቀሙ።"
+    om: "Beeksisa haaraa USSD irraa dhiyootti ni dhufa. Appilikeeshinii fayyadamaa."
+    en: "New listings from USSD are coming soon. Please use the app for now."
+
+- id: ussd_active_listings
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ንቁ ማስታወቂያዎችዎ:"
+    om: "Beeksisawwan kee socho'aa:"
+    en: "Your active listings:"
+
+- id: ussd_paused_listings
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "የቆሙ ማስታወቂያዎችዎ:"
+    om: "Beeksisawwan kee dhaabatan:"
+    en: "Your paused listings:"
+
+- id: ussd_no_listings
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "እዚህ ማስታወቂያ የለዎትም።"
+    om: "Asitti beeksisa hin qabdu."
+    en: "You have no listings here."
+
+- id: ussd_rows
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [rows]
+  variants:
+    am: "{rows}"
+    om: "{rows}"
+    en: "{rows}"
+
+- id: ussd_listing_row
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code, crop, quantity_kg, price]
+  variants:
+    am: "{code} {crop} {quantity_kg}ኪግ @{price} ብር"
+    om: "{code} {crop} {quantity_kg}kg @{price} ETB"
+    en: "{code} {crop} {quantity_kg}kg @{price} ETB"
+
+- id: ussd_offers_header
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code]
+  variants:
+    am: "በ{code} ላይ ቅናሾች:"
+    om: "Dhiyeessiiwwan {code} irratti:"
+    en: "Offers on {code}:"
+
+- id: ussd_offer_line
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [quantity_kg, price]
+  variants:
+    am: "{quantity_kg}ኪግ @{price} ብር/ኪግ"
+    om: "{quantity_kg}kg @{price} ETB/kg"
+    en: "{quantity_kg}kg @{price} ETB/kg"
+
+- id: ussd_offer_actions
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: unreviewed
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: "1 ተቀበል 2 አትቀበል 3 መልስ"
+    om: "1 fudhadhu 2 didi 3 deebisi"
+    en: "Reply 1 accept 2 reject 3 counter"
+
+- id: ussd_offer_accepted
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ቅናሹ ተቀብሏል። ትዕዛዝ ይከተላል።"
+    om: "Dhiyeessiin fudhatame. Ajajni ni hordofa."
+    en: "Offer accepted. An order will follow."
+
+- id: ussd_offer_rejected
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ቅናሹ ተከልክሏል።"
+    om: "Dhiyeessiin didame."
+    en: "Offer rejected."
+
+- id: ussd_crop_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ምርት ይምረጡ:"
+    om: "Midhaan filadhu:"
+    en: "Choose a crop:"
+
+- id: ussd_region_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [last_used]
+  variants:
+    am: "የመጨረሻ ጥቅም: {last_used}\nክልል ይምረጡ:"
+    om: "Dhumaatti: {last_used}\nNaannoo filadhu:"
+    en: "Last used: {last_used}\nChoose a region:"
+
+- id: ussd_result_detail
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [crop, quantity_kg, price, place, distance]
+  variants:
+    am: "{crop} {quantity_kg}ኪግ @{price} ብር — {place}{distance}"
+    om: "{crop} {quantity_kg}kg @{price} ETB — {place}{distance}"
+    en: "{crop} {quantity_kg}kg @{price} ETB — {place}{distance}"
+
+- id: ussd_result_options
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [next]
+  variants:
+    am: |-
+      1. ቅናሽ አድርግ
+      {next}
+    om: |-
+      1. Dhiyeessi
+      {next}
+    en: |-
+      1. Make offer
+      {next}
+
+- id: ussd_quantity_prompt
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ብዛት በኪግ?"
+    om: "Baay'ina kg?"
+    en: "Quantity in kg?"
+
+- id: ussd_price_prompt
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ዋጋ በኪግ ብር?"
+    om: "Gatii kg ETB?"
+    en: "Price per kg in ETB?"
+
+- id: ussd_offer_confirm
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [quantity_kg, price]
+  variants:
+    am: |-
+      ቅናሽ {quantity_kg}ኪግ @{price} ብር/ኪግ?
+      1. አረጋግጥ
+    om: |-
+      Dhiyeessi {quantity_kg}kg @{price} ETB/kg?
+      1. Mirkaneessi
+    en: |-
+      Offer {quantity_kg}kg @{price} ETB/kg?
+      1. Confirm
+
+- id: ussd_offer_placed
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code]
+  variants:
+    am: "ቅናሽ ተልኳል: {code}"
+    om: "Dhiyeessiin ergame: {code}"
+    en: "Offer sent: {code}"
+
+- id: ussd_orders_menu
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: |-
+      1. በገንዘብ በመጠበቅ
+      2. በሂደት
+      3. ተጠናቅቋል
+    om: |-
+      1. Maallaqa eeggachaa
+      2. Adeemsa keessa
+      3. Xumurame
+    en: |-
+      1. Awaiting funding
+      2. In progress
+      3. Completed
+
+- id: ussd_orders_awaiting
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "በገንዘብ የሚጠብቁ:"
+    om: "Maallaqa eeggatan:"
+    en: "Awaiting funding:"
+
+- id: ussd_orders_in_progress
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "በሂደት ላይ:"
+    om: "Adeemsa keessa:"
+    en: "In progress:"
+
+- id: ussd_orders_completed
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "የተጠናቀቁ:"
+    om: "Xumuraman:"
+    en: "Completed:"
+
+- id: ussd_no_orders
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "እዚህ ትዕዛዝ የለዎትም።"
+    om: "Asitti ajaja hin qabdu."
+    en: "You have no orders here."
+
+- id: ussd_order_row
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code, quantity_kg, status]
+  variants:
+    am: "{code} {quantity_kg}ኪግ {status}"
+    om: "{code} {quantity_kg}kg {status}"
+    en: "{code} {quantity_kg}kg {status}"
+
+- id: ussd_order_buyer_view
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [order_code, pickup_code]
+  variants:
+    am: "ትዕዛዝ {order_code}: የመውሰጃ ኮድ {pickup_code}"
+    om: "Ajaja {order_code}: koodii fudannaa {pickup_code}"
+    en: "Order {order_code}: pickup code {pickup_code}"
+
+- id: ussd_enter_pickup_code
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: unreviewed
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: "የመውሰጃ ኮድ ያስገቡ"
+    om: "Koodii fudannaa galchi"
+    en: "Enter pickup code"
+
+- id: ussd_delivered
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [order_code]
+  variants:
+    am: "የ{order_code} አቅርቦት ተረጋግጧል።"
+    om: "Geessuu {order_code} mirkanaa'e."
+    en: "Delivery for {order_code} confirmed."
+
+- id: ussd_price_board
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: unreviewed
+    om: unreviewed
+    en: spec_supplied
+  placeholders: [region, prices]
+  variants:
+    am: "የዛሬ አማካይ ({region}): {prices}"
+    om: "Giddu-galeessa har'aa ({region}): {prices}"
+    en: "Today's avg ({region}): {prices}"
+
+- id: ussd_price_row
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  placeholders: [crop, price]
+  variants:
+    am: "{crop} {price}/q"
+    om: "{crop} {price}/q"
+    en: "{crop} {price}/q"
+
+- id: ussd_price_unavailable
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ዋጋ አሁን አይገኝም።"
+    om: "Gatiin amma hin jiru."
+    en: "Prices are not available right now."
+
+- id: ussd_help
+  channel: ussd
+  priority: Q2
+  review_status: spec_supplied
+  variant_review_status:
+    am: unreviewed
+    om: unreviewed
+    en: spec_supplied
+  placeholders: []
+  variants:
+    am: "951 በነጻ ይደውሉ / SMS HELP. በቀበሌዎ ያሉ ወኪሎች ይረዱዎታል።"
+    om: "951 bilbilaa bilisaa / SMS HELP. Bakka bu'oonni ganda keetti si gargaaru."
+    en: "Call 951 free / SMS HELP. Agents in your kebele can assist."
+
+- id: register_prompt_ussd
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [ussd]
+  variants:
+    am: "ይህ ቁጥር አልተመዘገበም። ለመመዝገብ {ussd} ይደውሉ።"
+    om: "Lakkoofsi kun hin galmoofne. Galmaa'uuf {ussd} bilbilaa."
+    en: "This number is not registered. To register, dial {ussd}."
+
+- id: error_invalid_choice
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ከአማራጮቹ አንዱን ይምረጡ።"
+    om: "Filannoo keessaa tokko filadhu."
+    en: "Please choose one of the options."
+
+- id: error_digits
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ቁጥር ያስገቡ።"
+    om: "Lakkoofsa galchi."
+    en: "Please enter a number."
+
+- id: error_wrong_code
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "የመውሰጃ ኮዱ አልተመሳሰለም።"
+    om: "Koodiin fudannaa hin walsimu."
+    en: "That pickup code did not match."
+
+- id: error_unavailable
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ያ አሁን አይገኝም።"
+    om: "Sun amma hin jiru."
+    en: "That is not available right now."
+
+- id: error_profile_incomplete
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [missing]
+  variants:
+    am: "መገለጫዎ ይጎድላል: {missing}"
+    om: "Odeeffannoon kee hin guutne: {missing}"
+    en: "Your profile is missing: {missing}"
+
+- id: ussd_no_results
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ምንም ማስታወቂያ አልተገኘም።"
+    om: "Beeksisni hin argamne."
+    en: "No listings matched."

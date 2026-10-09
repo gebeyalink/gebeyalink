@@ -71,6 +71,8 @@ packages = [
     "packages.shared",
     "packages.shared.i18n",
     "packages.shared.messaging",
+    "packages.ussd",
+    "packages.ussd.trees",
 ]
 
 [tool.setuptools.package-data]

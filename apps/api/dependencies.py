@@ -12,7 +12,7 @@ what was sent, and a fresh instance per request would remember nothing.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import Depends, Header, Request
 from redis.asyncio import Redis
@@ -48,7 +48,11 @@ from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
 from apps.api.services.search_service import SearchService
 from apps.api.services.sms_command_gateway import SmsCommandGateway
+from apps.api.services.ussd_gateway import UssdGateway
 from packages.shared.errors import ApiError, ErrorCode
+from packages.ussd.session import RedisLike, SessionStore
+from packages.ussd.trees import build_nodes
+from packages.ussd.trees.model import Node
 
 
 def get_settings(request: Request) -> Settings:
@@ -277,3 +281,52 @@ def get_sms_gateway(
 
 
 SmsCommandGatewayDep = Annotated[SmsCommandGateway, Depends(get_sms_gateway)]
+
+
+def get_ussd_gateway(
+    db_session: db_session_dep, settings: settings_dep, redis: redis_dep
+) -> UssdGateway:
+    """Everything the USSD engine needs, over the one session this request owns.
+
+    Built the way the SMS gateway is: the services are the same ones their own endpoints
+    build, sharing this session, so a bid placed by dialling and one placed by app are
+    written by the same code against the same transaction.
+    """
+    return UssdGateway(
+        users=UserRepository(db_session),
+        profiles=ProfileRepository(db_session),
+        crops=CropRepository(db_session),
+        price_indices=PriceIndexRepository(db_session),
+        listings=ListingRepository(db_session),
+        offers=OfferRepository(db_session),
+        orders=OrderRepository(db_session),
+        regions=RegionRepository(db_session),
+        woredas=WoredaRepository(db_session),
+        search=SearchRepository(db_session),
+        offer_service=get_offer_service(db_session),
+        order_service=get_order_service(db_session, settings, redis),
+    )
+
+
+UssdGatewayDep = Annotated[UssdGateway, Depends(get_ussd_gateway)]
+
+
+def get_ussd_session_store(redis: redis_dep) -> SessionStore:
+    """The sessions, drafts and language choices of the USSD channel.
+
+    ``redis.asyncio.Redis`` and the store's ``RedisLike`` protocol describe the same three
+    calls with the same effect; only their parameter spellings differ, so a cast names that
+    we are plugging the concrete client into the seam it was defined for.
+    """
+    return SessionStore(cast(RedisLike, redis))
+
+
+UssdSessionStoreDep = Annotated[SessionStore, Depends(get_ussd_session_store)]
+
+
+def get_ussd_engine() -> dict[str, Node]:
+    """The whole menu graph, validated against the registry at build time."""
+    return build_nodes()
+
+
+ussd_engine_dep = Annotated[dict[str, Node], Depends(get_ussd_engine)]

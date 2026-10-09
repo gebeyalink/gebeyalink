@@ -24,7 +24,8 @@ pytestmark = pytest.mark.unit
 
 #: Placeholder fixtures the budget is measured against: six characters for a code, nine
 #: for an order code, four for a quantity and a price. The SMS-command templates add a short
-#: code, a status, a token and a field name, each as wide as the value it will carry.
+#: code, a status, a token and a field name, each as wide as the value it will carry. The
+#: USSD menus add the counts and the pre-rendered row blob a listing or order screen shows.
 PLACEHOLDER_FIXTURES: Final[dict[str, str]] = {
     "code": "123456",
     "order_code": "GL-123456",
@@ -38,6 +39,16 @@ PLACEHOLDER_FIXTURES: Final[dict[str, str]] = {
     "count": "0",
     "token": "A1B2C3D4",
     "missing": "address",
+    "active_count": "12",
+    "paused_count": "3",
+    "rows": "1. Teff 1000kg @2450 ETB — Adaa (12km)",
+    "next": "2. Next page",
+    "last_used": "Oromia",
+    "region": "Oromia",
+    "prices": "Teff 4,850/q",
+    "place": "Adaa",
+    "distance": " (12km)",
+    "pickup_code": "493821",
 }
 
 #: What one SMS segment carries per writing system: Latin characters are GSM, Ge'ez is
@@ -137,3 +148,24 @@ def test_an_optional_geez_variant_is_measured_when_present_and_skipped_when_abse
     template = load_templates(tmp_path)["tigrinya_otp"]
     rendered = template.variants["ti"].format(code="123456")
     assert within_single_segment(rendered, "ti") is True
+
+
+def test_a_static_prompt_with_no_placeholders_loads_and_renders(tmp_path: Path) -> None:
+    """A prompt that names no values declares an empty list, and renders as it stands."""
+    (tmp_path / "static.yaml").write_text(
+        "- id: ussd_help\n"
+        "  channel: ussd\n"
+        "  priority: Q2\n"
+        "  review_status: unreviewed\n"
+        "  placeholders: []\n"
+        "  variants:\n"
+        '    am: "951 በነጻ ይደውሉ"\n'
+        '    om: "951 bilbilaa bilisaa"\n'
+        '    en: "Call 951 free"\n',
+        encoding="utf-8",
+    )
+    template = load_templates(tmp_path)["ussd_help"]
+    assert template.placeholders == ()
+    for language, text in template.variants.items():
+        rendered = text.format(**_fixtures_for(template))
+        assert within_single_segment(rendered, language) is True

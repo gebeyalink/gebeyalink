@@ -31,3 +31,9 @@ class WoredaRepository:
         stmt = stmt.order_by(Woreda.id)
         result = await self._session.execute(stmt)
         return result.scalars().all()
+
+    async def find_by_id(self, woreda_id: int) -> Woreda | None:
+        """One woreda by its identity, for a screen that needs a place name."""
+        stmt = select(Woreda).where(Woreda.id == woreda_id)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()

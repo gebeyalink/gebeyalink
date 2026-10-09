@@ -1255,6 +1255,49 @@ def sms_inbound() -> Callable[..., httpx.Response]:
 
 
 @pytest.fixture()
+def ussd_session() -> Callable[..., httpx.Response]:
+    """Deliver one keypress to the USSD ingress the way the gateway delivers one.
+
+    Signed over the exact bytes posted, for the same reason the SMS webhook is: the body is
+    built once here and both the signature and the request use it, so the check runs against
+    these bytes and not against a re-rendering of them. The gateway's three fields are only
+    ``sessionId``, ``phoneNumber`` and ``text``, which is the whole of the message.
+    """
+
+    def _ussd_session(
+        client: TestClient,
+        text: str = "",
+        *,
+        session_id: str = "tst-0001",
+        phone_number: str = "+251911000001",
+        secret: str = GATEWAY_SECRET,
+        signature: str | None = None,
+        omit_signature: bool = False,
+        raw_body: bytes | None = None,
+    ) -> httpx.Response:
+        body = (
+            raw_body
+            if raw_body is not None
+            else urlencode(
+                {
+                    "sessionId": session_id,
+                    "phoneNumber": phone_number,
+                    "text": text,
+                }
+            ).encode("utf-8")
+        )
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if not omit_signature:
+            headers["X-AT-Signature"] = (
+                signature if signature is not None else sign_gateway_body(secret, body)
+            )
+        response: httpx.Response = client.post("/v1/ussd/session", content=body, headers=headers)
+        return response
+
+    return _ussd_session
+
+
+@pytest.fixture()
 def issue_action_token(postgres_url: str) -> Callable[..., str]:
     """Mint an action token straight into the table, because issuance is a later slice.
 

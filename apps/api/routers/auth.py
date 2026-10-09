@@ -11,7 +11,7 @@ the codes themselves. The answer is the same in both cases: a code is on its way
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Header, Request, Response, status
 
@@ -23,6 +23,7 @@ from apps.api.dependencies import (
     get_rate_limit_service,
     get_settings,
     get_sms_provider,
+    redis_dep,
 )
 from apps.api.providers.sms import SmsProvider
 from apps.api.schemas.auth import (
@@ -39,6 +40,7 @@ from apps.api.services.rate_limit_service import RateLimitService
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n import resolve_language
 from packages.shared.phone import is_valid_ethiopian_mobile
+from packages.ussd.session import RedisLike, SessionStore
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -169,6 +171,7 @@ async def verify_otp(
     body: OtpVerifyBody,
     auth: AuthDep,
     settings: SettingsDep,
+    redis: redis_dep,
     accept_language: Annotated[str | None, Header()] = None,
 ) -> TokenPairResponse:
     """Exchange a verification code for a session, registering the trader if new."""
@@ -179,12 +182,18 @@ async def verify_otp(
     # that merely reads in another language is not. The service draws that distinction.
     language = body.language or header_language
 
+    # A handset that already chose a language on the USSD channel keeps that choice on first
+    # sign-in: the stored value travels in as ``stored_language`` and the service adopts it
+    # until the app itself states something newer.
+    stored_language = await SessionStore(cast(RedisLike, redis)).load_language(body.phone_e164)
+
     signed_in = await auth.sign_in_with_code(
         phone_e164=body.phone_e164,
         code=body.code,
         terms_version=body.terms_version,
         language=language,
         stated_language=body.language,
+        stored_language=stored_language,
     )
     user = signed_in.user
     set_language(user.language)

@@ -77,6 +77,7 @@ class AuthService:
         terms_version: str,
         language: Language,
         stated_language: Language | None = None,
+        stored_language: Language | None = None,
     ) -> SignedInSession:
         """Verify a code, then create or recover the account behind the number.
 
@@ -88,11 +89,16 @@ class AuthService:
         accepted_at = datetime.now(UTC)
         existing = await self._users.find_by_phone(phone_e164)
         if existing is None:
+            # A new account takes the language this handset already chose. A choice made in
+            # this request (``stated_language``) wins, because it is newer and it is the
+            # trader's; next the choice the USSD channel stored for this number, which is
+            # also the trader's hand; last the default the caller happened to read in.
+            effective_language = stated_language or stored_language or language
             user = User(
                 id=uuid.uuid4(),
                 phone_e164=phone_e164,
                 role=DEFAULT_PRIMARY_ROLE,
-                language=language,
+                language=effective_language,
                 status=AccountStatus.ACTIVE,
             )
             await self._users.add(user)
