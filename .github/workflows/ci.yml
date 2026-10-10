@@ -633,6 +633,51 @@ jobs:
       # step id that does not exist in this job, so it uploaded nothing - and it would have
       # uploaded a second, redundant copy had either half been right.
 
+  openapi-snapshot:
+    name: openapi snapshot (contract drift)
+    runs-on: ubuntu-latest
+    # The served schema is checked in as a file, and this job is what keeps the file honest:
+    # it regenerates the schema from the code and compares byte-for-byte. A mismatch means
+    # either the code changed the contract or the framework that emits it moved underfoot, and
+    # the message below tells the reader which fix applies. It does not use `git diff` on the
+    # tracked path - that would only prove the file is committed, not that it matches a fresh
+    # generation. The baseline-method hash the generator also prints is deliberately NOT
+    # checked here: it is a one-time proof, not a gate.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]'
+      - name: regenerate the snapshot to a temporary path
+        run: python -m apps.api.snapshot --write "$RUNNER_TEMP/openapi.snapshot.json"
+      - name: compare with the tracked snapshot
+        run: |
+          if cmp -s "$RUNNER_TEMP/openapi.snapshot.json" apps/api/openapi.snapshot.json; then
+            echo "the OpenAPI snapshot matches the code"
+            exit 0
+          fi
+          cat <<'EOF'
+          The OpenAPI snapshot does not match what this environment generates.
+
+          If pyproject.toml has not changed since the snapshot was last written, this is likely a
+          framework version drift: the environment resolved a different FastAPI / Pydantic pair than
+          the one the snapshot was generated under.
+
+          If pyproject.toml has changed, or you changed code, this is a code change: regenerate the
+          snapshot locally and commit it in the same commit as the change.
+
+          Either way, the fix is local:
+
+            python -m apps.api.snapshot --write apps/api/openapi.snapshot.json
+
+          Then commit apps/api/openapi.snapshot.json.
+
+          Do not regenerate the snapshot from CI output. Reconciliation is one-way (bring the local
+          environment up to CI's resolution, not the reverse).
+          EOF
+          exit 1
+
   ci-green:
     name: ci green (merge gate)
     runs-on: ubuntu-latest
@@ -650,6 +695,7 @@ jobs:
       - build-mobile
       - build-admin
       - zap-baseline
+      - openapi-snapshot
     # The gate is this condition, and nothing else.
     #
     # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per

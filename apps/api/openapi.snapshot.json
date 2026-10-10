@@ -1,0 +1,4369 @@
+{
+  "components": {
+    "schemas": {
+      "AccountStatus": {
+        "description": "Where an account stands with the platform.\n\nOnly SUSPENDED and CLOSED stop a person transacting outright. RECOVERY and COOLDOWN are\ntemporary states a person passes through on their way back to ACTIVE, which is why they\nare separate values rather than flags on an active account.",
+        "enum": [
+          "ACTIVE",
+          "RECOVERY",
+          "COOLDOWN",
+          "FROZEN",
+          "SUSPENDED",
+          "CLOSED"
+        ],
+        "title": "AccountStatus",
+        "type": "string"
+      },
+      "CropBaseUnit": {
+        "description": "The unit a price for this crop is quoted in.",
+        "enum": [
+          "KG",
+          "UNIT"
+        ],
+        "title": "CropBaseUnit",
+        "type": "string"
+      },
+      "CropCategory": {
+        "description": "What kind of thing a crop is, which is how the catalogue is grouped.",
+        "enum": [
+          "CEREALS",
+          "PULSES",
+          "OILSEEDS",
+          "FRUITS",
+          "VEGETABLES",
+          "COFFEE",
+          "LIVESTOCK",
+          "OTHER"
+        ],
+        "title": "CropCategory",
+        "type": "string"
+      },
+      "CropSummary": {
+        "description": "A crop as the contract describes it.\n\nTigrinya is carried in the database for a future pilot but is not part of this contract,\nso it is not sent; `name_om` is, because the contract asks for it.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "base_unit": {
+            "$ref": "#/components/schemas/CropBaseUnit"
+          },
+          "category": {
+            "$ref": "#/components/schemas/CropCategory"
+          },
+          "escrow_hold_hours": {
+            "title": "Escrow Hold Hours",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name_am": {
+            "title": "Name Am",
+            "type": "string"
+          },
+          "name_en": {
+            "title": "Name En",
+            "type": "string"
+          },
+          "name_om": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name Om"
+          }
+        },
+        "required": [
+          "id",
+          "name_en",
+          "name_am",
+          "name_om",
+          "category",
+          "base_unit",
+          "active",
+          "escrow_hold_hours"
+        ],
+        "title": "CropSummary",
+        "type": "object"
+      },
+      "CursorPage_ListingResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ListingResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[ListingResponse]",
+        "type": "object"
+      },
+      "CursorPage_OrderResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/OrderResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[OrderResponse]",
+        "type": "object"
+      },
+      "DeliveryOption": {
+        "description": "How the buyer may take the crop away.\n\n`SELLER_DELIVERY` is the one a fee attaches to. `TRANSPORT_PARTNER` means the buyer\narranges it themselves, so there is no fee for us to hold.",
+        "enum": [
+          "PICKUP",
+          "SELLER_DELIVERY",
+          "TRANSPORT_PARTNER"
+        ],
+        "title": "DeliveryOption",
+        "type": "string"
+      },
+      "FeePayer": {
+        "description": "Which side of the order funds the platform fee and its VAT.\n\nRead from configuration, because it is a commercial decision rather than a calculation:\nthe same arithmetic holds whichever side is chosen, and only the split moves. It is a\nstring enum so that the setting can be written `SPLIT_50` in an environment variable and\nstored in that form, without a mapping table translating it on the way in.",
+        "enum": [
+          "BUYER",
+          "SELLER",
+          "SPLIT_50"
+        ],
+        "title": "FeePayer",
+        "type": "string"
+      },
+      "GpsPoint": {
+        "additionalProperties": false,
+        "description": "A place, given as the trader would say it.",
+        "properties": {
+          "latitude": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude",
+            "type": "number"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "GpsPoint",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthStatus": {
+        "description": "What the probe reports.\n\nDeliberately plain: a body a client can parse without knowing anything about us.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthStatus",
+        "type": "object"
+      },
+      "Language": {
+        "description": "Languages a user may choose, stored per account.",
+        "enum": [
+          "am",
+          "om",
+          "en"
+        ],
+        "title": "Language",
+        "type": "string"
+      },
+      "ListingCreateBody": {
+        "additionalProperties": false,
+        "description": "A listing as a seller states it.\n\nEverything here is what the seller knows at the moment of posting. What the platform\nadds around it — the source it arrived through, the status it starts in, the short code\nit is quoted by — is not accepted from the client, because a client that could set its\nown status could also set a listing that was never reviewed.\n\n``expires_at`` is optional because a listing that nobody thought about should still be\npostable: thirty days is the default the specification gives.",
+        "properties": {
+          "available_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available From"
+          },
+          "crop_id": {
+            "minimum": 1.0,
+            "title": "Crop Id",
+            "type": "integer"
+          },
+          "delivery_fee_santim": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Delivery Fee Santim",
+            "type": "integer"
+          },
+          "delivery_options": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryOption"
+            },
+            "minItems": 1,
+            "title": "Delivery Options",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "harvest_date": {
+            "format": "date",
+            "title": "Harvest Date",
+            "type": "string"
+          },
+          "listing_attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listing Attributes"
+          },
+          "min_order_kg": {
+            "minimum": 1.0,
+            "title": "Min Order Kg",
+            "type": "integer"
+          },
+          "organic": {
+            "default": false,
+            "title": "Organic",
+            "type": "boolean"
+          },
+          "photos": {
+            "items": {
+              "$ref": "#/components/schemas/PhotoInput"
+            },
+            "maxItems": 5,
+            "title": "Photos",
+            "type": "array"
+          },
+          "quantity_kg": {
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "region_code": {
+            "maxLength": 2,
+            "minLength": 2,
+            "title": "Region Code",
+            "type": "string"
+          },
+          "unit_price_santim": {
+            "exclusiveMinimum": 0.0,
+            "title": "Unit Price Santim",
+            "type": "integer"
+          },
+          "woreda_id": {
+            "minimum": 1.0,
+            "title": "Woreda Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "crop_id",
+          "quantity_kg",
+          "min_order_kg",
+          "unit_price_santim",
+          "harvest_date",
+          "region_code",
+          "woreda_id",
+          "delivery_options"
+        ],
+        "title": "ListingCreateBody",
+        "type": "object"
+      },
+      "ListingResponse": {
+        "additionalProperties": false,
+        "description": "A listing as it is read back.\n\nThe seller's own point on the map is not here, and neither is which account an agent\nwrote on another's behalf. Everything published about a listing is what a buyer needs in\norder to decide whether to buy it.",
+        "properties": {
+          "available_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available From"
+          },
+          "available_kg": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available Kg"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "crop_id": {
+            "title": "Crop Id",
+            "type": "integer"
+          },
+          "delivery_fee_santim": {
+            "title": "Delivery Fee Santim",
+            "type": "integer"
+          },
+          "delivery_options": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryOption"
+            },
+            "title": "Delivery Options",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "harvest_date": {
+            "format": "date",
+            "title": "Harvest Date",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "listing_attributes": {
+            "additionalProperties": true,
+            "title": "Listing Attributes",
+            "type": "object"
+          },
+          "min_order_kg": {
+            "title": "Min Order Kg",
+            "type": "integer"
+          },
+          "organic": {
+            "title": "Organic",
+            "type": "boolean"
+          },
+          "photos": {
+            "items": {
+              "$ref": "#/components/schemas/PhotoResponse"
+            },
+            "title": "Photos",
+            "type": "array"
+          },
+          "price_outlier": {
+            "title": "Price Outlier",
+            "type": "boolean"
+          },
+          "quantity_kg": {
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "region_code": {
+            "title": "Region Code",
+            "type": "string"
+          },
+          "short_code": {
+            "title": "Short Code",
+            "type": "string"
+          },
+          "sold_kg": {
+            "title": "Sold Kg",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ListingStatus"
+          },
+          "unit_price_santim": {
+            "title": "Unit Price Santim",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "woreda_id": {
+            "title": "Woreda Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "short_code",
+          "crop_id",
+          "quantity_kg",
+          "sold_kg",
+          "available_kg",
+          "min_order_kg",
+          "unit_price_santim",
+          "harvest_date",
+          "available_from",
+          "expires_at",
+          "region_code",
+          "woreda_id",
+          "delivery_options",
+          "delivery_fee_santim",
+          "organic",
+          "description",
+          "status",
+          "price_outlier",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ListingResponse",
+        "type": "object"
+      },
+      "ListingStatus": {
+        "description": "Where a listing sits in its life.\n\nThe transitions between these are not free; they are the state table, and one guard in\nthe service layer decides which of them are allowed.",
+        "enum": [
+          "DRAFT",
+          "ACTIVE",
+          "PAUSED",
+          "SOLD_OUT",
+          "EXPIRED",
+          "SUSPENDED",
+          "CLOSED"
+        ],
+        "title": "ListingStatus",
+        "type": "string"
+      },
+      "ListingUpdateBody": {
+        "additionalProperties": false,
+        "description": "A change to some of a seller's own listing.\n\nA merge, so an absent field means leave it alone. That is why a nullable field cannot be\nunset by omitting it: clearing one is an explicit value, and this slice does not offer a\nway to tell \"absent\" from \"empty\" for text. ``version`` is required, because an edit\nthat is not sure what it is editing is how two phones overwrite each other.\n\nNot editable here, deliberately: ``status`` moves only through the lifecycle endpoints,\n``short_code`` is quoted to buyers already and cannot be changed under them, ``sold_kg``\nis written by orders rather than by their seller, and the crop, the region and the woreda\nare what the listing is an offer *of*, *where* and *in*. Those four have no field here at\nall rather than a field that is quietly ignored, so a client that tries finds out.",
+        "properties": {
+          "available_from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available From"
+          },
+          "delivery_fee_santim": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Fee Santim"
+          },
+          "delivery_options": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DeliveryOption"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Options"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "harvest_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harvest Date"
+          },
+          "listing_attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listing Attributes"
+          },
+          "min_order_kg": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Order Kg"
+          },
+          "organic": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organic"
+          },
+          "photos": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PhotoInput"
+                },
+                "maxItems": 5,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photos"
+          },
+          "quantity_kg": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity Kg"
+          },
+          "unit_price_santim": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price Santim"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "ListingUpdateBody",
+        "type": "object"
+      },
+      "OfferCounterBody": {
+        "additionalProperties": false,
+        "description": "A seller's answer to an open offer, on different or the same terms.\n\nThe same shape as an opening bid on purpose. A counter is a new offer with new terms, and\nholding it to the same bounds as an opening bid is what stops an answer from being a way to\npropose something an opening bid could not have proposed.",
+        "properties": {
+          "price_santim": {
+            "exclusiveMinimum": 0.0,
+            "title": "Price Santim",
+            "type": "integer"
+          },
+          "quantity_kg": {
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "valid_hours": {
+            "default": 72,
+            "maximum": 168.0,
+            "minimum": 24.0,
+            "title": "Valid Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quantity_kg",
+          "price_santim"
+        ],
+        "title": "OfferCounterBody",
+        "type": "object"
+      },
+      "OfferCreateBody": {
+        "additionalProperties": false,
+        "description": "The terms a buyer is bidding.\n\nOnly what is relative to the listing is left out: the ceiling of twice the asking price and\nthe weight floor of the listing's minimum order are both rules about a listing this request\ndoes not carry, so they are checked where the listing is read.",
+        "properties": {
+          "price_santim": {
+            "exclusiveMinimum": 0.0,
+            "title": "Price Santim",
+            "type": "integer"
+          },
+          "quantity_kg": {
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "valid_hours": {
+            "default": 72,
+            "maximum": 168.0,
+            "minimum": 24.0,
+            "title": "Valid Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "quantity_kg",
+          "price_santim"
+        ],
+        "title": "OfferCreateBody",
+        "type": "object"
+      },
+      "OfferResponse": {
+        "additionalProperties": false,
+        "description": "An offer as it is read back.\n\n`status` is the derived one, so an offer whose window has closed reads as expired rather\nthan as a standing bid nobody has answered. `proposed_by` is derived from the depth for the\nsame reason: a client deciding what it may do next needs to know whose turn it is.",
+        "properties": {
+          "buyer_id": {
+            "format": "uuid",
+            "title": "Buyer Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "listing_id": {
+            "format": "uuid",
+            "title": "Listing Id",
+            "type": "string"
+          },
+          "price_santim": {
+            "title": "Price Santim",
+            "type": "integer"
+          },
+          "proposed_by": {
+            "$ref": "#/components/schemas/Proposer"
+          },
+          "quantity_kg": {
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OfferStatus"
+          },
+          "thread_depth": {
+            "minimum": 0.0,
+            "title": "Thread Depth",
+            "type": "integer"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "valid_until": {
+            "format": "date-time",
+            "title": "Valid Until",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "listing_id",
+          "buyer_id",
+          "thread_id",
+          "thread_depth",
+          "quantity_kg",
+          "price_santim",
+          "valid_until",
+          "status",
+          "proposed_by",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OfferResponse",
+        "type": "object"
+      },
+      "OfferStatus": {
+        "description": "Where an offer sits in its own short life.\n\nOnly `OPEN` has anywhere to go. Everything else is a record of how the negotiation ended,\nand a record of that kind is not edited, reopened or renegotiated — a superseded bid is not\na bid anybody may return to, it is what the counter that replaced it was an answer to.",
+        "enum": [
+          "OPEN",
+          "ACCEPTED",
+          "REJECTED",
+          "WITHDRAWN",
+          "EXPIRED",
+          "SUPERSEDED"
+        ],
+        "title": "OfferStatus",
+        "type": "string"
+      },
+      "OrderAcceptBody": {
+        "additionalProperties": false,
+        "description": "Where the goods go, on an acceptance whose price and weight are already settled.\n\nThe weight is the offer's and the price is the offer's. Repeating either here would give a\nseller two ways to agree to something, and they would disagree the first time the two fields\nwere filled in differently.",
+        "properties": {
+          "buyer_address_text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Buyer Address Text",
+            "type": "string"
+          },
+          "buyer_address_woreda_id": {
+            "minimum": 1.0,
+            "title": "Buyer Address Woreda Id",
+            "type": "integer"
+          },
+          "delivery_method": {
+            "$ref": "#/components/schemas/DeliveryOption"
+          }
+        },
+        "required": [
+          "delivery_method",
+          "buyer_address_woreda_id",
+          "buyer_address_text"
+        ],
+        "title": "OrderAcceptBody",
+        "type": "object"
+      },
+      "OrderBuyNowBody": {
+        "additionalProperties": false,
+        "description": "A purchase at the asking price, with the weight the buyer wants.\n\n`payment_mode` defaults to escrow, which is the only mode most deployments offer. A COD\norder is the buyer choosing to pay on delivery rather than fund the order, and it is\ngated by configuration: a mode the platform has not opened cannot be chosen, no matter\nwhat the body says.",
+        "properties": {
+          "buyer_address_text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Buyer Address Text",
+            "type": "string"
+          },
+          "buyer_address_woreda_id": {
+            "minimum": 1.0,
+            "title": "Buyer Address Woreda Id",
+            "type": "integer"
+          },
+          "delivery_method": {
+            "$ref": "#/components/schemas/DeliveryOption"
+          },
+          "payment_mode": {
+            "$ref": "#/components/schemas/PaymentMode",
+            "default": "ESCROW"
+          },
+          "quantity_kg": {
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Quantity Kg",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delivery_method",
+          "buyer_address_woreda_id",
+          "buyer_address_text",
+          "quantity_kg"
+        ],
+        "title": "OrderBuyNowBody",
+        "type": "object"
+      },
+      "OrderResponse": {
+        "additionalProperties": false,
+        "description": "An order as it is read back.\n\nThe money figures are the frozen ones, so a client showing \"what I pay\" shows what will\nactually be taken. `pickup_code` is here because it is the buyer's to keep and the seller's\nto ask for — but only to the buyer: the seller's copy of the order does not carry the code\nthey are supposed to be asking it for, because a code visible to the party being verified is\na code the verification proves nothing about. `cancel_reason` is here because \"it expired\"\nand \"I cancelled it\" are different things to the buyer looking at a list, and one word for\nboth would lose that.",
+        "properties": {
+          "buyer_address_text": {
+            "title": "Buyer Address Text",
+            "type": "string"
+          },
+          "buyer_address_woreda_id": {
+            "title": "Buyer Address Woreda Id",
+            "type": "integer"
+          },
+          "buyer_id": {
+            "format": "uuid",
+            "title": "Buyer Id",
+            "type": "string"
+          },
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "delivered_weight_kg": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered Weight Kg"
+          },
+          "delivery_fee_santim": {
+            "title": "Delivery Fee Santim",
+            "type": "integer"
+          },
+          "delivery_method": {
+            "$ref": "#/components/schemas/DeliveryOption"
+          },
+          "fee_payer": {
+            "$ref": "#/components/schemas/FeePayer"
+          },
+          "funded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funded At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "listing_id": {
+            "format": "uuid",
+            "title": "Listing Id",
+            "type": "string"
+          },
+          "offer_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offer Id"
+          },
+          "payment_mode": {
+            "$ref": "#/components/schemas/PaymentMode"
+          },
+          "pickup_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pickup Code"
+          },
+          "platform_fee_santim": {
+            "title": "Platform Fee Santim",
+            "type": "integer"
+          },
+          "quantity_kg": {
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "ready_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready At"
+          },
+          "seller_delayed": {
+            "title": "Seller Delayed",
+            "type": "boolean"
+          },
+          "seller_id": {
+            "format": "uuid",
+            "title": "Seller Id",
+            "type": "string"
+          },
+          "shipped_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipped At"
+          },
+          "short_code": {
+            "title": "Short Code",
+            "type": "string"
+          },
+          "state_before_dispute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          },
+          "total_santim": {
+            "title": "Total Santim",
+            "type": "integer"
+          },
+          "unit_price_santim": {
+            "title": "Unit Price Santim",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "vat_santim": {
+            "title": "Vat Santim",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "short_code",
+          "buyer_id",
+          "seller_id",
+          "listing_id",
+          "offer_id",
+          "quantity_kg",
+          "unit_price_santim",
+          "delivery_method",
+          "delivery_fee_santim",
+          "platform_fee_santim",
+          "vat_santim",
+          "total_santim",
+          "buyer_address_woreda_id",
+          "buyer_address_text",
+          "pickup_code",
+          "status",
+          "state_before_dispute",
+          "funded_at",
+          "ready_at",
+          "shipped_at",
+          "delivered_at",
+          "delivered_weight_kg",
+          "cancel_reason",
+          "payment_mode",
+          "confirmed_at",
+          "seller_delayed",
+          "fee_payer",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "OrderResponse",
+        "type": "object"
+      },
+      "OrderStatus": {
+        "description": "Where an order sits in its life.\n\nThe transitions between these are not free: they are the state table in the service layer,\nand one guard decides which of them are allowed. `CANCELLED_REFUNDED` is distinct from\n`CANCELLED` because a cancelled order never took the buyer's money while a refunded one did,\nand an account statement that could not tell those apart would be no statement at all.",
+        "enum": [
+          "CREATED",
+          "AWAITING_FUNDING",
+          "CONFIRMED",
+          "FUNDED",
+          "READY_FOR_PICKUP",
+          "SHIPPED",
+          "DELIVERED",
+          "COMPLETED",
+          "CANCELLED",
+          "CANCELLED_REFUNDED",
+          "DISPUTED"
+        ],
+        "title": "OrderStatus",
+        "type": "string"
+      },
+      "OtpRequestAccepted": {
+        "additionalProperties": false,
+        "description": "The code is on its way. Deliberately says nothing about whether an account exists.",
+        "properties": {
+          "expires_in_seconds": {
+            "description": "How long the code stays usable.",
+            "title": "Expires In Seconds",
+            "type": "integer"
+          },
+          "resend_after_seconds": {
+            "description": "How long before another code may be sent to this number.",
+            "title": "Resend After Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expires_in_seconds",
+          "resend_after_seconds"
+        ],
+        "title": "OtpRequestAccepted",
+        "type": "object"
+      },
+      "OtpRequestBody": {
+        "additionalProperties": false,
+        "description": "Ask for a verification code.",
+        "properties": {
+          "phone_e164": {
+            "description": "The trader's number in full international form.",
+            "pattern": "^\\+251(9|7)\\d{8}$",
+            "title": "Phone E164",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_e164"
+        ],
+        "title": "OtpRequestBody",
+        "type": "object"
+      },
+      "OtpVerifyBody": {
+        "additionalProperties": false,
+        "description": "Prove ownership of the number and sign in.",
+        "properties": {
+          "code": {
+            "description": "The code as received.",
+            "pattern": "^\\d{6}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Language to store for this trader. Defaults to Amharic."
+          },
+          "phone_e164": {
+            "pattern": "^\\+251(9|7)\\d{8}$",
+            "title": "Phone E164",
+            "type": "string"
+          },
+          "terms_version": {
+            "description": "Version of the terms and privacy policy being accepted.",
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "Terms Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_e164",
+          "code",
+          "terms_version"
+        ],
+        "title": "OtpVerifyBody",
+        "type": "object"
+      },
+      "PaymentMode": {
+        "description": "Whether the platform holds the buyer's money until delivery, or never sees it.\n\nCOD orders never move money: both parties confirm the terms instead of the buyer funding\nthem, and the order stays `CREATED` until that happens. Escrow orders are born\n`AWAITING_FUNDING` and stay there until payment arrives. Which settlement path an order\nis on is decided by this column, so a reader never has to guess from a missing value.",
+        "enum": [
+          "ESCROW",
+          "COD"
+        ],
+        "title": "PaymentMode",
+        "type": "string"
+      },
+      "PhotoInput": {
+        "additionalProperties": false,
+        "description": "One photograph a seller is attaching.",
+        "properties": {
+          "height": {
+            "minimum": 1.0,
+            "title": "Height",
+            "type": "integer"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          },
+          "width": {
+            "minimum": 1.0,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "width",
+          "height"
+        ],
+        "title": "PhotoInput",
+        "type": "object"
+      },
+      "PhotoResponse": {
+        "additionalProperties": false,
+        "description": "A photograph as it is read back, with the place it holds in the set.",
+        "properties": {
+          "height": {
+            "minimum": 1.0,
+            "title": "Height",
+            "type": "integer"
+          },
+          "sort_order": {
+            "minimum": 0.0,
+            "title": "Sort Order",
+            "type": "integer"
+          },
+          "url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          },
+          "width": {
+            "minimum": 1.0,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "width",
+          "height",
+          "sort_order"
+        ],
+        "title": "PhotoResponse",
+        "type": "object"
+      },
+      "PickupConfirmBody": {
+        "additionalProperties": false,
+        "description": "The six digits a seller reads back from a buyer at the roadside.\n\nDigits only, because the code is read aloud in a market by somebody who is not typing into\na form. `extra=\"forbid\"` is what keeps a pickup confirmation honest: a code and nothing\nelse is all this move needs, and a body carrying more is the beginning of a pickup being\nconfirmed by something other than the code.",
+        "properties": {
+          "pickup_code": {
+            "description": "The code the buyer was shown when the order was created.",
+            "maxLength": 6,
+            "minLength": 6,
+            "pattern": "^[0-9]{6}$",
+            "title": "Pickup Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pickup_code"
+        ],
+        "title": "PickupConfirmBody",
+        "type": "object"
+      },
+      "PrimaryRole": {
+        "description": "The one activity an account is primarily known for.\n\nA person who both grows and buys carries both, but the marketplace needs a single\nlabel to decide which journeys to offer by default.",
+        "enum": [
+          "FARMER",
+          "BUYER"
+        ],
+        "title": "PrimaryRole",
+        "type": "string"
+      },
+      "ProfileResponse": {
+        "additionalProperties": false,
+        "description": "The signed-in trader and whatever they have filled in about themselves.",
+        "properties": {
+          "additional_roles": {
+            "items": {
+              "$ref": "#/components/schemas/PrimaryRole"
+            },
+            "title": "Additional Roles",
+            "type": "array"
+          },
+          "business_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Name"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kebele": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kebele"
+          },
+          "kyc_tier": {
+            "$ref": "#/components/schemas/VerificationTier"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
+          },
+          "license_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License No"
+          },
+          "phone_e164": {
+            "title": "Phone E164",
+            "type": "string"
+          },
+          "region_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Code"
+          },
+          "role": {
+            "$ref": "#/components/schemas/PrimaryRole"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "tax_identification_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Identification Number"
+          },
+          "terms_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terms Version"
+          },
+          "woreda_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Woreda Id"
+          }
+        },
+        "required": [
+          "id",
+          "phone_e164",
+          "role",
+          "additional_roles",
+          "language",
+          "kyc_tier",
+          "status",
+          "terms_version",
+          "display_name",
+          "region_code",
+          "woreda_id",
+          "kebele",
+          "business_name",
+          "license_no",
+          "tax_identification_number"
+        ],
+        "title": "ProfileResponse",
+        "type": "object"
+      },
+      "ProfileUpdateBody": {
+        "additionalProperties": false,
+        "description": "A change to some of the caller's own fields.\n\nEvery field is optional and every field that arrives is applied on its own: this is a\nmerge, so an absent field means \"leave it alone\" rather than \"clear it\".\n\n`gps` is here because the platform accepts it, though the published contract does not yet\nlist it; it is stored at reduced precision and never sent back.",
+        "properties": {
+          "business_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Name"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "gps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GpsPoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kebele": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kebele"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Language"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "license_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License No"
+          },
+          "region_code": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Code"
+          },
+          "tax_identification_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Identification Number"
+          },
+          "woreda_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Woreda Id"
+          }
+        },
+        "title": "ProfileUpdateBody",
+        "type": "object"
+      },
+      "Proposer": {
+        "description": "Which side of the negotiation put these terms on the table.\n\nDerived from the depth rather than stored, because the depth already says it and a second\ncolumn saying the same thing is a second thing that can be wrong. Even depths are the\nbuyer's terms and odd depths are the seller's, starting from the fact that a thread begins\nwith a buyer.",
+        "enum": [
+          "BUYER",
+          "SELLER"
+        ],
+        "title": "Proposer",
+        "type": "string"
+      },
+      "RefreshTokenResponse": {
+        "additionalProperties": false,
+        "description": "A rotated session.",
+        "properties": {
+          "access_expires_at": {
+            "format": "date-time",
+            "title": "Access Expires At",
+            "type": "string"
+          },
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "refresh_expires_at": {
+            "format": "date-time",
+            "title": "Refresh Expires At",
+            "type": "string"
+          },
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "access_expires_at",
+          "refresh_token",
+          "refresh_expires_at"
+        ],
+        "title": "RefreshTokenResponse",
+        "type": "object"
+      },
+      "SearchSort": {
+        "description": "FR-402's four orders, named exactly as ``docs/openapi.yaml`` publishes them.",
+        "enum": [
+          "distance_asc",
+          "price_asc",
+          "price_desc",
+          "harvest_date_asc"
+        ],
+        "title": "SearchSort",
+        "type": "string"
+      },
+      "TokenPairResponse": {
+        "additionalProperties": false,
+        "description": "A signed-in session.",
+        "properties": {
+          "access_expires_at": {
+            "format": "date-time",
+            "title": "Access Expires At",
+            "type": "string"
+          },
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "refresh_expires_at": {
+            "format": "date-time",
+            "title": "Refresh Expires At",
+            "type": "string"
+          },
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserSummary"
+          }
+        },
+        "required": [
+          "access_token",
+          "access_expires_at",
+          "refresh_token",
+          "refresh_expires_at",
+          "user"
+        ],
+        "title": "TokenPairResponse",
+        "type": "object"
+      },
+      "UserSummary": {
+        "additionalProperties": false,
+        "description": "The signed-in trader, as clients need to see them.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kyc_tier": {
+            "$ref": "#/components/schemas/VerificationTier"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
+          },
+          "phone_e164": {
+            "title": "Phone E164",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/PrimaryRole"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountStatus"
+          }
+        },
+        "required": [
+          "id",
+          "phone_e164",
+          "role",
+          "language",
+          "kyc_tier",
+          "status"
+        ],
+        "title": "UserSummary",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VerificationTier": {
+        "description": "How much a platform has verified about a person.\n\nTier 0 is the starting point and requires nothing; higher tiers unlock larger\ntransactions and faster settlement, so the level is recorded on the account rather\nthan inferred at request time.",
+        "enum": [
+          "TIER_0",
+          "TIER_1",
+          "TIER_2"
+        ],
+        "title": "VerificationTier",
+        "type": "string"
+      },
+      "WeightBody": {
+        "additionalProperties": false,
+        "description": "The delivered weight, in whole kilograms, recorded by the seller.\n\nThe upper bound is enforced twice — here by a flywheel that stops a nonsense figure from\nreaching the service, and again in the service against the ordered amount (a thousand\nkilos ordered can never deliver twelve hundred) — because the first bound is about the\nshape of the number and the second is about the trade it belongs to.",
+        "properties": {
+          "delivered_weight_kg": {
+            "description": "Whole kilograms actually handed over.",
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Delivered Weight Kg",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "delivered_weight_kg"
+        ],
+        "title": "WeightBody",
+        "type": "object"
+      },
+      "WoredaSummary": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "region_code": {
+            "title": "Region Code",
+            "type": "string"
+          },
+          "zone": {
+            "title": "Zone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "region_code",
+          "zone"
+        ],
+        "title": "WoredaSummary",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Agricultural marketplace for Ethiopian traders.",
+    "title": "GebeyaLink API",
+    "version": "1.0.1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Report that the process is serving. Always 200 while it is up.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "description": "Close the session a refresh token belongs to.",
+        "operationId": "sign_out_v1_auth_logout_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "accept-language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept-Language"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sign Out",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/otp/request": {
+      "post": {
+        "description": "Send a verification code to a number.",
+        "operationId": "request_otp_v1_auth_otp_request_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "accept-language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept-Language"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtpRequestAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Otp",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/otp/verify": {
+      "post": {
+        "description": "Exchange a verification code for a session, registering the trader if new.",
+        "operationId": "verify_otp_v1_auth_otp_verify_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "accept-language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept-Language"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpVerifyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPairResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Otp",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "description": "Trade a refresh token for a fresh pair.\n\nEach refresh token works exactly once. Presenting one that has already been traded\ncloses every session on the account.",
+        "operationId": "rotate_refresh_token_v1_auth_refresh_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "accept-language",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accept-Language"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshTokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Refresh Token",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/v1/crops": {
+      "get": {
+        "description": "The crops a listing may be written against.\n\nLivestock and anything else measured by head rather than weight is left out: a price\nposted per kilogram would be a different product, not a cheaper one.",
+        "operationId": "list_crops_v1_crops_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CropSummary"
+                  },
+                  "title": "Response List Crops V1 Crops Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Crops",
+        "tags": [
+          "Reference"
+        ]
+      }
+    },
+    "/v1/listings": {
+      "post": {
+        "description": "Post a listing, live.\n\nThe seller states what they have and what they want for it; the status it starts in, the\ncode it is quoted by and whether its price looks unusual are all decided here rather than\nasked for, because a client that could set its own status could post a listing nobody\nreviewed.",
+        "operationId": "create_listing_v1_listings_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Listing",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/listings/mine": {
+      "get": {
+        "description": "The caller's own listings, newest first.\n\nKeyset-paginated rather than by offset, so a listing posted while somebody is reading\ntheir first page does not push a row they have already seen onto the next one.",
+        "operationId": "read_my_listings_v1_listings_mine_get",
+        "parameters": [
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ListingResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read My Listings",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}": {
+      "get": {
+        "description": "One listing, for any signed-in caller.\n\nOpen to every signed-in caller rather than to buyers and sellers separately: the listing\nis an offer to the market, and hiding it from half the market is not a privacy measure.",
+        "operationId": "read_listing_v1_listings__listing_id__get",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Listing",
+        "tags": [
+          "Listings"
+        ]
+      },
+      "patch": {
+        "description": "Change some of the seller's own listing.\n\nA merge, and a guarded one: the request says which version of the row it was written\nagainst, and if that is no longer current the write is refused and the current row is\nreturned in the error so the caller can see what it collided with.",
+        "operationId": "update_listing_v1_listings__listing_id__patch",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingUpdateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Listing",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}/buy-now": {
+      "post": {
+        "description": "The buyer taking the asking price at the listing's own terms.\n\nThe weight is the buyer's to choose and the price is not the buyer's to change: it is the\nlisting's, which is the entire difference between buying and bidding.",
+        "operationId": "buy_now_v1_listings__listing_id__buy_now_post",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderBuyNowBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Buy Now",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}/close": {
+      "post": {
+        "description": "End a listing for good.\n\nLegal from any live state, which is the point of closing rather than pausing: a seller\nwho has run out of crop, changed their mind, or finished the season should not have to\nwork out which of those words the platform expects.",
+        "operationId": "close_listing_v1_listings__listing_id__close_post",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close Listing",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}/offers": {
+      "get": {
+        "description": "Every offer on a listing, for the seller who owns it.\n\nThe seller's alone, because a bid is a price somebody is willing to pay and one buyer\nreading the others would learn a floor instead of competing.",
+        "operationId": "read_listing_offers_v1_listings__listing_id__offers_get",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OfferResponse"
+                  },
+                  "title": "Response Read Listing Offers V1 Listings  Listing Id  Offers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Listing Offers",
+        "tags": [
+          "Offers"
+        ]
+      },
+      "post": {
+        "description": "Put terms on a live listing.\n\nThe buyer states weight, price and how long the bid should stand; the ceiling, the weight\nfloor, the deadline and the thread the bid belongs to are all worked out here rather than\nasked for.",
+        "operationId": "place_offer_v1_listings__listing_id__offers_post",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfferCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place Offer",
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}/pause": {
+      "post": {
+        "description": "Take a live listing off the market without closing it.\n\nIt keeps its code, its photographs and its place in the seller's history, and it can be\nput back. Closing is the move that does not come back.",
+        "operationId": "pause_listing_v1_listings__listing_id__pause_post",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Listing",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/listings/{listing_id}/resume": {
+      "post": {
+        "description": "Put a paused listing back in front of buyers.",
+        "operationId": "resume_listing_v1_listings__listing_id__resume_post",
+        "parameters": [
+          {
+            "description": "The listing's internal identity, not its short code.",
+            "in": "path",
+            "name": "listing_id",
+            "required": true,
+            "schema": {
+              "description": "The listing's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Listing Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Listing",
+        "tags": [
+          "Listings"
+        ]
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "description": "The caller's own account and profile.\n\nAnswered even for a trader who has never filled anything in: what they have not said\nabout themselves comes back as null rather than as a request to say it.",
+        "operationId": "read_own_profile_v1_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Own Profile",
+        "tags": [
+          "Profile"
+        ]
+      },
+      "patch": {
+        "description": "Change some of the caller's own fields.\n\nA merge, not a replacement: each field that arrived is written and each field that did\nnot is left exactly as it was, which is what lets an offline client holding a stale copy\nsend the one thing the user changed without knowing what we hold for the rest.",
+        "operationId": "update_own_profile_v1_me_patch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileUpdateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Own Profile",
+        "tags": [
+          "Profile"
+        ]
+      }
+    },
+    "/v1/offers/{offer_id}/accept": {
+      "post": {
+        "description": "The seller saying yes: the offer becomes an order and its kilos become spoken for.\n\nOne transaction, and a refusal when there is no longer enough to sell leaves the offer exactly\nwhere it was. A bid that no longer fits is not a bid the platform should retire on the\nseller's behalf — the seller is the one who has to look at their other buyers.",
+        "operationId": "accept_offer_v1_offers__offer_id__accept_post",
+        "parameters": [
+          {
+            "description": "The offer's internal identity.",
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "description": "The offer's internal identity.",
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderAcceptBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Offer",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/offers/{offer_id}/counter": {
+      "post": {
+        "description": "Answer an open offer with different terms.\n\nWritten by the party who did not make the offer being answered, and only that party — so\nthe two sides of a thread alternate without either of them naming whose turn it is.",
+        "operationId": "counter_offer_v1_offers__offer_id__counter_post",
+        "parameters": [
+          {
+            "description": "The offer's internal identity.",
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "description": "The offer's internal identity.",
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfferCounterBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Counter Offer",
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v1/offers/{offer_id}/reject": {
+      "post": {
+        "description": "The seller's no.\n\nAlways available while the offer is open, including when the listing behind it has since\npaused or closed: refusing costs nothing and reserves nothing, so there is no reason a\nseller should be unable to say it.",
+        "operationId": "reject_offer_v1_offers__offer_id__reject_post",
+        "parameters": [
+          {
+            "description": "The offer's internal identity.",
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "description": "The offer's internal identity.",
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Offer",
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v1/offers/{offer_id}/withdraw": {
+      "post": {
+        "description": "The buyer taking their own bid back off the table.\n\nThe buyer's alone, and at any depth in a thread. A seller who wants a negotiation to stop\nrejects, which reads to the buyer as an answer rather than as them changing their mind.",
+        "operationId": "withdraw_offer_v1_offers__offer_id__withdraw_post",
+        "parameters": [
+          {
+            "description": "The offer's internal identity.",
+            "in": "path",
+            "name": "offer_id",
+            "required": true,
+            "schema": {
+              "description": "The offer's internal identity.",
+              "format": "uuid",
+              "title": "Offer Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw Offer",
+        "tags": [
+          "Offers"
+        ]
+      }
+    },
+    "/v1/orders/mine": {
+      "get": {
+        "description": "The caller's own orders on one side, newest first.\n\nDeclared before `/orders/{order_id}` because both live under the same prefix and a route that\nmatched \"mine\" as an identity would answer 422 about a UUID instead of returning the list.\n\nKeyset-paginated rather than by offset, so an order created while somebody is reading their\nfirst page does not push a row they have already seen onto the next one.",
+        "operationId": "read_my_orders_v1_orders_mine_get",
+        "parameters": [
+          {
+            "description": "Which side of the order the caller is on.",
+            "in": "query",
+            "name": "as",
+            "required": true,
+            "schema": {
+              "description": "Which side of the order the caller is on.",
+              "enum": [
+                "buyer",
+                "seller"
+              ],
+              "title": "As",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders in this state. Omit for all of them.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OrderStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only orders in this state. Omit for all of them.",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_OrderResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read My Orders",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}": {
+      "get": {
+        "description": "One order, for the buyer and the seller of it.\n\nReading it is also how a lapsed funding window is enforced, which is why this is a read that\nwrites: the answer would otherwise be that the order is cancelled while its kilos are still\nheld against the seller's listing.",
+        "operationId": "read_order_v1_orders__order_id__get",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Order",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/cancel": {
+      "post": {
+        "description": "A party walking away from an order that has not been paid for or confirmed.\n\nWho may walk depends on the mode: an escrow order's buyer while it is still waiting for\nmoney, or either party to a COD order while it is still `CREATED`. The seller cannot cancel\nan escrow order — an order is what acceptance creates, and FR-607 gives a seller their way\nto stop a bid before it becomes one, which is rejecting it.",
+        "operationId": "cancel_order_v1_orders__order_id__cancel_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Order",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/confirm": {
+      "post": {
+        "description": "A party to a COD order agreeing that the terms are the ones they signed up for.\n\nMoney never moves on a COD order, so confirmation is the funding step and the route is the\none mutation that needs no `Idempotency-Key`: the party *is* the key, and their second\nconfirmation is a no-op by construction. The order reaches `CONFIRMED` once both parties\nhave confirmed, in either order.",
+        "operationId": "confirm_order_v1_orders__order_id__confirm_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Order",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/confirm-delivery": {
+      "post": {
+        "description": "The buyer's word that a shipped order arrived, and was received (FR-702).\n\nThe buyer's confirmation is the delivery's other boundary: a shortfall past the configured\ntolerance is refused here, because it is the buyer who carries the risk of it.",
+        "operationId": "confirm_delivery_v1_orders__order_id__confirm_delivery_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Delivery",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/confirm-pickup": {
+      "post": {
+        "description": "The seller breaking the buyer's pickup code, and with it the handover counting as done\n(FR-703).\n\nThe code is the proof that the person presenting it holds the buyer's side of the order —\nwhich is why the seller's copy of an order never carries it.",
+        "operationId": "confirm_pickup_v1_orders__order_id__confirm_pickup_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PickupConfirmBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Pickup",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/ready": {
+      "post": {
+        "description": "The seller's word that a pickup order is waiting to be collected (FR-701).\n\nThe readiness stands alone because the move it makes is not a delivery: the goods are\nstanding by, not handed over, and the handover ends here with the seller's pickup\nconfirmation rather than with this message.",
+        "operationId": "mark_ready_v1_orders__order_id__ready_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Ready",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/shipped": {
+      "post": {
+        "description": "The seller's word that a delivery order is on its way (FR-702).\n\nMeasured from this message the crop's own holding window starts, because the kilos are only\non the move from the moment they are sent.",
+        "operationId": "mark_shipped_v1_orders__order_id__shipped_post",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Shipped",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/orders/{order_id}/weight": {
+      "put": {
+        "description": "Record what the scale said against an order in transit (FR-2507).\n\nRecording is separate from confirming: the weight is a fact that belongs to the handover,\nand the tolerance comes in when it is weighed against what was ordered — at the buyer's\nconfirmation — so the reading may be recorded before anybody signs anything.",
+        "operationId": "record_weight_v1_orders__order_id__weight_put",
+        "parameters": [
+          {
+            "description": "The order's internal identity, not its short code.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "description": "The order's internal identity, not its short code.",
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Identifies this intent. Send the same key again to get the same answer without the same work being done twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeightBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Weight",
+        "tags": [
+          "Orders"
+        ]
+      }
+    },
+    "/v1/search/listings": {
+      "get": {
+        "description": "One page of the market, filtered and ordered the way the caller asked.\n\nOpen to every signed-in trader rather than to buyers alone: a search is a read of what\nis on offer, and this API does not yet have a reason to keep one trader from seeing\nwhat every trader can already see in the listings themselves.",
+        "operationId": "search_listings_v1_search_listings_get",
+        "parameters": [
+          {
+            "description": "One crop, by the taxonomy's number.",
+            "in": "query",
+            "name": "crop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One crop, by the taxonomy's number.",
+              "title": "Crop Id"
+            }
+          },
+          {
+            "description": "One of the thirteen regions.",
+            "in": "query",
+            "name": "region_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "AA",
+                    "AF",
+                    "AM",
+                    "BE",
+                    "DD",
+                    "GA",
+                    "HA",
+                    "OR",
+                    "SI",
+                    "SO",
+                    "SW",
+                    "SN",
+                    "TI"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One of the thirteen regions.",
+              "title": "Region Code"
+            }
+          },
+          {
+            "description": "One woreda, by its internal id.",
+            "in": "query",
+            "name": "woreda_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One woreda, by its internal id.",
+              "title": "Woreda Id"
+            }
+          },
+          {
+            "description": "How far from the trader's own point.",
+            "in": "query",
+            "name": "radius_km",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How far from the trader's own point.",
+              "title": "Radius Km"
+            }
+          },
+          {
+            "description": "Lowest unit price, in santim.",
+            "in": "query",
+            "name": "price_min",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lowest unit price, in santim.",
+              "title": "Price Min"
+            }
+          },
+          {
+            "description": "Highest unit price, in santim.",
+            "in": "query",
+            "name": "price_max",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Highest unit price, in santim.",
+              "title": "Price Max"
+            }
+          },
+          {
+            "description": "Earliest harvest day.",
+            "in": "query",
+            "name": "harvest_date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Earliest harvest day.",
+              "title": "Harvest Date From"
+            }
+          },
+          {
+            "description": "Latest harvest day.",
+            "in": "query",
+            "name": "harvest_date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Latest harvest day.",
+              "title": "Harvest Date To"
+            }
+          },
+          {
+            "description": "Whether the crop was grown without inputs.",
+            "in": "query",
+            "name": "organic",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the crop was grown without inputs.",
+              "title": "Organic"
+            }
+          },
+          {
+            "description": "How the buyer would take it away.",
+            "in": "query",
+            "name": "delivery_option",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DeliveryOption"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the buyer would take it away.",
+              "title": "Delivery Option"
+            }
+          },
+          {
+            "description": "The lowest verified tier a seller may be.",
+            "in": "query",
+            "name": "seller_tier_min",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/VerificationTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The lowest verified tier a seller may be.",
+              "title": "Seller Tier Min"
+            }
+          },
+          {
+            "description": "Order; when a cursor is sent, the order it already carries.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SearchSort"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Order; when a cursor is sent, the order it already carries.",
+              "title": "Sort"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ListingResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Listings",
+        "tags": [
+          "Search"
+        ]
+      }
+    },
+    "/v1/sms/inbound": {
+      "post": {
+        "description": "Take one signed text message, act on it, and reply by text.\n\nAlways answers 200 to a signed, well-formed request, whether the command succeeded or was\nrefused for a business reason. The reply the trader receives is the result; the gateway is\ntold only that the message was received.",
+        "operationId": "inbound_sms_v1_sms_inbound_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Inbound Sms",
+        "tags": [
+          "Messaging"
+        ]
+      }
+    },
+    "/v1/ussd/session": {
+      "post": {
+        "description": "Answer one keypress with the plain-text screen the network should show.",
+        "operationId": "ussd_session_v1_ussd_session_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ussd Session",
+        "tags": [
+          "Messaging"
+        ]
+      }
+    },
+    "/v1/woredas": {
+      "get": {
+        "description": "Woredas, narrowed to one region when the caller names one.\n\nLeaving the region out returns everything seeded so far, which is what a caller that\nhas not narrowed yet wants.",
+        "operationId": "list_woredas_v1_woredas_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "region_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Region Code"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WoredaSummary"
+                  },
+                  "title": "Response List Woredas V1 Woredas Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Woredas",
+        "tags": [
+          "Reference"
+        ]
+      }
+    }
+  }
+}

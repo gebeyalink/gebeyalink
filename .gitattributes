@@ -1,1 +1,2 @@
 * text=auto eol=lf
+apps/api/openapi.snapshot.json -text
