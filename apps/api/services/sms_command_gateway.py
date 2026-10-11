@@ -20,6 +20,7 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
+from apps.api.core.config import Settings
 from apps.api.models.crop import Crop
 from apps.api.models.listing import Listing as ListingRow
 from apps.api.repositories.action_token_repository import ActionTokenRepository
@@ -30,6 +31,7 @@ from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.user_repository import UserRepository
+from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
 from apps.api.services.listing_service import ListingService
 from apps.api.services.offer_service import OfferService
 from apps.api.services.offer_service import effective_status as effective_offer_status
@@ -72,6 +74,7 @@ class SmsCommandGateway:
         listing_service: ListingService,
         offer_service: OfferService,
         order_service: OrderService,
+        settings: Settings,
     ) -> None:
         self._users = users
         self._profiles = profiles
@@ -84,6 +87,7 @@ class SmsCommandGateway:
         self._listing_service = listing_service
         self._offer_service = offer_service
         self._order_service = order_service
+        self._settings = settings
 
     async def resolve_trader(self, phone_e164: str) -> Trader | None:
         """The sender, if this number is registered, with the profile the reply needs.
@@ -168,10 +172,21 @@ class SmsCommandGateway:
     async def place_offer(
         self, listing: Listing, buyer: Trader, quantity_kg: int, price_santim: int, key: str
     ) -> None:
+        """Place the bid the trader texted, choosing the mode on their behalf when there is one.
+
+        The grammar has no room for a payment mode, so the adapter takes the choice a handset
+        cannot express: `adapter_offer_payment_mode` names the one mode the deployment funds when
+        escrow is off, and leaves the field out when escrow is on so the offer's own default
+        applies. The trader still chooses weight and price; they never choose this.
+        """
+        body: dict[str, Any] = {"quantity_kg": quantity_kg, "price_santim": price_santim}
+        mode = adapter_offer_payment_mode(self._settings)
+        if mode is not None:
+            body["payment_mode"] = mode
         await self._offer_service.place(
             _as_uuid(listing.id),
             _as_uuid(buyer.id),
-            {"quantity_kg": quantity_kg, "price_santim": price_santim},
+            body,
             key=key,
         )
 

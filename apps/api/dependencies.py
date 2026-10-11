@@ -284,6 +284,7 @@ def get_sms_gateway(
         listing_service=get_listing_service(db_session),
         offer_service=get_offer_service(db_session, settings),
         order_service=get_order_service(db_session, settings, redis),
+        settings=settings,
     )
 
 
@@ -312,6 +313,7 @@ def get_ussd_gateway(
         search=SearchRepository(db_session),
         offer_service=get_offer_service(db_session, settings),
         order_service=get_order_service(db_session, settings, redis),
+        settings=settings,
     )
 
 

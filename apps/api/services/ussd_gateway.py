@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from apps.api.core.config import Settings
 from apps.api.models.crop import Crop
 from apps.api.models.listing import DeliveryOption, Listing, ListingStatus
 from apps.api.models.offer import OfferStatus
@@ -54,6 +55,7 @@ from apps.api.repositories.search_repository import (
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.schemas.search import SearchSort
+from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.offer_service import OfferService
 from apps.api.services.offer_service import effective_status as effective_offer_status
@@ -118,6 +120,7 @@ class UssdGateway:
         search: SearchRepository,
         offer_service: OfferService,
         order_service: OrderService,
+        settings: Settings,
     ) -> None:
         self._users = users
         self._profiles = profiles
@@ -131,6 +134,7 @@ class UssdGateway:
         self._search = search
         self._offer_service = offer_service
         self._order_service = order_service
+        self._settings = settings
 
     # -- who is dialling ----------------------------------------------------
 
@@ -558,10 +562,16 @@ class UssdGateway:
     ) -> dict[str, Any]:
         assert state.user_id is not None
         listing_id = _as_uuid(self._entity_ref(state, action))
-        body = {
+        body: dict[str, Any] = {
             "quantity_kg": int(state.context["quantity_kg"].replace(",", "")),
             "price_santim": int(state.context["price_santim"]),
         }
+        # The tree asks for a weight and a price and has no step for a payment mode, so the
+        # adapter takes the choice a one-line menu cannot offer: the one mode the deployment
+        # funds when escrow is off, and nothing when escrow is on, leaving the default.
+        mode = adapter_offer_payment_mode(self._settings)
+        if mode is not None:
+            body["payment_mode"] = mode
         key = f"{session_id}:offer_place:{self._entity_ref(state, action)}"
         await self._offer_service.place(listing_id, _as_uuid(state.user_id), body, key=key)
         return {"code": str(state.context.get("selected_listing_code") or "")}
