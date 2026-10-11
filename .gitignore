@@ -35,6 +35,11 @@ $RECYCLE.BIN/
 __pycache__/
 *.py[cod]
 .venv/
+# The real configuration, which holds the deployment's secrets. `apps/api/core/config.py`
+# reads it automatically, so a checkout that ever placed one here would be a checkout with
+# keys in it. `.env.example` is the tracked, secret-free template; this is the file a
+# deployment fills in and never commits.
+.env
 # The throwaway environment a dependency audit builds to prove a clean install works.
 # It exists only to be deleted, and must never reach a commit.
 .verify-venv/

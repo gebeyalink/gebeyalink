@@ -712,7 +712,7 @@
       },
       "OfferCounterBody": {
         "additionalProperties": false,
-        "description": "A seller's answer to an open offer, on different or the same terms.\n\nThe same shape as an opening bid on purpose. A counter is a new offer with new terms, and\nholding it to the same bounds as an opening bid is what stops an answer from being a way to\npropose something an opening bid could not have proposed.",
+        "description": "A seller's answer to an open offer, on different or the same terms.\n\nThe same terms as an opening bid on purpose. A counter is a new offer with new terms, and\nholding it to the same bounds as an opening bid is what stops an answer from being a way to\npropose something an opening bid could not have proposed. What it deliberately does *not*\ncarry is a payment mode: a counter keeps the mode of the offer it answers, so how a sale\nwould be paid for is chosen when the thread opens and cannot be changed by answering. A body\nthat tried anyway is refused by the inherited `extra=\"forbid\"`.",
         "properties": {
           "price_santim": {
             "exclusiveMinimum": 0.0,
@@ -742,8 +742,12 @@
       },
       "OfferCreateBody": {
         "additionalProperties": false,
-        "description": "The terms a buyer is bidding.\n\nOnly what is relative to the listing is left out: the ceiling of twice the asking price and\nthe weight floor of the listing's minimum order are both rules about a listing this request\ndoes not carry, so they are checked where the listing is read.",
+        "description": "The terms a buyer is bidding, and the mode they are bidding on.\n\nOnly what is relative to the listing is left out: the ceiling of twice the asking price and\nthe weight floor of the listing's minimum order are both rules about a listing this request\ndoes not carry, so they are checked where the listing is read.",
         "properties": {
+          "payment_mode": {
+            "$ref": "#/components/schemas/PaymentMode",
+            "default": "ESCROW"
+          },
           "price_santim": {
             "exclusiveMinimum": 0.0,
             "title": "Price Santim",

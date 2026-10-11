@@ -207,17 +207,23 @@ def get_search_service(db_session: db_session_dep) -> SearchService:
 SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
 
 
-def get_offer_service(db_session: db_session_dep) -> OfferService:
+def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> OfferService:
     """Bids on a listing, and the listing they are bounded by.
 
     One session for both repositories, for the reason the listing service has one for three: a
     counter writes an offer and reads the listing it must satisfy the rules of, and those two
     statements have to describe the same listing.
+
+    Both payment-mode flags are read here and handed in as values, on the same reasoning as the
+    order service below: the service decides which modes exist without reaching back into
+    configuration for a second answer.
     """
     return OfferService(
         offers=OfferRepository(db_session),
         listings=ListingRepository(db_session),
         idempotency=IdempotencyStore(get_client()),
+        escrow_enabled=settings.escrow_enabled,
+        cod_enabled=settings.cod_enabled,
     )
 
 
@@ -246,6 +252,7 @@ def get_order_service(
         reservations=ReservationRepository(db_session),
         fee_payer=settings.fee_payer,
         cod_enabled=settings.cod_enabled,
+        escrow_enabled=settings.escrow_enabled,
         codes=CrockfordOrderCode(orders.short_code_exists),
         idempotency=IdempotencyStore(get_client()),
         tolerance_pct=settings.transit_shrinkage_tolerance_pct,
@@ -275,7 +282,7 @@ def get_sms_gateway(
         orders=OrderRepository(db_session),
         action_tokens=ActionTokenRepository(db_session),
         listing_service=get_listing_service(db_session),
-        offer_service=get_offer_service(db_session),
+        offer_service=get_offer_service(db_session, settings),
         order_service=get_order_service(db_session, settings, redis),
     )
 
@@ -303,7 +310,7 @@ def get_ussd_gateway(
         regions=RegionRepository(db_session),
         woredas=WoredaRepository(db_session),
         search=SearchRepository(db_session),
-        offer_service=get_offer_service(db_session),
+        offer_service=get_offer_service(db_session, settings),
         order_service=get_order_service(db_session, settings, redis),
     )
 

@@ -220,6 +220,10 @@ def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        # Escrow is the platform's funding path, so the tests that create orders the way most
+        # deployments will have it on. The COD configuration below is the exception that leaves
+        # it off, because the two modes are the same switch seen from two sides.
+        escrow_enabled=True,
     )
 
 
@@ -674,7 +678,7 @@ def stored_offers(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
         ):
             cursor.execute(
                 "SELECT id, listing_id, buyer_id, thread_id, thread_depth, quantity_kg,"
-                " price_santim, valid_until, status, version"
+                " price_santim, valid_until, status, payment_mode, version"
                 " FROM offers ORDER BY thread_depth, created_at"
             )
             return list(cursor.fetchall())
@@ -722,6 +726,9 @@ def seller_pays_settings(
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         fee_payer=FeePayer.SELLER,
+        # The same reason the default settings fund escrow: the fee split is what this fixture
+        # varies, and an order that could not be created would prove nothing about who pays.
+        escrow_enabled=True,
     )
 
 
@@ -948,6 +955,70 @@ async def signed_in_concurrently(
         return {"Authorization": f"Bearer {verified.json()['access_token']}"}
 
     return _sign_in
+
+
+@pytest.fixture()
+async def escrow_flag_clients(
+    settings: Settings,
+    cod_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> AsyncIterator[tuple[httpx.AsyncClient, httpx.AsyncClient]]:
+    """Two applications over one database: one that funds escrow and one that does not.
+
+    The escrow flag is fixed when an application is built, so a test that needs it to differ
+    between a bid being placed and the bid being accepted has to be a test of two applications.
+    Both lifespans run inside this test's own event loop, which is what keeps the process-wide
+    engine and store belonging to the loop that is using them - driving the second app from a
+    loop of its own would leave it querying a pool owned by the first. The two applications share
+    this run's signing key (every settings fixture derives from the one session-scoped
+    `signing_keys`), so a token minted by one is accepted by the other; that is what lets the
+    pair stand in for a single deployment before and after the flag was turned off.
+
+    The first client funds escrow, the default configuration. The second funds COD instead, and
+    its escrow flag is therefore off.
+    """
+    funding: FastAPI = create_app(settings)
+    unfunded: FastAPI = create_app(cod_settings)
+    async with funding.router.lifespan_context(funding):
+        funding.state.sms_provider = sms_recorder
+        async with unfunded.router.lifespan_context(unfunded):
+            unfunded.state.sms_provider = sms_recorder
+            async with (
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=funding), base_url="http://funding.test"
+                ) as funding_http,
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=unfunded), base_url="http://unfunded.test"
+                ) as unfunded_http,
+            ):
+                yield funding_http, unfunded_http
+
+
+@pytest.fixture()
+def sign_in_over(code_for: Callable[[str], str]) -> Callable[..., Awaitable[dict[str, str]]]:
+    """Sign a trader in over whichever asynchronous client is handed in.
+
+    The client is an argument rather than a binding, because a test of two applications has to
+    sign in on one of them and does not care which.
+    """
+
+    async def _sign_in_over(http: httpx.AsyncClient, phone_e164: str) -> dict[str, str]:
+        requested = await http.post("/v1/auth/otp/request", json={"phone_e164": phone_e164})
+        assert requested.status_code == 200, requested.text
+        verified = await http.post(
+            "/v1/auth/otp/verify",
+            json={
+                "phone_e164": phone_e164,
+                "code": code_for(phone_e164),
+                "terms_version": TERMS_VERSION,
+            },
+        )
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _sign_in_over
 
 
 @pytest.fixture()

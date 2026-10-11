@@ -72,7 +72,11 @@ from apps.api.schemas.order import OrderResponse
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.listing_service import transition_listing_status
 from apps.api.services.offer_service import effective_status as effective_offer_status
-from apps.api.services.offer_service import may_answer, transition_offer_status
+from apps.api.services.offer_service import (
+    may_answer,
+    refuse_disabled_mode,
+    transition_offer_status,
+)
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.money import FeePayer, OrderTotals, order_totals
 
@@ -369,6 +373,7 @@ class OrderService:
         *,
         fee_payer: FeePayer,
         cod_enabled: bool,
+        escrow_enabled: bool,
         codes: OrderCodeSource,
         idempotency: IdempotencyStore,
         tolerance_pct: float,
@@ -379,6 +384,7 @@ class OrderService:
         self._reservations = reservations
         self._fee_payer = fee_payer
         self._cod_enabled = cod_enabled
+        self._escrow_enabled = escrow_enabled
         self._codes = codes
         self._idempotency = idempotency
         # The shortfall a buyer must accept, handed in as a value like `fee_payer` rather than
@@ -413,6 +419,12 @@ class OrderService:
         per AC-19.1: the other offers stay `OPEN` and their next acceptance fails the same
         availability check. They are logged here so the seller can be told which bids they can no
         longer take.
+
+        The mode is checked here as well, against the flags as they now stand rather than as they
+        stood when the offer was placed. A deployment that has stopped funding a mode must not
+        accept into an order it will not pay for, and because the check runs before the offer
+        moves, the refusal leaves it `OPEN` — the negotiation survives a configuration change
+        neither party made.
         """
 
         async def work() -> Order:
@@ -459,6 +471,17 @@ class OrderService:
             # column, and nothing in this slice deletes a bid.
             offer = await self._offers.refresh(offer_id) or context.offer
 
+            # The mode an offer was placed under is re-checked against the flags as they stand
+            # now, before the offer moves. A deployment that no longer funds this mode must not
+            # accept into an order it will not pay for, and the refusal leaves the offer `OPEN`
+            # so the negotiation survives it — the two parties can go on to terms the platform
+            # will honour rather than losing the thread to a configuration change neither made.
+            refuse_disabled_mode(
+                offer.payment_mode,
+                escrow_enabled=self._escrow_enabled,
+                cod_enabled=self._cod_enabled,
+            )
+
             if offer.quantity_kg > available:
                 self._refuse(
                     listing,
@@ -487,7 +510,11 @@ class OrderService:
                 unit_price_santim=offer.price_santim,
             )
             order = await self._open_order(
-                listing, terms, buyer_id=offer.buyer_id, offer_id=offer.id
+                listing,
+                terms,
+                buyer_id=offer.buyer_id,
+                offer_id=offer.id,
+                payment_mode=offer.payment_mode,
             )
             await self._note_unfulfillable_offers(listing, available - offer.quantity_kg)
             return order
@@ -509,9 +536,10 @@ class OrderService:
         request that never fitted and one that lost a race for the last kilos.
 
         COD is a choice in the body, and it is a choice with two refusals of its own, both 422. A
-        mode the platform has not switched on is refused by name — asking for COD where the flag is
-        off is a request for something that does not exist — and an order worth more than the
-        ceiling a pilot will extend is refused as over the limit, with the ceiling in the reply.
+        mode the platform has not switched on is refused by name, both ways round — asking for
+        escrow where escrow is off, or for COD where COD is off, is a request for something that
+        does not exist — and a COD order worth more than the ceiling a pilot will extend is
+        refused as over the limit, with the ceiling in the reply.
         """
 
         async def work() -> Order:
@@ -570,12 +598,12 @@ class OrderService:
                 unit_price_santim=listing.unit_price_santim,
             )
             payment_mode = PaymentMode(body.get("payment_mode", PaymentMode.ESCROW.value))
+            refuse_disabled_mode(
+                payment_mode,
+                escrow_enabled=self._escrow_enabled,
+                cod_enabled=self._cod_enabled,
+            )
             if payment_mode is PaymentMode.COD:
-                if not self._cod_enabled:
-                    raise ApiError(
-                        ErrorCode.VALIDATION_ERROR,
-                        details={"feature": "cod"},
-                    )
                 subtotal = terms.money(self._fee_payer).subtotal
                 if subtotal > COD_CAP_SANTIM:
                     raise ApiError(

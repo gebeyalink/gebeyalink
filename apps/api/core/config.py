@@ -118,6 +118,14 @@ class Settings(BaseSettings):
         description="Whether buyers may pay for an order on delivery instead of funding it.",
     )
 
+    # Whether checkout may create escrow orders. Escrow is the platform's funding path, and like
+    # COD it is off unless a deployment has decided otherwise. The flag gates the mode's
+    # existence, not its arithmetic.
+    escrow_enabled: bool = Field(
+        default=False,
+        description="Whether buyers may fund an order that the platform holds until delivery.",
+    )
+
     # By how much the delivered kilos may fall short of the ordered kilos before a buyer's
     # confirmation of delivery is refused (FR-2507). A crop loses weight in transit, and some
     # of that is the buyer's to accept; two percent is what a pilot will accept before handing

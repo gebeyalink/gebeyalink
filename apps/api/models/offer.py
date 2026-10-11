@@ -23,6 +23,11 @@ whose turn it is, and it is the reason there is no proposer column to drift out 
 — the depth *is* the proposer, alternating by parity. A counter that flipped the roles in the
 data as well as in the conversation would let the two disagree, and the authorization decision
 would then depend on which column a given code path remembered to read.
+
+`payment_mode` is not a negotiable term. It is chosen when a thread opens and written on every
+row in the thread, so a counter inherits it rather than restating it, and an accepted offer can
+hand the mode to the order it becomes without reading configuration that may since have changed.
+A mode a deployment has switched off must not change what an offer that already exists means.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.api.db.base import Base, TimestampMixin
 from apps.api.db.enums import stored_values
+from apps.api.models.order import PaymentMode
 
 
 class OfferStatus(enum.StrEnum):
@@ -141,6 +147,14 @@ class Offer(TimestampMixin, Base):
     status: Mapped[OfferStatus] = mapped_column(
         SqlEnum(OfferStatus, name="offer_status", values_callable=stored_values),
         nullable=False,
+    )
+    # How the sale this offer would become is paid for, fixed when the thread opens and carried
+    # by every counter in it. The default is escrow because that is what every offer predating
+    # this column was; a deployment running the COD pilot writes COD on the opening bid instead.
+    payment_mode: Mapped[PaymentMode] = mapped_column(
+        SqlEnum(PaymentMode, name="payment_mode", values_callable=stored_values),
+        nullable=False,
+        server_default=PaymentMode.ESCROW.value,
     )
     # Carried because §11.1 gives every mutable business entity one. Nothing in this slice
     # edits an offer's terms: a change of terms is a new offer, which is what a counter is.

@@ -16,6 +16,12 @@ quietly change an offer's deadline every time it was read.
 The response carries `proposed_by` because the depth alone means nothing to a client that has to
 decide whose turn it is. It is derived from the depth on the way out rather than read from a
 column, for the same reason it is not stored on the way in.
+
+How a sale would be paid for is chosen once, on the opening bid, and carried by every counter in
+the thread. It is the one term a negotiation does not renegotiate: a client that could change it
+by answering could move the ground under the other party after they had agreed to the price and
+the weight, so the field belongs to the opening bid and the counter body refuses to carry one at
+all.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from apps.api.models.offer import OfferStatus, Proposer
+from apps.api.models.order import PaymentMode
 
 #: How long an offer lives if the buyer does not say otherwise. Seventy-two hours is the
 #: specification's default: long enough for a trader to hear back, short enough that a stale
@@ -38,12 +45,12 @@ MIN_VALID_HOURS = 24
 MAX_VALID_HOURS = 168
 
 
-class OfferCreateBody(BaseModel):
-    """The terms a buyer is bidding.
+class OfferTermsBody(BaseModel):
+    """The terms a bid states, shared by an opening bid and a counter.
 
-    Only what is relative to the listing is left out: the ceiling of twice the asking price and
-    the weight floor of the listing's minimum order are both rules about a listing this request
-    does not carry, so they are checked where the listing is read.
+    Held apart from either body so that the two carry exactly the fields they own: weight, price
+    and window are negotiable in both, while the payment mode is chosen only when a thread opens
+    and is inherited by the counters that answer it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -53,12 +60,26 @@ class OfferCreateBody(BaseModel):
     valid_hours: int = Field(default=DEFAULT_VALID_HOURS, ge=MIN_VALID_HOURS, le=MAX_VALID_HOURS)
 
 
-class OfferCounterBody(OfferCreateBody):
+class OfferCreateBody(OfferTermsBody):
+    """The terms a buyer is bidding, and the mode they are bidding on.
+
+    Only what is relative to the listing is left out: the ceiling of twice the asking price and
+    the weight floor of the listing's minimum order are both rules about a listing this request
+    does not carry, so they are checked where the listing is read.
+    """
+
+    payment_mode: PaymentMode = PaymentMode.ESCROW
+
+
+class OfferCounterBody(OfferTermsBody):
     """A seller's answer to an open offer, on different or the same terms.
 
-    The same shape as an opening bid on purpose. A counter is a new offer with new terms, and
+    The same terms as an opening bid on purpose. A counter is a new offer with new terms, and
     holding it to the same bounds as an opening bid is what stops an answer from being a way to
-    propose something an opening bid could not have proposed.
+    propose something an opening bid could not have proposed. What it deliberately does *not*
+    carry is a payment mode: a counter keeps the mode of the offer it answers, so how a sale
+    would be paid for is chosen when the thread opens and cannot be changed by answering. A body
+    that tried anyway is refused by the inherited `extra="forbid"`.
     """
 
 

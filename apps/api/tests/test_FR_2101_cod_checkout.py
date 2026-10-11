@@ -142,6 +142,38 @@ def test_a_cod_order_is_created_created_and_holds_its_kilos_without_funding(
 
 
 def test_checkout_defaults_to_escrow(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    signed_in_as_buyer: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+    stored_orders: Callable[[], list[dict[str, object]]],
+) -> None:
+    """Leaving the body silent is an escrow order.
+
+    A mode that is inherited rather than chosen keeps every client written before the field
+    existed working as it always did: nobody has to send a mode to keep getting the platform's
+    default, and the default is the mode this deployment funds.
+    """
+    seller = signed_in()
+    listing_id = post_listing(
+        client,
+        seller,
+        listing_body,
+        quantity_kg=CHEAP_LISTING_KG,
+        unit_price_santim=CHEAP_ASK_SANTIM,
+    )
+    buyer = signed_in_as_buyer()
+
+    order = buy_now(client, buyer, listing_id, order_body, idempotency_key, quantity_kg=COD_BUY_KG)
+
+    assert order["payment_mode"] == "ESCROW"
+    assert order["status"] == "AWAITING_FUNDING"
+    assert stored_orders()[0]["payment_mode"] == "ESCROW"
+
+
+def test_escrow_is_refused_when_escrow_is_off(
     cod_client: TestClient,
     cod_signed_in: Callable[..., dict[str, str]],
     cod_signed_in_as_buyer: Callable[..., dict[str, str]],
@@ -149,12 +181,13 @@ def test_checkout_defaults_to_escrow(
     order_body: Callable[..., dict[str, object]],
     idempotency_key: Callable[[], str],
     stored_orders: Callable[[], list[dict[str, object]]],
+    stored_reservations: Callable[[], list[dict[str, object]]],
 ) -> None:
-    """Leaving the body silent is an escrow order, even with COD switched on.
+    """The other half of the switch: a mode nobody switched on is refused by name.
 
-    A mode that is inherited rather than chosen keeps every client written before COD existed
-    working as it always did: nobody has to send a field to keep getting the platform's default,
-    and a buyer who says nothing is not asking for something half the platform has not opened.
+    This is the COD configuration, which funds COD and not escrow, so asking for escrow is a
+    request for something that does not exist here and is answered the same way COD is answered
+    where COD is off — 422, naming the mode, writing neither an order nor a reservation.
     """
     seller = cod_signed_in()
     listing_id = post_listing(
@@ -166,13 +199,22 @@ def test_checkout_defaults_to_escrow(
     )
     buyer = cod_signed_in_as_buyer()
 
-    order = buy_now(
-        cod_client, buyer, listing_id, order_body, idempotency_key, quantity_kg=COD_BUY_KG
+    response = attempt_buy_now(
+        cod_client,
+        buyer,
+        listing_id,
+        order_body,
+        idempotency_key,
+        payment_mode="ESCROW",
+        quantity_kg=COD_BUY_KG,
     )
 
-    assert order["payment_mode"] == "ESCROW"
-    assert order["status"] == "AWAITING_FUNDING"
-    assert stored_orders()[0]["payment_mode"] == "ESCROW"
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"] == {"feature": "escrow"}
+    assert stored_orders() == []
+    assert stored_reservations() == []
 
 
 def test_cod_is_refused_by_name_while_the_flag_is_off(

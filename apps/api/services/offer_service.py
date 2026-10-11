@@ -52,6 +52,7 @@ from apps.api.models.offer import (
     Proposer,
     proposing_party,
 )
+from apps.api.models.order import PaymentMode
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
 from apps.api.repositories.offer_repository import OfferInContext, OfferRepository
 from apps.api.schemas.offer import (
@@ -119,6 +120,7 @@ class OfferTerms:
     quantity_kg: int
     price_santim: int
     valid_hours: int
+    payment_mode: PaymentMode
 
     def valid_until_from(self, now: datetime) -> datetime:
         """The instant these terms stop being on the table."""
@@ -130,6 +132,7 @@ class OfferTerms:
             "quantity_kg": self.quantity_kg,
             "price_santim": self.price_santim,
             "valid_until": self.valid_until_from(now),
+            "payment_mode": self.payment_mode,
         }
 
 
@@ -213,16 +216,36 @@ def may_answer(offer: Offer, listing: Listing, caller_id: UUID) -> bool:
     return caller_id == answering
 
 
+def refuse_disabled_mode(mode: PaymentMode, *, escrow_enabled: bool, cod_enabled: bool) -> None:
+    """Refuse a payment mode the platform has not switched on, naming it.
+
+    A mode that is off is a request for something that does not exist, which is a 422 answered by
+    name rather than by field: a client cannot fix it by correcting an input, only by asking for a
+    mode that is on. Escrow and COD are checked the same way so the two read alike, and the check
+    lives here rather than on each route because a mode is refused wherever it can be chosen —
+    placing an offer, accepting one, and buying at the asking price.
+    """
+    if mode is PaymentMode.ESCROW and not escrow_enabled:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, details={"feature": "escrow"})
+    if mode is PaymentMode.COD and not cod_enabled:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, details={"feature": "cod"})
+
+
 class OfferService:
     def __init__(
         self,
         offers: OfferRepository,
         listings: ListingRepository,
         idempotency: IdempotencyStore,
+        *,
+        escrow_enabled: bool,
+        cod_enabled: bool,
     ) -> None:
         self._offers = offers
         self._listings = listings
         self._idempotency = idempotency
+        self._escrow_enabled = escrow_enabled
+        self._cod_enabled = cod_enabled
 
     async def place(
         self, listing_id: UUID, buyer_id: UUID, body: dict[str, Any], key: str | None = None
@@ -262,6 +285,13 @@ class OfferService:
             )
 
         terms = terms_from(body)
+        # The mode is chosen here, when the thread opens, so this is where it is held to the
+        # flags. A counter never re-chooses it; see `counter`.
+        refuse_disabled_mode(
+            terms.payment_mode,
+            escrow_enabled=self._escrow_enabled,
+            cod_enabled=self._cod_enabled,
+        )
         validate_offer_terms(terms, listing)
 
         # Counted against the clock, not off the stored status: a lapsed bid must not go on
@@ -389,7 +419,11 @@ class OfferService:
                 },
             )
 
-        terms = terms_from(body)
+        # The mode is inherited, not chosen: a counter answers terms on the same ground they were
+        # offered on. A body carrying a mode never reaches here — the counter body forbids it —
+        # so the offer being answered is the only source, and neither party can change it by
+        # countering.
+        terms = terms_from(body, payment_mode=offer.payment_mode)
         validate_offer_terms(terms, context.listing)
 
         counter_offer = Offer(
@@ -515,13 +549,24 @@ class OfferService:
         return context
 
 
-def terms_from(body: dict[str, Any]) -> OfferTerms:
-    """The terms as stated, with the default window filled in."""
+def terms_from(body: dict[str, Any], *, payment_mode: PaymentMode | None = None) -> OfferTerms:
+    """The terms as stated, with the default window filled in.
+
+    `payment_mode` is passed in by a counter, which inherits the mode of the offer it answers
+    rather than reading one from its own body. An opening bid leaves it out and takes the body's
+    value instead, defaulting to escrow so a client written before the field existed keeps
+    working.
+    """
     hours = body.get("valid_hours")
     return OfferTerms(
         quantity_kg=int(body["quantity_kg"]),
         price_santim=int(body["price_santim"]),
         valid_hours=DEFAULT_VALID_HOURS if hours is None else int(hours),
+        payment_mode=(
+            payment_mode
+            if payment_mode is not None
+            else PaymentMode(body.get("payment_mode", PaymentMode.ESCROW.value))
+        ),
     )
 
 
