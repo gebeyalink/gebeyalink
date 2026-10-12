@@ -978,6 +978,36 @@ jobs:
           EOF
           exit 1
 
+  actionlint:
+    name: actionlint (workflow lint)
+    runs-on: ubuntu-latest
+    # W-actionlint — the workflow files are linted on every push so a file that does not
+    # parse is caught before it breaks a build. Pinned to actionlint v1.7.12 (released
+    # 2026-03-30): the expected SHA-256 below was read from the release's published
+    # actionlint_1.7.12_checksums.txt at pin time (2026-10-12) and is reviewed at the pull
+    # request. The workflow does not download that checksum file at run time, because a
+    # checksum downloaded from the same release protects against a corrupted download and
+    # not against a tampered release — the expected value lives in this file.
+    #
+    # The job has no skip path on purpose — no paths:, no job-level if:, no
+    # continue-on-error. The merge-gate finding (2026-10-12, recorded in the handoff) is
+    # that on a failed or cancelled needed job ci-green is skipped, while a skipped job
+    # leaves it running and passing: a lint job that could skip itself would read green
+    # while the files it guards were broken.
+    steps:
+      - uses: actions/checkout@v4
+      - name: download the pinned, hash-verified actionlint binary
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+      - name: lint every workflow file
+        run: ./actionlint -color
+
   ci-green:
     name: ci green (merge gate)
     runs-on: ubuntu-latest
@@ -997,6 +1027,7 @@ jobs:
       - build-admin
       - zap-baseline
       - openapi-snapshot
+      - actionlint
     # The gate is this condition, and nothing else.
     #
     # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per
@@ -1017,4 +1048,4 @@ jobs:
       - name: record the results this gate considered
         run: |
           echo 'results considered by this gate:'
-          echo ${{ needs.*.result }}
+          echo '${{ toJSON(needs) }}'
