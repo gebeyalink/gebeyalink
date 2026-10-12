@@ -39,4 +39,13 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
 # `python -m apps.api.worker` starts Celery's beat and its worker in one process, which is
 # what the CI job does too: the scheduler and the executor are the same deployment unit
 # here, and the two-process split belongs with the load-bearing rollout, not with this one.
+#
+# The beat scheduler is persistent: it writes its schedule state to a file so a restart
+# does not lose the next-fire. The default path (`./beat-schedule`, relative to WORKDIR)
+# sits inside the image, which the non-root user cannot write and which a rebuild discards.
+# A deployment MUST set WORKER_BEAT_SCHEDULE_PATH to a path on a mounted volume on durable
+# storage — e.g. WORKER_BEAT_SCHEDULE_PATH=/var/lib/gebeyalink/beat-schedule with that
+# directory bind-mounted. If the file is lost or corrupted, beat replans as if it were a
+# fresh start; the deadline evaluators are idempotent, so a missed tick is caught at the
+# next one.
 CMD ["python", "-m", "apps.api.worker"]

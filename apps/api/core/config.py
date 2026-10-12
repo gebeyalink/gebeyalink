@@ -157,6 +157,14 @@ class Settings(BaseSettings):
         default=180,
         description="How long a heartbeat key stays visible after it was last written.",
     )
+    worker_beat_schedule_path: str = Field(
+        default="./beat-schedule",
+        description=(
+            "Where the persistent beat scheduler writes its schedule state. In a deployed "
+            "environment this path must be on durable storage (a mounted volume): if the file "
+            "is lost or corrupted, beat replans as if it were a fresh start."
+        ),
+    )
 
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -

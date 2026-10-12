@@ -18,9 +18,11 @@ evaluations — coarse-grained and infrequent, not throughput-bound. A single-th
 simpler than a prefork pool and, unlike prefork, it runs on the developer's Windows laptop as
 well as on the Linux runner, so the CI job's commands are commands a person can run.
 
-The beat scheduler keeps its schedule in memory. A heartbeat that fires every interval does not
-need a schedule written to disk, and a file the scheduler owns is one more thing a container has
-to be allowed to write and one more thing that can go stale.
+The beat scheduler keeps its schedule in a file the deployment points at. A heartbeat that
+fires every interval does not need it, but the evaluators that follow it do: an in-memory
+schedule replans from now on every restart, so a worker restarted just before a daily-run
+time would re-decide whether that run already happened. The schedule is written where the
+deployment says, and a restart reads the next-fire instead of inventing one.
 
 The heartbeat is a key with a short TTL, not a row. Liveness is a fact about right now, not a
 record to keep: a key whose absence means "no worker has run recently" answers the operator's
@@ -89,7 +91,13 @@ def build_celery(settings: Settings) -> Celery:
         # Ethiopian clock. W1b's boundary test fixes the zone; this is where it is pinned.
         timezone="Africa/Addis_Ababa",
         enable_utc=True,
-        beat_scheduler="celery.beat:Scheduler",
+        beat_scheduler="celery.beat:PersistentScheduler",
+        beat_schedule_filename=settings.worker_beat_schedule_path,
+        # The schedule file is the crash-safety story: a restart reads the next-fire from it.
+        # Celery otherwise spills the store only every few minutes; syncing after every fire is
+        # what keeps the on-disk state one tick behind at most, which is the whole point of
+        # having written the schedule down in the first place.
+        beat_sync_every=1,
         beat_schedule={
             HEARTBEAT_TASK_NAME: {
                 "task": HEARTBEAT_TASK_NAME,
@@ -128,9 +136,10 @@ def main() -> None:
     settings = get_settings()
     app = build_celery(settings)
     logger.info(
-        "worker starting: heartbeat every %ss, TTL %ss",
+        "worker starting: heartbeat every %ss, TTL %ss, beat schedule at %s",
         settings.worker_heartbeat_interval_seconds,
         settings.worker_heartbeat_ttl_seconds,
+        settings.worker_beat_schedule_path,
     )
     app.Worker(pool_cls="solo", loglevel="INFO", beat=True).start()
 

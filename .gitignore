@@ -55,6 +55,10 @@ htmlcov/
 # every CI run and uploads it as the coverage-xml artifact; a local one is never that
 # artifact and must not be committed as if it were.
 coverage.xml
+# The persistent beat scheduler's schedule file, when the worker runs from this directory with
+# the default WORKER_BEAT_SCHEDULE_PATH. It is state a deployment owns, not source; the CI job
+# and any container write it to a path of their own.
+/beat-schedule
 
 # ── Internal records — not part of the shipped codebase ─────────────────────
 # The session handoff and the baseline-folder artifacts belong on disk, not in

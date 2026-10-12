@@ -163,6 +163,14 @@ jobs:
     #
     # The side effect is the heartbeat: a key with a TTL and a monotonic tick counter. The wait
     # below reads the effect the way an operator would, not the worker's own claim that it ran.
+    #
+    # W1b-schedule — the same worker then proves the persistence the evaluator round that follows
+    # depends on. The beat scheduler is PersistentScheduler, its state lives in a file, and that
+    # file is what carries the next-fire across a restart. Round one boots and fires; the file's
+    # count is read and recorded. Round two boots again on the same file and the count is where
+    # round one left it — the restart read the schedule instead of inventing one. Round three
+    # deletes the file and boots once more: beat counts from one, which is the proof that the
+    # file, not the process, was what carried the state.
     services:
       postgres:
         image: postgis/postgis:16-3.4
@@ -190,10 +198,11 @@ jobs:
       TERMS_VERSION: '2026-01-01'
       # The schedule is the one thing this job changes, and it changes it the way a deployment
       # would: through the environment the worker already reads. A heartbeat due every sixty
-      # seconds would make the job wait a minute to observe a fact a one-second schedule
-      # produces at once; the short TTL means a key left by an earlier run cannot be mistaken
-      # for a live worker.
-      WORKER_HEARTBEAT_INTERVAL_SECONDS: '1'
+      # seconds would make the job wait a minute to observe a fact a fast schedule produces at
+      # once; the short TTL means a key left by an earlier run cannot be mistaken for a live
+      # worker. The persistence rounds re-boot the worker on this same cadence and watch a new
+      # fire land within a few seconds.
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: '3'
       WORKER_HEARTBEAT_TTL_SECONDS: '30'
     steps:
       - uses: actions/checkout@v4
@@ -234,15 +243,27 @@ jobs:
           { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; } >> "$GITHUB_ENV"
           python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')" >> "$GITHUB_ENV"
           rm -f /tmp/test-private.pem /tmp/test-public.pem
-      - name: boot the worker on a fast schedule
+      - name: export the persistent scheduler's file location
+        # `runner` is a step context, so the schedule path cannot be spelled at the job level;
+        # it is exported once here and every round reads WORKER_BEAT_SCHEDULE_PATH. The runner's
+        # scratch space is this job's durable-ish storage, standing in for the mounted volume a
+        # deployment must provide: the three rounds read this file and nothing else decides what
+        # a restarted scheduler believes about the past, which is the property being proven.
+        env:
+          WORKER_BEAT_SCHEDULE_PATH: ${{ runner.temp }}/beat-schedule
+        run: echo "WORKER_BEAT_SCHEDULE_PATH=$WORKER_BEAT_SCHEDULE_PATH" >> "$GITHUB_ENV"
+      - name: boot the worker (round 1 - fast schedule, persistent scheduler)
         # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only
         # ignores the hangup signal, and a new session is a stronger promise than a process
-        # group the runner happens to leave alone today.
+        # group the runner happens to leave alone today. Each round writes its own log, so a
+        # failure can be read back against the round that produced it.
         run: |
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
           setsid nohup python -m apps.api.worker \
-            > "$RUNNER_TEMP/worker.log" 2>&1 < /dev/null &
+            > "$RUNNER_TEMP/worker-round1.log" 2>&1 < /dev/null &
           echo "$!" > "$RUNNER_TEMP/worker.pid"
-      - name: wait for the heartbeat, then assert it
+      - name: wait for the heartbeat, then assert it (round 1)
         run: |
           python - <<'PY'
           import os
@@ -258,7 +279,9 @@ jobs:
           while time.monotonic() < deadline:
               ticks = client.get(HEARTBEAT_TICKS_KEY)
               moment = client.get(HEARTBEAT_KEY)
-              if ticks and int(ticks) > 0 and moment:
+              # Three fires, not one: the persistence rounds compare the count carried in the
+              # schedule file against a baseline that must sit comfortably above a fresh start.
+              if ticks and int(ticks) >= 3 and moment:
                   break
               time.sleep(1)
           else:
@@ -269,14 +292,147 @@ jobs:
           print(f"ticks {HEARTBEAT_TICKS_KEY}={ticks}")
           print(f"heartbeat TTL {ttl}s")
           PY
-      - name: show the worker log
+      - name: stop the worker (round 1)
+        # Graceful SIGTERM first, then the beat child's own pattern; the sleeps let the worker
+        # run its shutdown path so the schedule file is closed and flushed before it is read.
+        run: |
+          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true
+          sleep 3
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          sleep 2
+      - name: record the schedule state after the first boot
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shelve
+
+          path = os.environ["WORKER_BEAT_SCHEDULE_PATH"]
+          with shelve.open(path, flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              state = {
+                  "boot": 1,
+                  "total_run_count": entry.total_run_count,
+                  "last_run_at": entry.last_run_at.isoformat(),
+              }
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json"), "w") as fh:
+              json.dump(state, fh)
+          print("schedule state after the first boot:", json.dumps(state))
+          PY
+      - name: restart the worker on the same schedule file (round 2)
+        run: |
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          setsid nohup python -m apps.api.worker \
+            >> "$RUNNER_TEMP/worker-round2.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: assert the next fire survived the restart (round 2)
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shelve
+          import subprocess
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_TICKS_KEY
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json")) as fh:
+              first = json.load(fh)
+          count1 = first["total_run_count"]
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+              if ticks >= count1 + 1:
+                  break
+              time.sleep(0.1)
+          else:
+              sys.exit(f"no fire after the restart; waited for ticks >= {count1 + 1}")
+
+          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()
+          subprocess.run(["kill", pid], check=False)
+          time.sleep(3)
+          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)
+          subprocess.run(["pkill", "-f", "celery beat"], check=False)
+          time.sleep(2)
+
+          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              count2 = entry.total_run_count
+          print(f"first boot baseline: total_run_count={count1}")
+          print(f"after the restart: total_run_count={count2}")
+          # The count continued where the first boot left it. A fresh replan would have counted
+          # its fires from one, but the baseline sat well above that and stayed where it was.
+          assert count1 + 1 <= count2 <= count1 + 2, (count1, count2)
+          print("PERSISTED: the next fire carried over the restart, reset by nothing")
+          PY
+      - name: delete the schedule file and boot once more (round 3)
+        run: |
+          rm -f "$WORKER_BEAT_SCHEDULE_PATH"*
+          sleep 1
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          setsid nohup python -m apps.api.worker \
+            >> "$RUNNER_TEMP/worker-round3.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: assert a missing schedule file is a fresh replan (round 3)
+        run: |
+          python - <<'PY'
+          import os
+          import shelve
+          import subprocess
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_TICKS_KEY
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          before = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+              if ticks > before:
+                  break
+              time.sleep(0.1)
+          else:
+              sys.exit(f"no fire without a schedule file; waited for ticks > {before}")
+
+          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()
+          subprocess.run(["kill", pid], check=False)
+          time.sleep(3)
+          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)
+          subprocess.run(["pkill", "-f", "celery beat"], check=False)
+          time.sleep(2)
+
+          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              count3 = entry.total_run_count
+          # Round two read a count that carried a baseline no fresh entry reaches in the same
+          # window; with the file gone, beat counted its fires from one. The file is the state.
+          assert count3 <= 2, count3
+          print(f"without the schedule file: total_run_count={count3}")
+          print("REPLANNED FRESH: the missing file is why the earlier restart kept its count")
+          PY
+      - name: show the worker logs
         if: always()
-        run: tail -n 40 "$RUNNER_TEMP/worker.log" || true
-      - name: stop the worker
+        run: |
+          tail -n 30 "$RUNNER_TEMP/worker-round1.log" 2>/dev/null || true
+          tail -n 30 "$RUNNER_TEMP/worker-round2.log" 2>/dev/null || true
+          tail -n 30 "$RUNNER_TEMP/worker-round3.log" 2>/dev/null || true
+      - name: stop the worker (final)
         if: always()
         run: |
           kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true
           pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
 
   ussd:
     name: USSD/SMS harness
