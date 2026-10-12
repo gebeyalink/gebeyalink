@@ -28,6 +28,10 @@ dependencies = [
     # command. A migration tool that is not a declared dependency is a migration tool CI
     # cannot run.
     "alembic>=1.13",
+    # apps/api/worker.py imports this. The API never does, but the worker is a process this
+    # repository ships and CI runs, and a process whose scheduler is not a declared dependency
+    # is a process pip cannot start. Its broker is the Redis already on this list.
+    "celery>=5.4",
 ]
 
 [project.optional-dependencies]

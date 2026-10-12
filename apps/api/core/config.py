@@ -143,6 +143,21 @@ class Settings(BaseSettings):
         description="Version stamped on every terms acceptance recorded from now on.",
     )
 
+    # The worker's schedule. Read by the worker process and by nothing the API serves, but it
+    # lives here so the worker resolves the same configuration the API resolves, from the same
+    # environment, rather than growing a second settings object that can drift. The interval is
+    # how often the heartbeat task is due; the TTL is how long a heartbeat stays visible after
+    # the worker that wrote it stops. A TTL of several intervals means a key present means a
+    # worker recently alive, and a key absent means one that is not.
+    worker_heartbeat_interval_seconds: int = Field(
+        default=60,
+        description="How often the worker's periodic heartbeat task is scheduled.",
+    )
+    worker_heartbeat_ttl_seconds: int = Field(
+        default=180,
+        description="How long a heartbeat key stays visible after it was last written.",
+    )
+
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -
     # all three mounted unconditionally, all three reachable by anyone who can reach the

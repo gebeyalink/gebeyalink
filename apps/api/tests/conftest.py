@@ -20,6 +20,7 @@ import sys
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import AsyncExitStack
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
@@ -994,6 +995,142 @@ async def escrow_flag_clients(
                 ) as unfunded_http,
             ):
                 yield funding_http, unfunded_http
+
+
+@pytest.fixture(scope="session")
+def both_modes_settings(
+    postgres_url: str, redis_url: str, signing_keys: tuple[str, str]
+) -> Settings:
+    """The configuration with both funding modes open.
+
+    Escrow and cash-on-delivery are two flags, not one, and the accept-time rule is about each
+    of them independently and about both at once. A test of that rule needs the "both open"
+    end of the matrix, which neither the default settings nor the COD settings provide.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
+        terms_version=TERMS_VERSION,
+        escrow_enabled=True,
+        cod_enabled=True,
+    )
+
+
+@pytest.fixture(scope="session")
+def no_modes_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
+    """The configuration that funds neither mode.
+
+    A deployment that has opened nothing. The feature-phone adapters still send cash-on-delivery
+    on the trader's behalf when escrow is off, so this is the configuration in which the domain's
+    own refusal is what stops the bid - the refusal the channel reply has to carry back.
+    """
+    private_pem, public_pem = signing_keys
+    return Settings(
+        database_url=postgres_url,
+        redis_url=redis_url,
+        signing_private_key=SecretStr(private_pem),
+        signing_public_key=SecretStr(public_pem),
+        signing_key_id="test-key",
+        gateway_secret=SecretStr(GATEWAY_SECRET),
+        terms_version=TERMS_VERSION,
+        escrow_enabled=False,
+        cod_enabled=False,
+    )
+
+
+@pytest.fixture()
+def no_modes_client(
+    no_modes_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> Iterator[TestClient]:
+    """The application with neither funding mode open."""
+    application: FastAPI = create_app(no_modes_settings)
+    with TestClient(application) as test_client:
+        application.state.sms_provider = sms_recorder
+        yield test_client
+
+
+@pytest.fixture()
+def no_modes_signed_in(
+    no_modes_client: TestClient, code_for: Callable[[str], str]
+) -> Callable[..., dict[str, str]]:
+    """Sign a trader in against the application that funds neither mode.
+
+    Written out again rather than shared with `sign_in`, for the same process-global-singleton
+    reason `cod_signed_in` is: signing in through one application's client and then acting
+    through another leaves the second application using the first one's loop.
+    """
+
+    def _no_modes_signed_in(
+        phone_e164: str = "+251911000001", *, language: str | None = None
+    ) -> dict[str, str]:
+        requested = no_modes_client.post("/v1/auth/otp/request", json={"phone_e164": phone_e164})
+        assert requested.status_code == 200, requested.text
+        body: dict[str, object] = {
+            "phone_e164": phone_e164,
+            "code": code_for(phone_e164),
+            "terms_version": TERMS_VERSION,
+        }
+        if language is not None:
+            body["language"] = language
+        verified = no_modes_client.post("/v1/auth/otp/verify", json=body)
+        assert verified.status_code == 200, verified.text
+        return {"Authorization": f"Bearer {verified.json()['access_token']}"}
+
+    return _no_modes_signed_in
+
+
+@pytest.fixture()
+async def mode_clients(
+    settings: Settings,
+    cod_settings: Settings,
+    both_modes_settings: Settings,
+    no_modes_settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    sms_recorder: RecordingSmsProvider,
+) -> AsyncIterator[dict[str, httpx.AsyncClient]]:
+    """Four applications over one database, one per combination of the two funding flags.
+
+    A flag is fixed when an application is built, so a test that needs it to differ between a bid
+    being placed and the bid being accepted is a test of more than one application. Four
+    combinations means four applications: ``both`` (escrow and COD), ``escrow`` (escrow only),
+    ``cod`` (COD only) and ``none`` (neither). All four share this run's database and signing key,
+    so a token minted by one is the token the others check and an offer placed under one is the
+    row the others read - which is what lets the four stand in for one deployment before, during
+    and after its flags changed.
+
+    This is the two-application fixture A2b's accept-time test uses, generalised to the whole
+    matrix: the same one-database, one-signing-key, one-event-loop shape, with the number of
+    applications the matrix needs rather than the number a single flip needs.
+
+    The lifespans run inside this test's own event loop, which is what keeps the process-wide
+    engine and store belonging to the loop that is using them.
+    """
+    builds: dict[str, FastAPI] = {
+        "both": create_app(both_modes_settings),
+        "escrow": create_app(settings),
+        "cod": create_app(cod_settings),
+        "none": create_app(no_modes_settings),
+    }
+    async with AsyncExitStack() as stack:
+        clients: dict[str, httpx.AsyncClient] = {}
+        for name, application in builds.items():
+            await stack.enter_async_context(application.router.lifespan_context(application))
+            application.state.sms_provider = sms_recorder
+            clients[name] = await stack.enter_async_context(
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=application), base_url=f"http://{name}.test"
+                )
+            )
+        yield clients
 
 
 @pytest.fixture()

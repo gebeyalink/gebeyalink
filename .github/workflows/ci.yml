@@ -152,6 +152,132 @@ jobs:
         if: steps.gate.outputs.count != '0'
         run: pytest apps/api/tests -m integration -q
 
+  worker:
+    name: worker (celery beat + worker)
+    runs-on: ubuntu-latest
+    # W1a — the worker is a process this repository ships, so it is a process CI runs. This is
+    # not a unit test with a mocked scheduler: Celery's beat and its worker run for real, over
+    # the same Redis the integration job starts, and the job waits for the schedule to fire and
+    # leaves an observable side effect behind. A mock cannot pass this — a worker that boots but
+    # whose beat never fires writes neither key, and neither does one whose task raises.
+    #
+    # The side effect is the heartbeat: a key with a TTL and a monotonic tick counter. The wait
+    # below reads the effect the way an operator would, not the worker's own claim that it ran.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: gebeyalink
+          POSTGRES_PASSWORD: gebeyalink
+          POSTGRES_DB: gebeyalink_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
+      REDIS_URL: redis://localhost:6379/0
+      TERMS_VERSION: '2026-01-01'
+      # The schedule is the one thing this job changes, and it changes it the way a deployment
+      # would: through the environment the worker already reads. A heartbeat due every sixty
+      # seconds would make the job wait a minute to observe a fact a one-second schedule
+      # produces at once; the short TTL means a key left by an earlier run cannot be mistaken
+      # for a live worker.
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: '1'
+      WORKER_HEARTBEAT_TTL_SECONDS: '30'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]'
+      - name: generate the settings the worker reads
+        # The worker resolves the same Settings the API does, and Settings has no default for
+        # either signing key, so they are provisioned here the way the ZAP job provisions them.
+        # The worker never signs anything; the requirement is that it boots from the
+        # configuration the API boots from, not from a narrower one invented for this job.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          private_pem = key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          ).decode()
+          public_pem = (
+              key.public_key()
+              .public_bytes(
+                  encoding=serialization.Encoding.PEM,
+                  format=serialization.PublicFormat.SubjectPublicKeyInfo,
+              )
+              .decode()
+          )
+          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")
+          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")
+          PY
+          { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; } >> "$GITHUB_ENV"
+          { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; } >> "$GITHUB_ENV"
+          python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')" >> "$GITHUB_ENV"
+          rm -f /tmp/test-private.pem /tmp/test-public.pem
+      - name: boot the worker on a fast schedule
+        # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only
+        # ignores the hangup signal, and a new session is a stronger promise than a process
+        # group the runner happens to leave alone today.
+        run: |
+          setsid nohup python -m apps.api.worker \
+            > "$RUNNER_TEMP/worker.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: wait for the heartbeat, then assert it
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_KEY, HEARTBEAT_TICKS_KEY
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          deadline = time.monotonic() + 60
+          while time.monotonic() < deadline:
+              ticks = client.get(HEARTBEAT_TICKS_KEY)
+              moment = client.get(HEARTBEAT_KEY)
+              if ticks and int(ticks) > 0 and moment:
+                  break
+              time.sleep(1)
+          else:
+              sys.exit("the worker produced no heartbeat within 60s")
+          ttl = client.ttl(HEARTBEAT_KEY)
+          assert 0 < ttl <= int(os.environ["WORKER_HEARTBEAT_TTL_SECONDS"]), ttl
+          print(f"heartbeat {HEARTBEAT_KEY}={moment}")
+          print(f"ticks {HEARTBEAT_TICKS_KEY}={ticks}")
+          print(f"heartbeat TTL {ttl}s")
+          PY
+      - name: show the worker log
+        if: always()
+        run: tail -n 40 "$RUNNER_TEMP/worker.log" || true
+      - name: stop the worker
+        if: always()
+        run: |
+          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+
   ussd:
     name: USSD/SMS harness
     runs-on: ubuntu-latest
@@ -308,6 +434,24 @@ jobs:
         with:
           name: api-dockerfile
           path: infra/Dockerfile.api
+      - name: detect worker Dockerfile
+        id: gate-worker
+        run: |
+          if [ -f infra/Dockerfile.worker ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: building worker image from infra/Dockerfile.worker"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no infra/Dockerfile.worker yet (activates when the Dockerfile lands)"
+          fi
+      - name: build worker image
+        if: steps.gate-worker.outputs.count != '0'
+        run: docker build -f infra/Dockerfile.worker -t gebeyalink/worker:${{ github.sha }} .
+      - uses: actions/upload-artifact@v4
+        if: steps.gate-worker.outputs.count != '0'
+        with:
+          name: worker-dockerfile
+          path: infra/Dockerfile.worker
 
   build-mobile:
     name: build mobile (Flutter)
@@ -687,6 +831,7 @@ jobs:
       - i18n-keys
       - unit
       - integration
+      - worker
       - ussd
       - e2e
       - load

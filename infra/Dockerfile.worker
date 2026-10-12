@@ -1,0 +1,42 @@
+# GebeyaLink worker image. SPEC §18.2 docker-compose pilot environment.
+#
+# This is the API image's pattern with the API left out: the same base, the same non-root
+# user, the same "the source is what the image is for" shape. What differs is the entry
+# point — there is no port to expose and no /health to probe, because a worker answers
+# nobody. Its liveness is the heartbeat key it writes to Redis, and that is what the
+# HEALTHCHECK below reads.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# SPEC §17.1 — never run as root. The worker writes nothing to the image, so it needs no
+# home directory and no writable path of its own.
+RUN groupadd --system --gid 1001 gebeyalink \
+ && useradd --system --uid 1001 --gid gebeyalink --no-create-home gebeyalink
+
+WORKDIR /app
+
+# The source is copied and installed rather than copied and imported from the working
+# directory: `python -m apps.api.worker` then resolves the package the same way it does on a
+# developer's machine and on the CI runner, not by a working-directory accident. The runtime
+# dependency set is installed, not the dev extras — ruff and pytest have no business in a
+# worker image.
+COPY pyproject.toml ./
+COPY apps ./apps
+COPY packages ./packages
+RUN pip install --no-cache-dir .
+
+USER gebeyalink
+
+# The analogue of the API image's /health probe. A worker has no route to answer, so the
+# probe reads the liveness key the scheduled task writes: present (TTL still running) means
+# a heartbeat fired recently, absent means the scheduler or the task has stopped.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
+    CMD python -c "import os,redis,sys;c=redis.Redis.from_url(os.environ['REDIS_URL']);sys.exit(0 if c.exists('gebeyalink:worker:heartbeat') else 1)"
+
+# `python -m apps.api.worker` starts Celery's beat and its worker in one process, which is
+# what the CI job does too: the scheduler and the executor are the same deployment unit
+# here, and the two-process split belongs with the load-bearing rollout, not with this one.
+CMD ["python", "-m", "apps.api.worker"]
