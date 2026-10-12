@@ -46,8 +46,6 @@ jobs:
         run: ruff check apps/api packages
       - name: black
         run: black --check apps/api packages
-      - name: negative-proof violation (temporary, removed in the next commit)
-        run: echo "triggered by ${{ github.evnet_name }}"
 
   typecheck:
     name: typecheck (mypy strict)
