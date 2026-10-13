@@ -1213,7 +1213,8 @@ def stored_orders(postgres_url: str) -> Callable[[], list[dict[str, object]]]:
                 " vat_santim, total_santim, fee_payer, buyer_address_woreda_id,"
                 " buyer_address_text, pickup_code, status, cancel_reason, payment_mode,"
                 " confirmed_at, buyer_confirmed_at, seller_confirmed_at, funded_at, ready_at,"
-                " shipped_at, delivered_at, delivered_weight_kg, version, state_before_dispute"
+                " shipped_at, delivered_at, delivered_weight_kg, delivered_via, version,"
+                " state_before_dispute"
                 " FROM orders ORDER BY created_at, id"
             )
             return list(cursor.fetchall())

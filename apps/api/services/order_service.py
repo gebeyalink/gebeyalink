@@ -58,7 +58,7 @@ from apps.api.core.idempotency import fingerprint_of as _fingerprint
 from apps.api.core.short_codes import OrderCodeSource, new_pickup_code
 from apps.api.models.listing import DeliveryOption, Listing, ListingStatus
 from apps.api.models.offer import OfferStatus, proposing_party
-from apps.api.models.order import CancelReason, Order, OrderStatus, PaymentMode
+from apps.api.models.order import CancelReason, DeliveryVia, Order, OrderStatus, PaymentMode
 from apps.api.models.quantity_reservation import (
     HolderType,
     QuantityReservation,
@@ -927,7 +927,11 @@ class OrderService:
                     details={"fields": {"pickup_code": "does_not_match"}},
                 )
             await self._settle_delivery(
-                order, OrderStatus.READY_FOR_PICKUP, now, "seller pickup confirmation"
+                order,
+                OrderStatus.READY_FOR_PICKUP,
+                now,
+                "seller pickup confirmation",
+                DeliveryVia.PICKUP_CODE,
             )
             order.pickup_code = None
             await self._orders.commit()
@@ -971,7 +975,11 @@ class OrderService:
                 )
             self._require_tolerable(order)
             await self._settle_delivery(
-                order, OrderStatus.SHIPPED, now, "buyer delivery confirmation"
+                order,
+                OrderStatus.SHIPPED,
+                now,
+                "buyer delivery confirmation",
+                DeliveryVia.BUYER_CONFIRMED,
             )
             await self._orders.commit()
             return order
@@ -1369,7 +1377,11 @@ class OrderService:
             return True
         if order.status is OrderStatus.READY_FOR_PICKUP and pickup_window_closed(order, now):
             await self._settle_delivery(
-                order, OrderStatus.READY_FOR_PICKUP, now, "auto-confirmed pickup"
+                order,
+                OrderStatus.READY_FOR_PICKUP,
+                now,
+                "auto-confirmed pickup",
+                DeliveryVia.PICKUP_WINDOW,
             )
             order.pickup_code = None
             await self._orders.commit()
@@ -1379,24 +1391,39 @@ class OrderService:
             and hold_hours is not None
             and shipment_window_closed(order, now, hold_hours)
         ):
-            await self._settle_delivery(order, OrderStatus.SHIPPED, now, "auto-released shipment")
+            await self._settle_delivery(
+                order,
+                OrderStatus.SHIPPED,
+                now,
+                "auto-released shipment",
+                DeliveryVia.SHIPMENT_WINDOW,
+            )
             await self._orders.commit()
             return True
         return False
 
     async def _settle_delivery(
-        self, order: Order, from_status: OrderStatus, now: datetime, why: str
+        self,
+        order: Order,
+        from_status: OrderStatus,
+        now: datetime,
+        why: str,
+        delivered_via: DeliveryVia,
     ) -> int:
-        """Record a delivery: `DELIVERED`, its timestamp, its kilos consumed.
+        """Record a delivery: `DELIVERED`, its timestamp, its mechanism, its kilos consumed.
 
         Shared by the two confirmation routes and the two lazy windows, so every road into
         `DELIVERED` has the same effect on the order and on the reservation and there is no
-        second delivery in this slice to disagree with the first.
+        second delivery in this slice to disagree with the first. The road names itself with
+        `delivered_via`, and that name is the durable record: which mechanism delivered the
+        order cannot be derived afterwards, because the boundaries it would be derived from are
+        editable, and a derived answer would rewrite a past delivery.
 
         The caller commits; `_settle_delivery` mutates and returns.
         """
         transition_order_status(order, OrderStatus.DELIVERED, from_status)
         order.delivered_at = now
+        order.delivered_via = delivered_via
         consumed = await self._reservations.consume_for_order(order.id)
         logger.info("delivered order order_id=%s consumed_kg=%s why=%s", order.id, consumed, why)
         return consumed

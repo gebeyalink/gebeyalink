@@ -105,6 +105,24 @@ class PaymentMode(enum.StrEnum):
     COD = "COD"
 
 
+class DeliveryVia(enum.StrEnum):
+    """Which mechanism closed an order's delivery.
+
+    The four roads into `DELIVERED` are the buyer's confirmation (FR-702), the seller breaking
+    the pickup code (FR-703), the pickup window closing, and the shipment window closing. This
+    records which one happened, at the moment it happened, because the mechanism cannot be
+    reconstructed later: the pickup boundary is a code constant and the shipment boundary reads
+    a crop's holding hours, which are editable after the sale. The four values are the whole
+    vocabulary. A transport-partner delivery is not a fifth value — when that fix lands it will
+    settle as `BUYER_CONFIRMED`, the confirmation being the same as a shipped order's (FR-704).
+    """
+
+    BUYER_CONFIRMED = "BUYER_CONFIRMED"
+    PICKUP_CODE = "PICKUP_CODE"
+    PICKUP_WINDOW = "PICKUP_WINDOW"
+    SHIPMENT_WINDOW = "SHIPMENT_WINDOW"
+
+
 class Order(TimestampMixin, Base):
     """One buyer, one seller, one weight of one listing, and the money both of them agreed."""
 
@@ -202,6 +220,15 @@ class Order(TimestampMixin, Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # What actually arrived, which is not always what was ordered. Null until delivery.
     delivered_weight_kg: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    # How the delivery was confirmed, written at the single settlement chokepoint when it
+    # happened. Null on an order that has not been delivered, and null forever on any order that
+    # was delivered before this column existed: the value records a mechanism, and a delivery
+    # that already passed has no mechanism left to record. It is deliberately not backfilled,
+    # because deriving it now would apply today's boundaries to yesterday's handovers.
+    delivered_via: Mapped[DeliveryVia | None] = mapped_column(
+        SqlEnum(DeliveryVia, name="delivered_via", values_callable=stored_values),
+        nullable=True,
+    )
     cancel_reason: Mapped[str | None] = mapped_column(String(length=40), nullable=True)
     payment_mode: Mapped[PaymentMode] = mapped_column(
         SqlEnum(PaymentMode, name="payment_mode", values_callable=stored_values),
