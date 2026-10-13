@@ -849,9 +849,9 @@ class OrderService:
     async def mark_shipped(self, order_id: UUID, caller_id: UUID, key: str) -> OrderResponse:
         """The seller's word that a delivery order is on its way (FR-702).
 
-        The same shape as `mark_ready`, asked against the same method: an order whose method is
-        seller delivery is marked shipped, and one whose method is pickup has no shipment to
-        mark. The kilos are not moving until this message; they start moving at it.
+        An order whose method is pickup has no shipment to mark; an order whose method is seller
+        delivery or buyer-arranged transport is marked shipped — in both cases the goods have left
+        the seller, and the difference is who carries them, not whether there is a shipment.
 
         The standalone message is also what an escrow order is shipped by, in whatever slice does
         the shipping, because the guard is this table and the move is legal from `FUNDED`.
@@ -865,7 +865,10 @@ class OrderService:
 
             now = datetime.now(UTC)
             current = effective_status(order, now)
-            if order.delivery_method is not DeliveryOption.SELLER_DELIVERY:
+            if order.delivery_method not in (
+                DeliveryOption.SELLER_DELIVERY,
+                DeliveryOption.TRANSPORT_PARTNER,
+            ):
                 raise ApiError(
                     ErrorCode.ILLEGAL_STATE_TRANSITION,
                     details={
