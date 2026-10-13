@@ -165,6 +165,14 @@ class Settings(BaseSettings):
             "is lost or corrupted, beat replans as if it were a fresh start."
         ),
     )
+    worker_shipment_sweep_interval_seconds: int = Field(
+        default=300,
+        description=(
+            "How often the worker settles orders whose shipment holding window has passed. "
+            "Five minutes: the window is measured in days, so a coarse cadence is honest, and "
+            "an infrequent sweep is one less process waking a database nobody is waiting on."
+        ),
+    )
 
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -

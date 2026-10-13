@@ -67,6 +67,18 @@ class OrderRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def find_by_id_for_update_skip_locked(self, order_id: uuid.UUID) -> Order | None:
+        """One order by its internal identity, locked if it is free and skipped if it is not.
+
+        The worker's road rather than a request's, and the difference is the same one the
+        acceptance flow draws: a sweep has many orders to settle and nothing to refuse, so an
+        order another settler already holds is passed over and picked up by the next sweep
+        rather than waited on. Absent means somebody else has it, or it went away.
+        """
+        stmt = select(Order).where(Order.id == order_id).with_for_update(skip_locked=True)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def short_code_exists(self, short_code: str) -> bool:
         """Whether an order already carries this code.
 
@@ -153,6 +165,33 @@ class OrderRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_lapsed_shipment_ids(self, now: datetime, limit: int) -> list[uuid.UUID]:
+        """Shipped orders whose crop's holding window had closed by `now`, oldest first.
+
+        The window is the crop's own (FR-2508): grain keeps for two weeks while greens last for
+        two days, so the comparison is against the sold crop's `escrow_hold_hours` rather than a
+        platform-wide figure, and it is readable here as the same arithmetic the domain states -
+        inclusive, so an order exactly at the boundary has lapsed.
+
+        Identities rather than rows, because the sweep then locks each one on its own and the
+        lock belongs to the settlement rather than to the question of which shipments lapsed. The
+        list is bounded so this stays a sweep and not a table scan; a hundred is what a worker's
+        first statement may reasonably fetch.
+        """
+        stmt = (
+            select(Order.id)
+            .join(Listing, Listing.id == Order.listing_id)
+            .join(Crop, Crop.id == Listing.crop_id)
+            .where(
+                Order.status == OrderStatus.SHIPPED,
+                Order.shipped_at + func.make_interval(0, 0, 0, 0, Crop.escrow_hold_hours) <= now,
+            )
+            .order_by(Order.shipped_at, Order.id)
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def crop_hold_hours_for_order(self, order_id: uuid.UUID) -> int | None:
         """The hours an escrow on this order's crop is held before it may be released.
 
@@ -193,6 +232,15 @@ class OrderRepository:
 
     async def commit(self) -> None:
         await self._session.commit()
+
+    async def rollback(self) -> None:
+        """Discard an unfinished change and release the transaction's locks.
+
+        The worker's per-order transaction is written to be either settled or abandoned, and
+        the row lock `SKIP LOCKED` took has to go back the moment the sweep decides not to
+        write, or the next candidate waits behind an order nothing is going to happen to.
+        """
+        await self._session.rollback()
 
     async def flush(self) -> None:
         await self._session.flush()

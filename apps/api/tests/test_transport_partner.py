@@ -283,8 +283,9 @@ def test_a_transport_partner_order_is_subject_to_the_shipment_window(
     """A buyer-arranged shipment nobody confirms is still released by the crop's window.
 
     The window keys on the order's status and the crop's holding hours, so a transport-partner
-    order inherits it unchanged. The row records `SHIPMENT_WINDOW` - the automatic road - proving
-    the buyer-arranged delivery is not a special case downstream of the shipment.
+    order inherits it unchanged - the derivation is the same one every shipped order gets. What
+    the read still does here is judge; the row and the `SHIPMENT_WINDOW` marker are written by
+    the worker's sweep, and that write is proved in the sweep's own suite.
     """
     seller = cod_signed_in()
     buyer = cod_signed_in_as_buyer()
@@ -298,8 +299,8 @@ def test_a_transport_partner_order_is_subject_to_the_shipment_window(
 
     assert read["status"] == "DELIVERED"
     row = stored_orders()[0]
-    assert row["status"] == "DELIVERED"
-    assert row["delivered_via"] == "SHIPMENT_WINDOW"
+    assert row["status"] == "SHIPPED"
+    assert row["delivered_via"] is None
 
 
 def test_the_method_mismatch_still_refuses(

@@ -99,6 +99,12 @@ FUNDING_WINDOW = timedelta(hours=48)
 #: rather than inside a single request that times out.
 EXPIRY_SWEEP_LIMIT = 50
 
+#: How many lapsed shipments one worker sweep settles. A shipment's holding window closes on its
+#: own, and a marketplace that shipped a thousand orders will have many closing in the same
+#: minute; the window is bounded so the worker's first statement is a short list, and the ones
+#: left over are found by the next sweep rather than by one that grows without end.
+SHIPMENT_SWEEP_BATCH_SIZE = 100
+
 #: The largest goods value a COD order may carry: ten thousand birr, in santim. COD is a credit
 #: the seller extends, and a pilot extends it only so far. `subtotal` is the price of the kilos
 #: alone — the delivery fee and the platform fee are not part of what the seller is owed for the
@@ -273,9 +279,10 @@ def effective_status(
     for, and what stops a buyer who neither collects nor complains from leaving a seller's crop
     waiting — and the goods themselves at a roadside — at the seller's cost.
 
-    Derived rather than written, because writing belongs to `OrderService._expire_if_stale` and
-    only the paths that can afford the write call it. What every reader gets is an honest
-    status; what the sale path gets is the kilos back.
+    Derived rather than written, because the write belongs to the paths that can afford it — the
+    funding and pickup windows to `OrderService._expire_if_stale` on a read, and the shipment
+    window to the worker's sweep — and a reader that only looked should still be told the truth.
+    What every reader gets is an honest status; what the sale path gets is the kilos back.
 
     `hold_hours` is the one argument the row cannot answer alone: the shipment window is a
     property of the crop (FR-2508), and a caller that has not looked it up — a pure guard test,
@@ -633,6 +640,11 @@ class OrderService:
         This read is also where the funding window is enforced. Touching an order that has been
         waiting too long gives its kilos back on the spot, which is the lazy evaluation the
         specification asks for in place of the cron that does not exist yet.
+
+        The shipment window is the one window this read does not write. It is still judged here —
+        the response reports the order delivered once its crop's hours are up — but the row and
+        the reservation belong to the worker's sweep, so looking at an order is never the thing
+        that moves the money and the kilos.
         """
         moment = now or datetime.now(UTC)
         order = await self._orders.find_by_id(order_id)
@@ -647,7 +659,7 @@ class OrderService:
             if (order.status is OrderStatus.SHIPPED)
             else None
         )
-        await self._expire_if_stale(order, moment, hold_hours=hold)
+        await self._expire_if_stale(order, moment)
         return to_response(order, now=moment, viewer_id=caller_id, hold_hours=hold)
 
     async def read_mine(
@@ -1355,16 +1367,18 @@ class OrderService:
             logger.info("expired %s stale order(s) on listing_id=%s", expired, listing_id)
         return expired
 
-    async def _expire_if_stale(
-        self, order: Order, now: datetime, *, hold_hours: int | None = None
-    ) -> bool:
+    async def _expire_if_stale(self, order: Order, now: datetime) -> bool:
         """Settle this one order if one of its windows closed. Did anything change, or not.
 
-        Three windows close here, each with a different consequence. An order still waiting for
-        money past its funding window is cancelled and its kilos are given back. A pickup that
-        has sat ready past its window is deemed collected, and a shipment whose crop's holding
-        window has passed is deemed received — in both cases the kilos are recorded `CONSUMED`,
-        because delivered kilos never re-enter availability, and that is what consumption is.
+        Two windows close here, each the same way: with the kilos recorded `CONSUMED`, because
+        delivered kilos never re-enter availability, and that is what consumption is. An order
+        still waiting for money past its funding window is cancelled and its kilos are given
+        back; a pickup that has sat ready past its window is deemed collected.
+
+        A shipment's holding window is deliberately not among them, though the clock judges it
+        all the same. The read derives that delivery from the window (FR-2508), and the write
+        belongs to the worker's shipment sweep — one writer at a coarse cadence, rather than a
+        read that turns a request into the settlement every other observer happens to make.
 
         Committed on its own rather than left to the caller, because the caller is a read and
         there is nothing else in its transaction to commit with. The alternative — leaving the
@@ -1389,21 +1403,64 @@ class OrderService:
             order.pickup_code = None
             await self._orders.commit()
             return True
-        if (
-            order.status is OrderStatus.SHIPPED
-            and hold_hours is not None
-            and shipment_window_closed(order, now, hold_hours)
-        ):
-            await self._settle_delivery(
-                order,
-                OrderStatus.SHIPPED,
-                now,
-                "auto-released shipment",
-                DeliveryVia.SHIPMENT_WINDOW,
-            )
-            await self._orders.commit()
-            return True
         return False
+
+    async def settle_lapsed_shipments(self, now: datetime | None = None) -> int:
+        """Settle every shipment whose holding window has closed, and say how many.
+
+        The window is judged against the clock rather than by whoever happens to read an order,
+        and the road is the one every other delivery takes: the shared `_settle_delivery`, with
+        the same transition guard and the same consumption of the reservation. What differs is
+        only who asks -- a worker on a cadence, rather than a reader.
+
+        One transaction per order, and each acquires the row with `SKIP LOCKED`, so a stopped
+        worker costs a delay rather than a settlement made twice, and two workers running at
+        once cannot both settle the same shipment. The batch the query returns is capped; a
+        thousand shipments settle across many sweeps rather than one.
+
+        A failure on one order does not abandon the rest -- the reservation still has to be
+        settled for the other windows that closed -- so the failure is logged and the sweep
+        carries on to the next candidate.
+        """
+        moment = now or datetime.now(UTC)
+        order_ids = await self._orders.list_lapsed_shipment_ids(
+            moment, limit=SHIPMENT_SWEEP_BATCH_SIZE
+        )
+        if not order_ids:
+            return 0
+        hold_hours = await self._orders.crop_hold_hours_for_orders(order_ids)
+        settled = 0
+        for order_id in order_ids:
+            hold = hold_hours.get(order_id)
+            if hold is None:
+                # The crop's window is unknown, or the crop is gone between the two reads. An
+                # unknown window is not a closed one, so leave the order alone.
+                continue
+            try:
+                order = await self._orders.find_by_id_for_update_skip_locked(order_id)
+                if (
+                    order is None
+                    or order.status is not OrderStatus.SHIPPED
+                    or not shipment_window_closed(order, moment, hold)
+                ):
+                    # Somebody else settled it first, or the row moved while the sweep waited
+                    # for the lock. Nothing to do, and nothing to write.
+                    await self._orders.rollback()
+                    continue
+                await self._settle_delivery(
+                    order,
+                    OrderStatus.SHIPPED,
+                    moment,
+                    "holding window closed",
+                    DeliveryVia.SHIPMENT_WINDOW,
+                )
+                await self._orders.commit()
+                settled += 1
+            except Exception:
+                logger.exception("shipment sweep failed order_id=%s", order_id)
+                await self._orders.rollback()
+        logger.info("shipment sweep settled=%s", settled)
+        return settled
 
     async def _settle_delivery(
         self,

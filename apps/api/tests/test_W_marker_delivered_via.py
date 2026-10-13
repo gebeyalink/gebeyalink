@@ -294,7 +294,7 @@ def test_the_pickup_window_is_recorded_as_the_mechanism(
     assert stored_orders()[0]["delivered_via"] == "PICKUP_WINDOW"
 
 
-def test_the_shipment_window_is_recorded_as_the_mechanism(
+def test_a_lapsed_shipment_reads_as_delivered_before_the_worker_writes_it(
     cod_client: TestClient,
     cod_signed_in: Callable[..., dict[str, str]],
     cod_signed_in_as_buyer: Callable[..., dict[str, str]],
@@ -304,11 +304,12 @@ def test_the_shipment_window_is_recorded_as_the_mechanism(
     backdate_shipped: Callable[[str], None],
     stored_orders: Callable[[], list[dict[str, object]]],
 ) -> None:
-    """The crop's holding window passed and the shipment released; the row says so.
+    """The crop's holding window passed and the read says so; the row waits for the worker.
 
     A shipment whose buyer never confirms is released by the window, measured from `shipped_at`
-    against the crop's holding hours. The row records `SHIPMENT_WINDOW`, which is the fact the
-    boundary would otherwise have to be recomputed to guess at.
+    against the crop's holding hours, and the read reports that delivery immediately. The marker
+    for it - `SHIPMENT_WINDOW` - is the worker's write, and this pins the other half of the
+    arrangement: until the sweep runs, the row still says shipped and carries no mechanism.
     """
     seller = cod_signed_in()
     buyer = cod_signed_in_as_buyer()
@@ -321,7 +322,9 @@ def test_the_shipment_window_is_recorded_as_the_mechanism(
     read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
 
     assert read["status"] == "DELIVERED"
-    assert stored_orders()[0]["delivered_via"] == "SHIPMENT_WINDOW"
+    row = stored_orders()[0]
+    assert row["status"] == "SHIPPED"
+    assert row["delivered_via"] is None
 
 
 def test_an_order_that_has_not_been_delivered_has_no_mechanism(

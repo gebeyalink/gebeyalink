@@ -665,13 +665,17 @@ def test_a_shipment_whose_holding_window_has_passed_is_deemed_received_by_the_re
     order_body: Callable[..., dict[str, object]],
     idempotency_key: Callable[[], str],
     backdate_shipped: Callable[[str], None],
+    stored_orders: Callable[[], list[dict[str, object]]],
     stored_reservations: Callable[[], list[dict[str, object]]],
 ) -> None:
-    """A crop's holding window is measured from shipment, and the read enforces it (FR-2508).
+    """A crop's holding window is measured from shipment, and the read judges it (FR-2508).
 
-    The kilos are on the move from `shipped_at`, so the wait is counted from then; once the
-    crop's given hours are past the order reads as received and the reservation is consumed —
-    the money and the kilos are moved by design, not by a request that may never come.
+    The kilos are on the move from `shipped_at`, so the wait is counted from then; once the crop's
+    given hours are past, the order reads as received. Judging it is where the read stops now: the
+    row and the reservation are the worker's to write, on a cadence of its own, so a reader that
+    merely looked is no longer the thing that moves the money and the kilos. What the read still
+    owes every caller is an honest answer, and that is what this pins — delivered, immediately,
+    without a write behind it.
     """
     seller = cod_signed_in()
     buyer = cod_signed_in_as_buyer()
@@ -686,5 +690,39 @@ def test_a_shipment_whose_holding_window_has_passed_is_deemed_received_by_the_re
     read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
 
     assert read["status"] == "DELIVERED"
-    assert read["delivered_at"] is not None
-    assert stored_reservations()[0]["state"] == "CONSUMED"
+
+    # The read derived it; nobody wrote it. The stamped moment and the consumption arrive with
+    # the worker, and until then the row still says what the seller said.
+    assert read["delivered_at"] is None
+    assert stored_orders()[0]["status"] == "SHIPPED"
+    assert stored_reservations()[0]["state"] == "CONVERTED"
+
+
+def test_a_shipment_inside_its_holding_window_is_read_as_shipped(
+    cod_client: TestClient,
+    cod_signed_in: Callable[..., dict[str, str]],
+    cod_signed_in_as_buyer: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+    stored_reservations: Callable[[], list[dict[str, object]]],
+) -> None:
+    """Before the window closes, the read reports the stored status and the kilos stay held.
+
+    The other side of the same boundary: a shipment still inside its crop's holding window is
+    `SHIPPED`, and nothing about the read brings its delivery forward.
+    """
+    seller = cod_signed_in()
+    buyer = cod_signed_in_as_buyer()
+    order_id, _ = delivery_order(
+        cod_client, seller, buyer, listing_body, order_body, idempotency_key
+    )
+    confirm(cod_client, buyer, order_id)
+    confirm(cod_client, seller, order_id)
+    shipped(cod_client, seller, order_id, idempotency_key)
+
+    read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
+
+    assert read["status"] == "SHIPPED"
+    assert read["delivered_at"] is None
+    assert stored_reservations()[0]["state"] == "CONVERTED"
