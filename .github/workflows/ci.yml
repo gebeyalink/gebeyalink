@@ -1,1 +1,1228 @@
-name: ci# SPEC §21 — PR pipeline, in the mandated order:#   lint -> typecheck -> i18n-keys -> unit -> integration (ephemeral DB) -> USSD harness#        -> coverage gate -> build artifacts -> ZAP baseline# SPEC §19 — mypy strict on apps/api and packages/*; ruff/black; pytest.# NFR-07 — the i18n-keys job is an addition to that order, not a replacement: it is the# named job the pipeline fails on when a language is missing a key or a placeholder.## Phase 0 reality: there is no application source yet. Rather than ship a permanently# red pipeline, each layer job performs a REAL collection probe first. If a layer has# no tests it prints "SKIPPED: no <layer> tests yet (activates with first <layer> test)"# and the job exits 0. This is a genuine skip with a visible reason in the log — not# continue-on-error and not `|| true`. The moment the first test of that layer lands,# the probe finds it and the job runs for real.# lint and typecheck stay active throughout: they already act on test_skeleton.py.on:  pull_request:    branches: [main]  push:    branches: [main]# SPEC §21 — PRs required, CI green to merge.permissions:  contents: readconcurrency:  group: ci-${{ github.ref }}  cancel-in-progress: trueenv:  PYTHON_VERSION: '3.12'jobs:  lint:    name: lint (ruff, black)    runs-on: ubuntu-latest    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install ruff black      - name: ruff        run: ruff check apps/api packages      - name: black        run: black --check apps/api packages  typecheck:    name: typecheck (mypy strict)    runs-on: ubuntu-latest    # Always active in Phase 0: apps/api/tests/test_skeleton.py is a real .py file and    # is typechecked. Gate exists so the job self-describes once sources appear.    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - name: detect python sources        id: gate        run: |          n=$(find apps/api packages -type f -name '*.py' -not -path '*/.*' | grep -c . || true)          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"          if [ "${n:-0}" -eq 0 ]; then            echo "SKIPPED: no python sources yet (activates with first module under apps/api or packages)"          else            echo "RUNNING: ${n} python source file(s) to typecheck"          fi      - run: pip install -e '.[dev]' -c constraints.txt        if: steps.gate.outputs.count != '0'      # SPEC §19: mypy strict on apps/api, packages/*. No __init__.py files are created      # to satisfy this — those are source code and remain deferred.      - name: mypy strict        if: steps.gate.outputs.count != '0'        run: mypy --strict apps/api packages  i18n-keys:    name: i18n-keys (key and placeholder parity)    runs-on: ubuntu-latest    # NFR-07 — a key one language does not speak, or a placeholder one translation forgot,    # must be a red build. The runtime fallback to English keeps a request answering, so    # nothing else in the pipeline would notice either gap. Runs after typecheck; no    # continue-on-error, so a missing key fails the pipeline rather than warning in a log.    needs: [typecheck]    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: every key spoken in every language        run: pytest apps/api/tests/test_NFR_07_i18n_key_parity.py -m unit -q  unit:    name: unit (pytest)    runs-on: ubuntu-latest    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt- name: verify constraints pin  run: |    python -c "import sys; expected={'fastapi':'0.143.0','pydantic':'2.14.0','starlette':'1.7.0'}; import fastapi,pydantic,starlette; actual={'fastapi':fastapi.__version__,'pydantic':pydantic.VERSION,'starlette':starlette.__version__}; m={k:(expected[k],actual[k]) for k in expected if expected[k]!=actual[k]}; [sys.stderr.write('PIN MISMATCH:'+str(m)+'\n'); sys.exit(1) for _ in [1] if m]; print('pin verified', actual)"      - name: pytest unit        run: pytest apps/api/tests -m unit -q  integration:    name: integration (ephemeral postgres)    runs-on: ubuntu-latest    # SPEC §21: integration against an ephemeral DB. testcontainers (SPEC §20) is used by    # the tests themselves; this service block is the fallback harness for suites needing a    # pre-started instance (e.g. Alembic migration tests).    services:      postgres:        image: postgis/postgis:16-3.4        env:          POSTGRES_USER: gebeyalink          POSTGRES_PASSWORD: gebeyalink          POSTGRES_DB: gebeyalink_test        ports: ['5432:5432']        options: >-          --health-cmd pg_isready          --health-interval 10s          --health-timeout 5s          --health-retries 5    env:      TEST_DATABASE_URL: postgresql://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test      REDIS_URL: redis://localhost:6379/0    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: detect integration tests        id: gate        run: |          # The `if` matters: an assignment's exit status is the command substitution's,          # and under errexit a non-zero pytest here would kill the step before rc was ever          # read. A condition suspends errexit, so the real code is captured and the probe          # gets to decide what it means.          if out=$(pytest --collect-only -q -m integration 2>&1); then rc=0; else rc=$?; fi          n=$(printf '%s\n' "$out" | grep -c '::' || true)          echo "collect-exit=${rc} collected=${n:-0}"          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"          if [ "${n:-0}" -eq 0 ]; then            echo "SKIPPED: no integration tests yet (activates with first integration test)"          else            echo "RUNNING: ${n} integration test(s) collected"          fi      - name: pytest integration        if: steps.gate.outputs.count != '0'        run: pytest apps/api/tests -m integration -q  worker:    name: worker (celery beat + worker)    runs-on: ubuntu-latest    # W1a — the worker is a process this repository ships, so it is a process CI runs. This is    # not a unit test with a mocked scheduler: Celery's beat and its worker run for real, over    # the same Redis the integration job starts, and the job waits for the schedule to fire and    # leaves an observable side effect behind. A mock cannot pass this — a worker that boots but    # whose beat never fires writes neither key, and neither does one whose task raises.    #    # The side effect is the heartbeat: a key with a TTL and a monotonic tick counter. The wait    # below reads the effect the way an operator would, not the worker's own claim that it ran.    #    # W1b-schedule — the same worker then proves the persistence the evaluator round that follows    # depends on. The beat scheduler is PersistentScheduler, its state lives in a file, and that    # file is what carries the next-fire across a restart. Round one boots and fires; the file's    # count is read and recorded. Round two boots again on the same file and the count is where    # round one left it — the restart read the schedule instead of inventing one. Round three    # deletes the file and boots once more: beat counts from one, which is the proof that the    # file, not the process, was what carried the state.    services:      postgres:        image: postgis/postgis:16-3.4        env:          POSTGRES_USER: gebeyalink          POSTGRES_PASSWORD: gebeyalink          POSTGRES_DB: gebeyalink_test        ports: ['5432:5432']        options: >-          --health-cmd pg_isready          --health-interval 10s          --health-timeout 5s          --health-retries 5      redis:        image: redis:7-alpine        ports: ['6379:6379']        options: >-          --health-cmd "redis-cli ping"          --health-interval 10s          --health-timeout 5s          --health-retries 5    env:      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test      REDIS_URL: redis://localhost:6379/0      TERMS_VERSION: '2026-01-01'      # The schedule is the one thing this job changes, and it changes it the way a deployment      # would: through the environment the worker already reads. A heartbeat due every sixty      # seconds would make the job wait a minute to observe a fact a fast schedule produces at      # once; the short TTL means a key left by an earlier run cannot be mistaken for a live      # worker. The persistence rounds re-boot the worker on this same cadence and watch a new      # fire land within a few seconds.      WORKER_HEARTBEAT_INTERVAL_SECONDS: '3'      WORKER_HEARTBEAT_TTL_SECONDS: '30'      # The shipment sweep's cadence is overridden for the same reason the heartbeat's is: a      # task proven by its own firing cannot be left on a default that outlasts the job. The      # default is honest for a window measured in days; here it is what made the schedule      # carry the sweep and never send it, so it is what the job now shortens.      WORKER_SHIPMENT_SWEEP_INTERVAL_SECONDS: '1'    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: generate the settings the worker reads        # The worker resolves the same Settings the API does, and Settings has no default for        # either signing key, so they are provisioned here the way the ZAP job provisions them.        # The worker never signs anything; the requirement is that it boots from the        # configuration the API boots from, not from a narrower one invented for this job.        run: |          python - <<'PY'          from pathlib import Path          from cryptography.hazmat.primitives import serialization          from cryptography.hazmat.primitives.asymmetric import rsa          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)          private_pem = key.private_bytes(              encoding=serialization.Encoding.PEM,              format=serialization.PrivateFormat.PKCS8,              encryption_algorithm=serialization.NoEncryption(),          ).decode()          public_pem = (              key.public_key()              .public_bytes(                  encoding=serialization.Encoding.PEM,                  format=serialization.PublicFormat.SubjectPublicKeyInfo,              )              .decode()          )          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")          PY          {            { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; }            { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }            python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"          } >> "$GITHUB_ENV"          rm -f /tmp/test-private.pem /tmp/test-public.pem      - name: export the persistent scheduler's file location        # `runner` is a step context, so the schedule path cannot be spelled at the job level;        # it is exported once here and every round reads WORKER_BEAT_SCHEDULE_PATH. The runner's        # scratch space is this job's durable-ish storage, standing in for the mounted volume a        # deployment must provide: the three rounds read this file and nothing else decides what        # a restarted scheduler believes about the past, which is the property being proven.        env:          WORKER_BEAT_SCHEDULE_PATH: ${{ runner.temp }}/beat-schedule        run: echo "WORKER_BEAT_SCHEDULE_PATH=$WORKER_BEAT_SCHEDULE_PATH" >> "$GITHUB_ENV"      - name: migrate the database the sweep reads        # The heartbeat needs nothing but Redis; the sweep is a query, so the job now stands        # up the schema too. The command is the one the integration job and a deployment run,        # aimed at the same DATABASE_URL, so the tables the sweep reads here are the tables        # those two read rather than a schema this job arranged for itself.        run: alembic upgrade head      - name: seed a shipment past its holding window        # The sweep's input is an order past its crop's window, and only seeding one makes        # this job's verdict about the sweep rather than about the absence of an order. The        # row is built here rather than walked through the API: buy-now, funding and shipping        # are earlier slices whose own tests stand, and driving them would re-prove those        # while saying nothing about the two minutes this job occupies. What "lapsed" means is        # written down once, on the crop (an hour) and on the order (shipped two hours ago);        # the boundary arithmetic itself stays the unit/integration suite's business.        run: |          python - <<'PY'          import os          from datetime import UTC, datetime, timedelta          from sqlalchemy import create_engine, select, update          from sqlalchemy.orm import Session          from apps.api.models.crop import Crop          from apps.api.models.listing import (              DeliveryOption,              Listing,              ListingSource,              ListingStatus,          )          from apps.api.models.offer import Offer  # registered so orders.offer_id resolves          from apps.api.models.order import Order, OrderStatus, PaymentMode          from apps.api.models.quantity_reservation import (              HolderType,              QuantityReservation,              ReservationState,          )          from apps.api.models.region import Region          from apps.api.models.user import PrimaryRole, User          from apps.api.models.woreda import Woreda          from packages.shared.money import FeePayer          url = os.environ["DATABASE_URL"]          engine = create_engine(url)          now = datetime.now(UTC)          with Session(engine) as session:              # One row each: the crop's window is what the sweep closes the order on, and the              # two places a listing or an order has to name are the reference rows the              # migration above has already written.              crop_id = session.execute(select(Crop.id).limit(1)).scalar_one()              region_code = session.execute(select(Region.code).limit(1)).scalar_one()              woreda_id = session.execute(select(Woreda.id).limit(1)).scalar_one()              session.execute(update(Crop).where(Crop.id == crop_id).values(escrow_hold_hours=1))              seller = User(phone_e164="+251911000001", role=PrimaryRole.FARMER)              buyer = User(phone_e164="+251911000003", role=PrimaryRole.BUYER)              session.add_all([seller, buyer])              session.flush()              listing = Listing(                  seller_id=seller.id,                  source=ListingSource.APP,                  crop_id=crop_id,                  quantity_kg=200,                  min_order_kg=50,                  unit_price_santim=1_000,                  harvest_date=now.date(),                  expires_at=now + timedelta(days=1),                  region_code=region_code,                  woreda_id=woreda_id,                  delivery_options=[DeliveryOption.SELLER_DELIVERY],                  # The seller's delivery option and a non-zero fee are one fact to the schema                  # (`ck_listings_delivery_fee_santim`), so the seed cannot name the option and                  # leave the fee at its default.                  delivery_fee_santim=1_000,                  status=ListingStatus.ACTIVE,                  short_code="AAAAAA",              )              session.add(listing)              session.flush()              order = Order(                  short_code="GL-AAAAAA",                  buyer_id=buyer.id,                  seller_id=seller.id,                  listing_id=listing.id,                  quantity_kg=100,                  unit_price_santim=1_000,                  delivery_method=DeliveryOption.SELLER_DELIVERY,                  delivery_fee_santim=0,                  platform_fee_santim=0,                  vat_santim=0,                  total_santim=100_000,                  fee_payer=FeePayer.SELLER,                  buyer_address_woreda_id=woreda_id,                  buyer_address_text="the job's own address",                  status=OrderStatus.SHIPPED,                  payment_mode=PaymentMode.COD,                  shipped_at=now - timedelta(hours=2),              )              session.add(order)              session.flush()              # Captured before the commit, because the commit expires the instance and the              # print below is outside the session that could refresh it.              seeded_code = order.short_code              session.add(                  QuantityReservation(                      listing_id=listing.id,                      holder_type=HolderType.ORDER,                      holder_id=order.id,                      quantity_kg=100,                      state=ReservationState.CONVERTED,                  )              )              session.commit()          print(f"seeded {seeded_code}: SHIPPED two hours ago, crop window one hour")          PY      - name: boot the worker (round 1 - fast schedule, persistent scheduler)        # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only        # ignores the hangup signal, and a new session is a stronger promise than a process        # group the runner happens to leave alone today. Each round writes its own log, so a        # failure can be read back against the round that produced it.        run: |          pkill -f 'apps.api.worker' 2>/dev/null || true          pkill -f 'celery beat' 2>/dev/null || true          setsid nohup python -m apps.api.worker \            > "$RUNNER_TEMP/worker-round1.log" 2>&1 < /dev/null &          echo "$!" > "$RUNNER_TEMP/worker.pid"      - name: wait for the heartbeat, then assert it (round 1)        run: |          python - <<'PY'          import os          import sys          import time          import redis          from apps.api.worker import HEARTBEAT_KEY, HEARTBEAT_TICKS_KEY          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)          deadline = time.monotonic() + 60          while time.monotonic() < deadline:              ticks = client.get(HEARTBEAT_TICKS_KEY)              moment = client.get(HEARTBEAT_KEY)              # Three fires, not one: the persistence rounds compare the count carried in the              # schedule file against a baseline that must sit comfortably above a fresh start.              if ticks and int(ticks) >= 3 and moment:                  break              time.sleep(1)          else:              sys.exit("the worker produced no heartbeat within 60s")          ttl = client.ttl(HEARTBEAT_KEY)          assert 0 < ttl <= int(os.environ["WORKER_HEARTBEAT_TTL_SECONDS"]), ttl          print(f"heartbeat {HEARTBEAT_KEY}={moment}")          print(f"ticks {HEARTBEAT_TICKS_KEY}={ticks}")          print(f"heartbeat TTL {ttl}s")          PY      - name: wait for the sweep, then assert it (round 1)        # The heartbeat proves the loop is alive; this proves the loop did the work. It waits        # the way the heartbeat waits — on a fact rather than a sleep — and it reads the row        # from PostgreSQL rather than from the API, because the row is the record and the read        # path is not the thing this job proves. The three assertions are the sweep's own        # output: the status it moves to, the mechanism it names, and the reservation it        # consumes. If the sweep does not settle the order, the step fails and the job is red;        # that is what makes this an observation rather than the listing it used to be.        run: |          python - <<'PY'          import os          import sys          import time          import psycopg          url = os.environ["DATABASE_URL"].replace("+psycopg", "")          deadline = time.monotonic() + 60          while time.monotonic() < deadline:              with psycopg.connect(url) as connection:                  order = connection.execute(                      "SELECT status, delivered_via, delivered_at FROM orders"                  ).fetchone()                  reservation = connection.execute(                      "SELECT state FROM quantity_reservations"                  ).fetchone()              if order and order[0] == "DELIVERED":                  break              time.sleep(1)          else:              sys.exit("the shipment sweep did not settle the order within 60s")          status, delivered_via, delivered_at = order          consumed = reservation[0] if reservation else None          print(f"orders: status={status} delivered_via={delivered_via} delivered_at={delivered_at}")          print(f"reservations: state={consumed}")          assert delivered_via == "SHIPMENT_WINDOW", delivered_via          assert delivered_at is not None, delivered_at          assert consumed == "CONSUMED", consumed          PY          echo "--- the sweep, from $RUNNER_TEMP/worker-round1.log ---"          grep -E "gebeyalink.worker.shipment_sweep|settled=" "$RUNNER_TEMP/worker-round1.log" | head -n 8 || true      - name: stop the worker (round 1)        # Graceful SIGTERM first, then the beat child's own pattern; the sleeps let the worker        # run its shutdown path so the schedule file is closed and flushed before it is read.        run: |          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true          sleep 3          pkill -f 'apps.api.worker' 2>/dev/null || true          pkill -f 'celery beat' 2>/dev/null || true          sleep 2      - name: record the schedule state after the first boot        run: |          python - <<'PY'          import json          import os          import shelve          path = os.environ["WORKER_BEAT_SCHEDULE_PATH"]          with shelve.open(path, flag="r") as store:              entry = store["entries"]["gebeyalink.worker.heartbeat"]              state = {                  "boot": 1,                  "total_run_count": entry.total_run_count,                  "last_run_at": entry.last_run_at.isoformat(),              }          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json"), "w") as fh:              json.dump(state, fh)          print("schedule state after the first boot:", json.dumps(state))          PY      - name: restart the worker on the same schedule file (round 2)        run: |          pkill -f 'apps.api.worker' 2>/dev/null || true          pkill -f 'celery beat' 2>/dev/null || true          setsid nohup python -m apps.api.worker \            >> "$RUNNER_TEMP/worker-round2.log" 2>&1 < /dev/null &          echo "$!" > "$RUNNER_TEMP/worker.pid"      - name: assert the next fire survived the restart (round 2)        run: |          python - <<'PY'          import json          import os          import shelve          import subprocess          import sys          import time          import redis          from apps.api.worker import HEARTBEAT_TICKS_KEY          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json")) as fh:              first = json.load(fh)          count1 = first["total_run_count"]          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)          deadline = time.monotonic() + 45          while time.monotonic() < deadline:              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)              if ticks >= count1 + 1:                  break              time.sleep(0.1)          else:              sys.exit(f"no fire after the restart; waited for ticks >= {count1 + 1}")          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()          subprocess.run(["kill", pid], check=False)          time.sleep(3)          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)          subprocess.run(["pkill", "-f", "celery beat"], check=False)          time.sleep(2)          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:              entry = store["entries"]["gebeyalink.worker.heartbeat"]              count2 = entry.total_run_count          print(f"first boot baseline: total_run_count={count1}")          print(f"after the restart: total_run_count={count2}")          # The count continued where the first boot left it. A fresh replan would have counted          # its fires from one, but the baseline sat well above that and stayed where it was.          assert count1 + 1 <= count2 <= count1 + 2, (count1, count2)          print("PERSISTED: the next fire carried over the restart, reset by nothing")          PY      - name: delete the schedule file and boot once more (round 3)        run: |          rm -f "$WORKER_BEAT_SCHEDULE_PATH"*          sleep 1          pkill -f 'apps.api.worker' 2>/dev/null || true          pkill -f 'celery beat' 2>/dev/null || true          setsid nohup python -m apps.api.worker \            >> "$RUNNER_TEMP/worker-round3.log" 2>&1 < /dev/null &          echo "$!" > "$RUNNER_TEMP/worker.pid"      - name: assert a missing schedule file is a fresh replan (round 3)        run: |          python - <<'PY'          import os          import shelve          import subprocess          import sys          import time          import redis          from apps.api.worker import HEARTBEAT_TICKS_KEY          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)          before = int(client.get(HEARTBEAT_TICKS_KEY) or 0)          deadline = time.monotonic() + 45          while time.monotonic() < deadline:              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)              if ticks > before:                  break              time.sleep(0.1)          else:              sys.exit(f"no fire without a schedule file; waited for ticks > {before}")          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()          subprocess.run(["kill", pid], check=False)          time.sleep(3)          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)          subprocess.run(["pkill", "-f", "celery beat"], check=False)          time.sleep(2)          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:              entry = store["entries"]["gebeyalink.worker.heartbeat"]              count3 = entry.total_run_count          # Round two read a count that carried a baseline no fresh entry reaches in the same          # window; with the file gone, beat counted its fires from one. The file is the state.          assert count3 <= 2, count3          print(f"without the schedule file: total_run_count={count3}")          print("REPLANNED FRESH: the missing file is why the earlier restart kept its count")          PY      - name: show the worker logs        if: always()        run: |          tail -n 30 "$RUNNER_TEMP/worker-round1.log" 2>/dev/null || true          tail -n 30 "$RUNNER_TEMP/worker-round2.log" 2>/dev/null || true          tail -n 30 "$RUNNER_TEMP/worker-round3.log" 2>/dev/null || true      - name: stop the worker (final)        if: always()        run: |          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true          pkill -f 'apps.api.worker' 2>/dev/null || true          pkill -f 'celery beat' 2>/dev/null || true  ussd:    name: USSD/SMS harness    runs-on: ubuntu-latest    # SPEC §20: full §14.3 journeys via simulator harness; SMS command parser matrix.    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: detect ussd tests        id: gate        run: |          if out=$(pytest --collect-only -q packages/ussd apps/api/tests -m ussd 2>&1); then rc=0; else rc=$?; fi          n=$(printf '%s\n' "$out" | grep -c '::' || true)          echo "collect-exit=${rc} collected=${n:-0}"          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"          if [ "${n:-0}" -eq 0 ]; then            echo "SKIPPED: no ussd tests yet (activates with first ussd test)"          else            echo "RUNNING: ${n} ussd test(s) collected"          fi      - name: USSD journeys + SMS parser matrix        if: steps.gate.outputs.count != '0'        run: pytest packages/ussd apps/api/tests -m ussd -q  e2e:    name: e2e journeys    runs-on: ubuntu-latest    # SPEC §20 references apps/api/tests/e2e/ for the verbatim Gherkin features.    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: detect e2e tests        id: gate        run: |          if out=$(pytest --collect-only -q apps/api/tests/e2e -m e2e 2>&1); then rc=0; else rc=$?; fi          n=$(printf '%s\n' "$out" | grep -c '::' || true)          echo "collect-exit=${rc} collected=${n:-0}"          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"          if [ "${n:-0}" -eq 0 ]; then            echo "SKIPPED: no e2e tests yet (activates with first e2e test)"          else            echo "RUNNING: ${n} e2e test(s) collected"          fi      - name: pytest e2e        if: steps.gate.outputs.count != '0'        run: pytest apps/api/tests/e2e -m e2e -q  load:    name: load (k6)    runs-on: ubuntu-latest    # SPEC §20 load layer: k6, 200 rps API mix, USSD 50 rps, webhook burst 600/min.    # SPEC §20 gates this at "NFR-01/02 met in staging" — this PR job is the smoke form;    # the full scenario is promoted to deploy.yml against staging.    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: detect load tests        id: gate        run: |          if out=$(pytest --collect-only -q apps/api/tests -m load 2>&1); then rc=0; else rc=$?; fi          n=$(printf '%s\n' "$out" | grep -c '::' || true)          echo "collect-exit=${rc} collected=${n:-0}"          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"          if [ "${n:-0}" -eq 0 ]; then            echo "SKIPPED: no load tests yet (activates with first load test)"          else            echo "RUNNING: ${n} load test(s) collected"          fi      - name: pytest load        if: steps.gate.outputs.count != '0'        run: pytest apps/api/tests -m load -q  coverage-gate:    name: coverage gate    runs-on: ubuntu-latest    needs: [unit]    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      # Structural guard. The gates below select tests with `-m 'unit or integration'`, and a      # test file carrying no layer mark is silently deselected: it runs nowhere in this job,      # contributes no coverage, and the service it exercises is measured as though it had no      # tests. That is not a hypothetical — every profile and reference test sat unmarked from      # c07ce07 to a1095a5 and the scoped gate read 76.91% instead of failing loudly.      #      # So unmarked is asserted to be empty. Anything collected here is a test the coverage      # gate cannot see, and it is named rather than counted so the fix is obvious.      - name: fail if any test lacks a §20 layer mark        run: |          unmarked=$(pytest --collect-only -q -m "not unit and not integration and not ussd and not e2e and not load" 2>&1 || true)          offenders=$(printf '%s\n' "$unmarked" | grep '::' || true)          if [ -n "$offenders" ]; then            echo "::error::tests carry no SPEC §20 layer mark, so the coverage gate cannot see them"            printf '%s\n' "$offenders" | cut -d: -f1 | sort -u            echo "::error::mark each file pytestmark = pytest.mark.unit|integration (see SPEC §20)"            exit 1          fi          echo "every test carries a layer mark"      # SPEC §20: >=85% line coverage on services/ and packages/*; >=70% overall.      #      # Each command is one line, with no backslash continuation. A continuation is broken      # by one stray trailing space, and what breaks it is invisible in review and becomes      # a shell word pytest rejects at run time.      - name: pytest with coverage        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-report=xml --cov-report=term -q      - name: scoped gate (>=85% on services/ + packages/*)        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api/services --cov=packages --cov-fail-under=85 -q      - name: overall gate (>=70%)        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-fail-under=70 -q      # --cov-report=xml names no path, so coverage.py writes ./coverage.xml in the step's      # working directory, which is the checkout root. Named explicitly below so the upload      # cannot drift from where the report is actually produced.      - uses: actions/upload-artifact@v4        if: always()        with:          name: coverage-xml          path: coverage.xml  build-artifacts:    name: build artifacts    runs-on: ubuntu-latest    needs: [lint, typecheck, unit, coverage-gate]    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - name: detect API Dockerfile        id: gate        run: |          if [ -f infra/Dockerfile.api ]; then            echo "count=1" >> "$GITHUB_OUTPUT"            echo "RUNNING: building API image from infra/Dockerfile.api"          else            echo "count=0" >> "$GITHUB_OUTPUT"            echo "SKIPPED: no infra/Dockerfile.api yet (activates when the Dockerfile lands)"          fi      - name: build API image        if: steps.gate.outputs.count != '0'        run: docker build -f infra/Dockerfile.api -t gebeyalink/api:${{ github.sha }} .      - uses: actions/upload-artifact@v4        if: steps.gate.outputs.count != '0'        with:          name: api-dockerfile          path: infra/Dockerfile.api      - name: detect worker Dockerfile        id: gate-worker        run: |          if [ -f infra/Dockerfile.worker ]; then            echo "count=1" >> "$GITHUB_OUTPUT"            echo "RUNNING: building worker image from infra/Dockerfile.worker"          else            echo "count=0" >> "$GITHUB_OUTPUT"            echo "SKIPPED: no infra/Dockerfile.worker yet (activates when the Dockerfile lands)"          fi      - name: build worker image        if: steps.gate-worker.outputs.count != '0'        run: docker build -f infra/Dockerfile.worker -t gebeyalink/worker:${{ github.sha }} .      - uses: actions/upload-artifact@v4        if: steps.gate-worker.outputs.count != '0'        with:          name: worker-dockerfile          path: infra/Dockerfile.worker  build-mobile:    name: build mobile (Flutter)    runs-on: ubuntu-latest    needs: [lint, typecheck, unit, coverage-gate]    # Gated on the manifest existing: apps/mobile/pubspec.yaml is not created yet.    # Package name is pinned by user decision: et.gebeyalink.mobile (reverse-domain of    # gebeyalink.et). Flutter 3 per SPEC §18.2.    #    # Probed in a step and reported through $GITHUB_OUTPUT, the same idiom every other gate    # in this file uses. hashFiles() is not available at job-level `if:` here, and one    # gating idiom across the file is worth more than the brevity of the alternative.    steps:      - uses: actions/checkout@v4      - name: detect mobile manifest        id: gate        run: |          if [ -f apps/mobile/pubspec.yaml ]; then            echo "count=1" >> "$GITHUB_OUTPUT"            echo "RUNNING: mobile build (package et.gebeyalink.mobile)"          else            echo "count=0" >> "$GITHUB_OUTPUT"            echo "SKIPPED: no apps/mobile/pubspec.yaml yet (activates when the manifest lands)"          fi      - uses: subosito/flutter-action@v2        if: steps.gate.outputs.count != '0'        with:          flutter-version: '3.24.x'      - run: flutter pub get        if: steps.gate.outputs.count != '0'      - run: flutter analyze        if: steps.gate.outputs.count != '0'      - run: flutter test        if: steps.gate.outputs.count != '0'      - run: flutter build apk --debug        if: steps.gate.outputs.count != '0'      # SPEC §20: widget tests for critical flows; Android emulator CI is the merge gate      # for app changes (emulator job lands with the mobile test suite).  build-admin:    name: build admin (React)    runs-on: ubuntu-latest    needs: [lint, typecheck, unit, coverage-gate]    # Gated on apps/admin/package.json existing. Package name is pinned by user decision:    # et.gebeyalink.admin. React 18 + TypeScript + MUI per SPEC §18.2.    #    # Probed in a step, not with hashFiles(): same idiom as build-mobile and every other    # gate in this file.    steps:      - uses: actions/checkout@v4      - name: detect admin manifest        id: gate        run: |          if [ -f apps/admin/package.json ]; then            echo "count=1" >> "$GITHUB_OUTPUT"            echo "RUNNING: admin build (package et.gebeyalink.admin)"          else            echo "count=0" >> "$GITHUB_OUTPUT"            echo "SKIPPED: no apps/admin/package.json yet (activates when the manifest lands)"          fi      - uses: actions/setup-node@v4        if: steps.gate.outputs.count != '0'        with:          node-version: '22'      - run: npm ci        if: steps.gate.outputs.count != '0'        working-directory: apps/admin      - run: npm run lint        if: steps.gate.outputs.count != '0'        working-directory: apps/admin      - run: npm run typecheck        if: steps.gate.outputs.count != '0'        working-directory: apps/admin      - run: npm test        if: steps.gate.outputs.count != '0'        working-directory: apps/admin      - run: npm run build        if: steps.gate.outputs.count != '0'        working-directory: apps/admin  zap-baseline:    name: ZAP baseline (security)    runs-on: ubuntu-latest    needs: [coverage-gate]    # SPEC §20: OWASP ZAP baseline in CI; zero high/critical open.    # Standard documented path: zaproxy/action-baseline with the `rules_file_name` input    # (properties-format rules file). No autogenrun / -config_file invocation is used.    #    # The API is BOOTED here rather than scanned as an absent target. A baseline scan    # pointed at a port with nothing on it reports a clean result while having checked    # nothing at all, which is worse than no gate: it looks like coverage. Same two images    # the integration suite starts, so the scanner sees the API against a real database    # with a real geography column.    services:      postgres:        image: postgis/postgis:16-3.4        env:          POSTGRES_USER: gebeyalink          POSTGRES_PASSWORD: gebeyalink          POSTGRES_DB: gebeyalink_test        ports: ['5432:5432']        options: >-          --health-cmd pg_isready          --health-interval 10s          --health-timeout 5s          --health-retries 5      redis:        image: redis:7-alpine        ports: ['6379:6379']        options: >-          --health-cmd "redis-cli ping"          --health-interval 10s          --health-timeout 5s          --health-retries 5    env:      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test      REDIS_URL: redis://localhost:6379/0      TERMS_VERSION: '2026-01-01'      # The only place the API description is served. ZAP's API scan reads /openapi.json to      # learn which endpoints exist, so scanning a process that hides it would be scanning the      # absence of a schema. Everywhere else it stays off, including in production, where it      # is a map of every endpoint handed to anyone who can reach the port.      EXPOSE_DOCS: 'true'    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: generate a throwaway signing keypair        # FIRST, and into $GITHUB_ENV, so that every step below inherits the keys from one        # place. Generated per run and never written down: a key committed to the repository        # is a key somebody could use, and a key copied out of a CI file becomes the template        # somebody later deploys with.        #        # The heredoc form is required, not stylistic. A PEM is several lines long, and        # `echo "KEY=value"` would fold it into one line and hand uvicorn a key it cannot        # parse. The `KEY<<EOF` / content / `EOF` form preserves the newlines exactly.        #        # This runs before `alembic upgrade head` on purpose. env.py calls get_settings(),        # and Settings has no default for either key - it is a required field with no        # fallback. Provisioning the keys inside the boot step meant the migration step ran        # first with no keys at all and died on a pydantic ValidationError before the API was        # ever started.        run: |          python - <<'PY'          from pathlib import Path          from cryptography.hazmat.primitives import serialization          from cryptography.hazmat.primitives.asymmetric import rsa          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)          private_pem = key.private_bytes(              encoding=serialization.Encoding.PEM,              format=serialization.PrivateFormat.PKCS8,              encryption_algorithm=serialization.NoEncryption(),          ).decode()          public_pem = (              key.public_key()              .public_bytes(                  encoding=serialization.Encoding.PEM,                  format=serialization.PublicFormat.SubjectPublicKeyInfo,              )              .decode()          )          # The trailing newline is load-bearing. A heredoc delimiter is only recognised on a line of          # its own, so a value without one glues itself to the delimiter and the runner          # reads the entire next variable as part of this one. Normalised here, where the          # file is written, rather than patched up in the shell afterwards.          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")          PY          # `cat` and `echo` here, not a newline-normalising pipeline: the heredoc delimiter is          # only recognised on a line of its own, so the value must end in a newline, and          # that is guaranteed one step above where the file is written rather than by          # trying to repair it in the shell afterwards.          {            { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; }            { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }            # Throwaway for this job, for the same reason the signing keys are.            python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"          } >> "$GITHUB_ENV"          rm -f /tmp/test-private.pem /tmp/test-public.pem      # Every setting the app reads is now resolved from two sources and no others: the      # job-level env above (database_url, redis_url, terms_version) and the two keys the      # step above wrote to $GITHUB_ENV. Nothing is provisioned inline further down, so      # there is no second copy to drift out of step with the first.      - name: apply migrations        run: alembic upgrade head      - name: boot the API        # Bound to 0.0.0.0 rather than 127.0.0.1, and detached with setsid as well as nohup.        #        # The bind address is why this scan could never have worked, and it is worth being        # exact about the order of the two faults. The API did boot and did answer: the wait        # step passed on its second attempt. What failed is that ZAP runs inside a container,        # so it reaches this runner over the docker bridge and not over loopback - and a        # process listening only on 127.0.0.1 is invisible to it however well the hostname        # resolves. A scan that cannot connect is not a scan, so the address is fixed before        # the scan is trusted to say anything about the application.        #        # setsid as well as nohup, and this is hardening rather than the fix: the logs show        # the process did survive the step boundary, so the fault was never a dead process. It        # was the address it listened on. setsid is here because nohup alone only ignores the        # hangup signal, and a new session is a stronger promise than a process group the        # runner happens to leave alone today.        run: |          setsid nohup python -m uvicorn apps.api.main:create_app --factory \            --host 0.0.0.0 --port 8000 \            > "$RUNNER_TEMP/api.log" 2>&1 < /dev/null &          echo "$!" > "$RUNNER_TEMP/api.pid"      - name: wait for the API to serve        # Two things are established here, and only together do they mean anything: uvicorn        # is listening, and this runner can reach itself on an address a container can use.        #        # The address is chosen by trying candidates and keeping the one that answers, rather        # than by trusting a formula. The obvious formula -        # `ip -4 route show default | cut -d' ' -f3` - returns 10.1.0.1 on a GitHub-hosted        # Azure runner, which is the virtual network's gateway router rather than anything on        # this machine: uvicorn holds no address there, and a request to it hangs until it        # times out. The address a container uses to reach this runner is the one on the        # docker bridge, so that is tried first, and the default route is kept only as a        # fallback for a runner whose default route really is the bridge.        #        # Each candidate gets a short connect timeout so an address that cannot possibly work        # costs seconds rather than the two minutes an open connect takes to give up.        run: |          candidates=()          bridge="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1)"          default_gateway="$(ip -4 route show default 2>/dev/null | cut -d' ' -f3)"          if [ -n "$bridge" ]; then candidates+=("$bridge"); fi          if [ -n "$default_gateway" ]; then candidates+=("$default_gateway"); fi          echo "candidates: ${candidates[*]:-none}"          ready=0          for attempt in $(seq 1 60); do            if curl -fsS --connect-timeout 3 --max-time 5 http://127.0.0.1:8000/health > /dev/null; then              echo "api is up after ${attempt}s"              ready=1              break            fi            sleep 1          done          if [ "$ready" -ne 1 ]; then            echo "::error::the API did not answer /health"            cat "$RUNNER_TEMP/api.log"            exit 1          fi          # The same request a container would make: this runner, addressed by an address on          # the docker bridge, with the API bound to every interface. This is the reachability          # the scanner depends on, so it is proved here rather than discovered by the spider.          reachable=""          for address in "${candidates[@]}"; do            if curl -fsS --connect-timeout 3 --max-time 5 "http://${address}:8000/health" > /dev/null; then              reachable="$address"              break            fi            echo "not reachable from this runner: ${address}"          done          if [ -z "$reachable" ]; then            echo "::error::the API answers on loopback but on no bridge address, so a container cannot scan it"            ss -ltnp 2>/dev/null | grep 8000 || true            exit 1          fi          echo "ZAP_TARGET=http://${reachable}:8000/openapi.json" >> "$GITHUB_ENV"          echo "reachable from a container at ${reachable}:8000"      - name: ZAP API scan        # action-api-scan, not action-baseline, and this is the change that makes the scan mean        # something.        #        # The baseline scan spidered a URL and found three of them: `/`, `/robots.txt` and        # `/sitemap.xml`, all 404, because this API has no root document to crawl from. Its 66        # passes were mostly rules not firing against a 404 page. It was measuring the absence        # of a website, not the security of an API.        #        # The API scan is handed the OpenAPI description instead, which is a list of every        # endpoint with its parameters and its declared security, and it drives the scan from        # that list. That is why the boot step sets EXPOSE_DOCS: without /openapi.json there is        # no description to hand it, and the scan would go back to guessing.        # `main`, not `master`: this action's repository has exactly one branch and it is        # `main`, so `@master` fails the run before a single step executes. action-baseline,        # which this replaced, is on `master` - the two actions do not share a default branch.        uses: zaproxy/action-api-scan@main        with:          rules_file_name: infra/zap-baseline-rules.conf          # The input is `docker_name`. `docker-image` is not an input of this action, so it          # was silently ignored and the scan ran on whatever the action defaults to.          docker_name: ghcr.io/zaproxy/zaproxy:stable          # The spec URL, not the site root: `format` tells the action how to read it, and the          # endpoints to test are in the document rather than behind it.          target: ${{ env.ZAP_TARGET }}          format: openapi          # The gate. `fail_action: true` makes zap-api-scan.py's exit code decide this step,          # and its exit code is arithmetic, not opinion: 1 when any rule FAILed, 2 when any          # rule WARNed, 3 when the scan itself broke or found nothing at all, 0 when there is          # at least one pass and nothing failed or warned. Ignored rules are not counted, so          # an accepted risk in the rules file cannot redden the build - it has been triaged on          # purpose.          #          # This could only be turned on after the scan was made to mean something and then          # read clean. Run 37205542548 found two warnings; one (10021, X-Powered-By) was          # fixed by sending X-Content-Type-Options on every response, including 500s; the          # other (90004, CORP) was triaged into infra/zap-baseline-rules.conf with its          # rationale. Run 37268838565 then reported WARN-NEW: 0, FAIL-NEW: 0, PASS: 117, and          # only then did this flip. A gate armed before that would have been a gate armed          # against a scan that reports three 404s as its whole world.          fail_action: true          # This job scans, it does not publish. With issue writing left on, a scan that finds          # anything tries to open an issue, and the token here cannot - the job holds no          # `issues: write` - so the step dies with "Resource not accessible by integration"          # *after* a successful scan, which is the least useful way for a scan to fail.          # The alternative, granting the permission, was rejected on purpose: a scan on every          # push should not be filing issues, and the report is already attached as the          # `zap_scan` artifact by the action itself.          allow_issue_writing: false      - name: stop the API        if: always()        # By pattern as well as by the recorded pid. setsid execs uvicorn in place when it is        # not already a process group leader and forks when it is, so the number written at        # boot is not guaranteed to be the process holding port 8000. The pattern matches one        # process, and the pid file is kept for the case where neither is available.        run: |          pkill -f "uvicorn apps.api.main:create_app" || true          kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true      # No artifact step of our own: the action already attaches the report as the `zap_scan`      # artifact. The step that used to sit here had an empty `path:` and an `if:` naming a      # step id that does not exist in this job, so it uploaded nothing - and it would have      # uploaded a second, redundant copy had either half been right.  openapi-snapshot:    name: openapi snapshot (contract drift)    runs-on: ubuntu-latest    # The served schema is checked in as a file, and this job is what keeps the file honest:    # it regenerates the schema from the code and compares byte-for-byte. A mismatch means    # either the code changed the contract or the framework that emits it moved underfoot, and    # the message below tells the reader which fix applies. It does not use `git diff` on the    # tracked path - that would only prove the file is committed, not that it matches a fresh    # generation. The baseline-method hash the generator also prints is deliberately NOT    # checked here: it is a one-time proof, not a gate.    steps:      - uses: actions/checkout@v4      - uses: actions/setup-python@v5        with:          python-version: ${{ env.PYTHON_VERSION }}      - run: pip install -e '.[dev]' -c constraints.txt      - name: regenerate the snapshot to a temporary path        run: python -m apps.api.snapshot --write "$RUNNER_TEMP/openapi.snapshot.json"      - name: compare with the tracked snapshot        run: |          if cmp -s "$RUNNER_TEMP/openapi.snapshot.json" apps/api/openapi.snapshot.json; then            echo "the OpenAPI snapshot matches the code"            exit 0          fi          cat <<'EOF'          The OpenAPI snapshot does not match what this environment generates.          If pyproject.toml has not changed since the snapshot was last written, this is likely a          framework version drift: the environment resolved a different FastAPI / Pydantic pair than          the one the snapshot was generated under.          If pyproject.toml has changed, or you changed code, this is a code change: regenerate the          snapshot locally and commit it in the same commit as the change.          Either way, the fix is local:            python -m apps.api.snapshot --write apps/api/openapi.snapshot.json          Then commit apps/api/openapi.snapshot.json.          Do not regenerate the snapshot from CI output. Reconciliation is one-way (bring the local          environment up to CI's resolution, not the reverse).          EOF          exit 1  actionlint:    name: actionlint (workflow lint)    runs-on: ubuntu-latest    # W-actionlint — the workflow files are linted on every push so a file that does not    # parse is caught before it breaks a build. Pinned to actionlint v1.7.12 (released    # 2026-03-30): the expected SHA-256 below was read from the release's published    # actionlint_1.7.12_checksums.txt at pin time (2026-10-12) and is reviewed at the pull    # request. The workflow does not download that checksum file at run time, because a    # checksum downloaded from the same release protects against a corrupted download and    # not against a tampered release — the expected value lives in this file.    #    # The job has no skip path on purpose — no paths:, no job-level if:, no    # continue-on-error. The merge-gate finding (2026-10-12, recorded in the handoff) is    # that on a failed or cancelled needed job ci-green is skipped, while a skipped job    # leaves it running and passing: a lint job that could skip itself would read green    # while the files it guards were broken.    steps:      - uses: actions/checkout@v4      - name: download the pinned, hash-verified actionlint binary        env:          ACTIONLINT_VERSION: '1.7.12'          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'        run: |          curl -fsSL -o actionlint.tar.gz \            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -          tar -xzf actionlint.tar.gz actionlint      - name: lint every workflow file        run: ./actionlint -color  ci-green:    name: ci green (merge gate)    runs-on: ubuntu-latest    needs:      - lint      - typecheck      - i18n-keys      - unit      - integration      - worker      - ussd      - e2e      - load      - coverage-gate      - build-artifacts      - build-mobile      - build-admin      - zap-baseline      - openapi-snapshot      - actionlint    # The gate is this condition, and nothing else.    #    # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per    # job: outside `run:` the wildcard arrives as the single literal string "Array", so the    # loop compared "Array" against "failure", never matched, and the job passed while    # zap-baseline was failing. A gate that cannot fail is worse than no gate, because the    # green tick it prints is believed.    #    # `contains()` is evaluated by the workflow engine rather than by a shell, which is where    # the wildcard actually does expand into every job's result. always() is still required:    # without it a failed dependency would skip this job, and a skipped job does not block a    # merge the way a failed one does.    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}    steps:      # Nothing decides anything here. The job runs only when the condition above held, so      # every required job has already passed; this step exists to leave a record in the log      # of which results were considered, for whoever reads a green build later.      - name: record the results this gate considered        run: |          echo 'results considered by this gate:'          echo '${{ toJSON(needs) }}'
+name: ci
+
+# SPEC §21 — PR pipeline, in the mandated order:
+#   lint -> typecheck -> i18n-keys -> unit -> integration (ephemeral DB) -> USSD harness
+#        -> coverage gate -> build artifacts -> ZAP baseline
+# SPEC §19 — mypy strict on apps/api and packages/*; ruff/black; pytest.
+# NFR-07 — the i18n-keys job is an addition to that order, not a replacement: it is the
+# named job the pipeline fails on when a language is missing a key or a placeholder.
+#
+# Phase 0 reality: there is no application source yet. Rather than ship a permanently
+# red pipeline, each layer job performs a REAL collection probe first. If a layer has
+# no tests it prints "SKIPPED: no <layer> tests yet (activates with first <layer> test)"
+# and the job exits 0. This is a genuine skip with a visible reason in the log — not
+# continue-on-error and not `|| true`. The moment the first test of that layer lands,
+# the probe finds it and the job runs for real.
+# lint and typecheck stay active throughout: they already act on test_skeleton.py.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# SPEC §21 — PRs required, CI green to merge.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  lint:
+    name: lint (ruff, black)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff black
+      - name: ruff
+        run: ruff check apps/api packages
+      - name: black
+        run: black --check apps/api packages
+      - name: check constraints file exists
+        run: test -f constraints.txt
+
+  typecheck:
+    name: typecheck (mypy strict)
+    runs-on: ubuntu-latest
+    # Always active in Phase 0: apps/api/tests/test_skeleton.py is a real .py file and
+    # is typechecked. Gate exists so the job self-describes once sources appear.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: detect python sources
+        id: gate
+        run: |
+          n=$(find apps/api packages -type f -name '*.py' -not -path '*/.*' | grep -c . || true)
+          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "SKIPPED: no python sources yet (activates with first module under apps/api or packages)"
+          else
+            echo "RUNNING: ${n} python source file(s) to typecheck"
+          fi
+      - run: pip install -e '.[dev]' -c constraints.txt
+        if: steps.gate.outputs.count != '0'
+      # SPEC §19: mypy strict on apps/api, packages/*. No __init__.py files are created
+      # to satisfy this — those are source code and remain deferred.
+      - name: mypy strict
+        if: steps.gate.outputs.count != '0'
+        run: mypy --strict apps/api packages
+
+  i18n-keys:
+    name: i18n-keys (key and placeholder parity)
+    runs-on: ubuntu-latest
+    # NFR-07 — a key one language does not speak, or a placeholder one translation forgot,
+    # must be a red build. The runtime fallback to English keeps a request answering, so
+    # nothing else in the pipeline would notice either gap. Runs after typecheck; no
+    # continue-on-error, so a missing key fails the pipeline rather than warning in a log.
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: every key spoken in every language
+        run: pytest apps/api/tests/test_NFR_07_i18n_key_parity.py -m unit -q
+
+  unit:
+    name: unit (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: verify constraints pin
+        # The constraints file is only worth what this step proves: that the versions it
+        # names are the versions that actually installed. It checks the three packages the
+        # snapshot job is most sensitive to, so a drift in the framework pair is caught here
+        # rather than discovered as an OpenAPI snapshot mismatch somewhere else.
+        run: |
+          python -c "import sys; expected={'fastapi': '0.143.0', 'pydantic': '2.14.0', 'starlette': '1.7.0'}; import fastapi, pydantic, starlette; actual={'fastapi': fastapi.__version__, 'pydantic': pydantic.VERSION, 'starlette': starlette.__version__}; mismatches={k: (expected[k], actual[k]) for k in expected if expected[k] != actual[k]}; sys.exit(1) if mismatches else print('pin verified', actual)"
+      - name: pytest unit
+        run: pytest apps/api/tests -m unit -q
+
+  integration:
+    name: integration (ephemeral postgres)
+    runs-on: ubuntu-latest
+    # SPEC §21: integration against an ephemeral DB. testcontainers (SPEC §20) is used by
+    # the tests themselves; this service block is the fallback harness for suites needing a
+    # pre-started instance (e.g. Alembic migration tests).
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: gebeyalink
+          POSTGRES_PASSWORD: gebeyalink
+          POSTGRES_DB: gebeyalink_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: detect integration tests
+        id: gate
+        run: |
+          # The `if` matters: an assignment's exit status is the command substitution's,
+          # and under errexit a non-zero pytest here would kill the step before rc was ever
+          # read. A condition suspends errexit, so the real code is captured and the probe
+          # gets to decide what it means.
+          if out=$(pytest --collect-only -q -m integration 2>&1); then rc=0; else rc=$?; fi
+          n=$(printf '%s\n' "$out" | grep -c '::' || true)
+          echo "collect-exit=${rc} collected=${n:-0}"
+          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "SKIPPED: no integration tests yet (activates with first integration test)"
+          else
+            echo "RUNNING: ${n} integration test(s) collected"
+          fi
+      - name: pytest integration
+        if: steps.gate.outputs.count != '0'
+        run: pytest apps/api/tests -m integration -q
+
+  worker:
+    name: worker (celery beat + worker)
+    runs-on: ubuntu-latest
+    # W1a — the worker is a process this repository ships, so it is a process CI runs. This is
+    # not a unit test with a mocked scheduler: Celery's beat and its worker run for real, over
+    # the same Redis the integration job starts, and the job waits for the schedule to fire and
+    # leaves an observable side effect behind. A mock cannot pass this — a worker that boots but
+    # whose beat never fires writes neither key, and neither does one whose task raises.
+    #
+    # The side effect is the heartbeat: a key with a TTL and a monotonic tick counter. The wait
+    # below reads the effect the way an operator would, not the worker's own claim that it ran.
+    #
+    # W1b-schedule — the same worker then proves the persistence the evaluator round that follows
+    # depends on. The beat scheduler is PersistentScheduler, its state lives in a file, and that
+    # file is what carries the next-fire across a restart. Round one boots and fires; the file's
+    # count is read and recorded. Round two boots again on the same file and the count is where
+    # round one left it — the restart read the schedule instead of inventing one. Round three
+    # deletes the file and boots once more: beat counts from one, which is the proof that the
+    # file, not the process, was what carried the state.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: gebeyalink
+          POSTGRES_PASSWORD: gebeyalink
+          POSTGRES_DB: gebeyalink_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
+      REDIS_URL: redis://localhost:6379/0
+      TERMS_VERSION: '2026-01-01'
+      # The schedule is the one thing this job changes, and it changes it the way a deployment
+      # would: through the environment the worker already reads. A heartbeat due every sixty
+      # seconds would make the job wait a minute to observe a fact a fast schedule produces at
+      # once; the short TTL means a key left by an earlier run cannot be mistaken for a live
+      # worker. The persistence rounds re-boot the worker on this same cadence and watch a new
+      # fire land within a few seconds.
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: '3'
+      WORKER_HEARTBEAT_TTL_SECONDS: '30'
+      # The shipment sweep's cadence is overridden for the same reason the heartbeat's is: a
+      # task proven by its own firing cannot be left on a default that outlasts the job. The
+      # default is honest for a window measured in days; here it is what made the schedule
+      # carry the sweep and never send it, so it is what the job now shortens.
+      WORKER_SHIPMENT_SWEEP_INTERVAL_SECONDS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: generate the settings the worker reads
+        # The worker resolves the same Settings the API does, and Settings has no default for
+        # either signing key, so they are provisioned here the way the ZAP job provisions them.
+        # The worker never signs anything; the requirement is that it boots from the
+        # configuration the API boots from, not from a narrower one invented for this job.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          private_pem = key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          ).decode()
+          public_pem = (
+              key.public_key()
+              .public_bytes(
+                  encoding=serialization.Encoding.PEM,
+                  format=serialization.PublicFormat.SubjectPublicKeyInfo,
+              )
+              .decode()
+          )
+          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")
+          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")
+          PY
+          {
+            { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; }
+            { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }
+            python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"
+          } >> "$GITHUB_ENV"
+          rm -f /tmp/test-private.pem /tmp/test-public.pem
+      - name: export the persistent scheduler's file location
+        # `runner` is a step context, so the schedule path cannot be spelled at the job level;
+        # it is exported once here and every round reads WORKER_BEAT_SCHEDULE_PATH. The runner's
+        # scratch space is this job's durable-ish storage, standing in for the mounted volume a
+        # deployment must provide: the three rounds read this file and nothing else decides what
+        # a restarted scheduler believes about the past, which is the property being proven.
+        env:
+          WORKER_BEAT_SCHEDULE_PATH: ${{ runner.temp }}/beat-schedule
+        run: echo "WORKER_BEAT_SCHEDULE_PATH=$WORKER_BEAT_SCHEDULE_PATH" >> "$GITHUB_ENV"
+      - name: migrate the database the sweep reads
+        # The heartbeat needs nothing but Redis; the sweep is a query, so the job now stands
+        # up the schema too. The command is the one the integration job and a deployment run,
+        # aimed at the same DATABASE_URL, so the tables the sweep reads here are the tables
+        # those two read rather than a schema this job arranged for itself.
+        run: alembic upgrade head
+      - name: seed a shipment past its holding window
+        # The sweep's input is an order past its crop's window, and only seeding one makes
+        # this job's verdict about the sweep rather than about the absence of an order. The
+        # row is built here rather than walked through the API: buy-now, funding and shipping
+        # are earlier slices whose own tests stand, and driving them would re-prove those
+        # while saying nothing about the two minutes this job occupies. What "lapsed" means is
+        # written down once, on the crop (an hour) and on the order (shipped two hours ago);
+        # the boundary arithmetic itself stays the unit/integration suite's business.
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import UTC, datetime, timedelta
+
+          from sqlalchemy import create_engine, select, update
+          from sqlalchemy.orm import Session
+
+          from apps.api.models.crop import Crop
+          from apps.api.models.listing import (
+              DeliveryOption,
+              Listing,
+              ListingSource,
+              ListingStatus,
+          )
+          from apps.api.models.offer import Offer  # registered so orders.offer_id resolves
+          from apps.api.models.order import Order, OrderStatus, PaymentMode
+          from apps.api.models.quantity_reservation import (
+              HolderType,
+              QuantityReservation,
+              ReservationState,
+          )
+          from apps.api.models.region import Region
+          from apps.api.models.user import PrimaryRole, User
+          from apps.api.models.woreda import Woreda
+          from packages.shared.money import FeePayer
+
+          url = os.environ["DATABASE_URL"]
+          engine = create_engine(url)
+          now = datetime.now(UTC)
+          with Session(engine) as session:
+              # One row each: the crop's window is what the sweep closes the order on, and the
+              # two places a listing or an order has to name are the reference rows the
+              # migration above has already written.
+              crop_id = session.execute(select(Crop.id).limit(1)).scalar_one()
+              region_code = session.execute(select(Region.code).limit(1)).scalar_one()
+              woreda_id = session.execute(select(Woreda.id).limit(1)).scalar_one()
+              session.execute(update(Crop).where(Crop.id == crop_id).values(escrow_hold_hours=1))
+
+              seller = User(phone_e164="+251911000001", role=PrimaryRole.FARMER)
+              buyer = User(phone_e164="+251911000003", role=PrimaryRole.BUYER)
+              session.add_all([seller, buyer])
+              session.flush()
+
+              listing = Listing(
+                  seller_id=seller.id,
+                  source=ListingSource.APP,
+                  crop_id=crop_id,
+                  quantity_kg=200,
+                  min_order_kg=50,
+                  unit_price_santim=1_000,
+                  harvest_date=now.date(),
+                  expires_at=now + timedelta(days=1),
+                  region_code=region_code,
+                  woreda_id=woreda_id,
+                  delivery_options=[DeliveryOption.SELLER_DELIVERY],
+                  # The seller's delivery option and a non-zero fee are one fact to the schema
+                  # (`ck_listings_delivery_fee_santim`), so the seed cannot name the option and
+                  # leave the fee at its default.
+                  delivery_fee_santim=1_000,
+                  status=ListingStatus.ACTIVE,
+                  short_code="AAAAAA",
+              )
+              session.add(listing)
+              session.flush()
+
+              order = Order(
+                  short_code="GL-AAAAAA",
+                  buyer_id=buyer.id,
+                  seller_id=seller.id,
+                  listing_id=listing.id,
+                  quantity_kg=100,
+                  unit_price_santim=1_000,
+                  delivery_method=DeliveryOption.SELLER_DELIVERY,
+                  delivery_fee_santim=0,
+                  platform_fee_santim=0,
+                  vat_santim=0,
+                  total_santim=100_000,
+                  fee_payer=FeePayer.SELLER,
+                  buyer_address_woreda_id=woreda_id,
+                  buyer_address_text="the job's own address",
+                  status=OrderStatus.SHIPPED,
+                  payment_mode=PaymentMode.COD,
+                  shipped_at=now - timedelta(hours=2),
+              )
+              session.add(order)
+              session.flush()
+              # Captured before the commit, because the commit expires the instance and the
+              # print below is outside the session that could refresh it.
+              seeded_code = order.short_code
+
+              session.add(
+                  QuantityReservation(
+                      listing_id=listing.id,
+                      holder_type=HolderType.ORDER,
+                      holder_id=order.id,
+                      quantity_kg=100,
+                      state=ReservationState.CONVERTED,
+                  )
+              )
+              session.commit()
+          print(f"seeded {seeded_code}: SHIPPED two hours ago, crop window one hour")
+          PY
+      - name: boot the worker (round 1 - fast schedule, persistent scheduler)
+        # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only
+        # ignores the hangup signal, and a new session is a stronger promise than a process
+        # group the runner happens to leave alone today. Each round writes its own log, so a
+        # failure can be read back against the round that produced it.
+        run: |
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          setsid nohup python -m apps.api.worker \
+            > "$RUNNER_TEMP/worker-round1.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: wait for the heartbeat, then assert it (round 1)
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_KEY, HEARTBEAT_TICKS_KEY
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          deadline = time.monotonic() + 60
+          while time.monotonic() < deadline:
+              ticks = client.get(HEARTBEAT_TICKS_KEY)
+              moment = client.get(HEARTBEAT_KEY)
+              # Three fires, not one: the persistence rounds compare the count carried in the
+              # schedule file against a baseline that must sit comfortably above a fresh start.
+              if ticks and int(ticks) >= 3 and moment:
+                  break
+              time.sleep(1)
+          else:
+              sys.exit("the worker produced no heartbeat within 60s")
+          ttl = client.ttl(HEARTBEAT_KEY)
+          assert 0 < ttl <= int(os.environ["WORKER_HEARTBEAT_TTL_SECONDS"]), ttl
+          print(f"heartbeat {HEARTBEAT_KEY}={moment}")
+          print(f"ticks {HEARTBEAT_TICKS_KEY}={ticks}")
+          print(f"heartbeat TTL {ttl}s")
+          PY
+      - name: wait for the sweep, then assert it (round 1)
+        # The heartbeat proves the loop is alive; this proves the loop did the work. It waits
+        # the way the heartbeat waits — on a fact rather than a sleep — and it reads the row
+        # from PostgreSQL rather than from the API, because the row is the record and the read
+        # path is not the thing this job proves. The three assertions are the sweep's own
+        # output: the status it moves to, the mechanism it names, and the reservation it
+        # consumes. If the sweep does not settle the order, the step fails and the job is red;
+        # that is what makes this an observation rather than the listing it used to be.
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import time
+
+          import psycopg
+
+          url = os.environ["DATABASE_URL"].replace("+psycopg", "")
+          deadline = time.monotonic() + 60
+          while time.monotonic() < deadline:
+              with psycopg.connect(url) as connection:
+                  order = connection.execute(
+                      "SELECT status, delivered_via, delivered_at FROM orders"
+                  ).fetchone()
+                  reservation = connection.execute(
+                      "SELECT state FROM quantity_reservations"
+                  ).fetchone()
+              if order and order[0] == "DELIVERED":
+                  break
+              time.sleep(1)
+          else:
+              sys.exit("the shipment sweep did not settle the order within 60s")
+
+          status, delivered_via, delivered_at = order
+          consumed = reservation[0] if reservation else None
+          print(f"orders: status={status} delivered_via={delivered_via} delivered_at={delivered_at}")
+          print(f"reservations: state={consumed}")
+          assert delivered_via == "SHIPMENT_WINDOW", delivered_via
+          assert delivered_at is not None, delivered_at
+          assert consumed == "CONSUMED", consumed
+          PY
+          echo "--- the sweep, from $RUNNER_TEMP/worker-round1.log ---"
+          grep -E "gebeyalink.worker.shipment_sweep|settled=" "$RUNNER_TEMP/worker-round1.log" | head -n 8 || true
+      - name: stop the worker (round 1)
+        # Graceful SIGTERM first, then the beat child's own pattern; the sleeps let the worker
+        # run its shutdown path so the schedule file is closed and flushed before it is read.
+        run: |
+          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true
+          sleep 3
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          sleep 2
+      - name: record the schedule state after the first boot
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shelve
+
+          path = os.environ["WORKER_BEAT_SCHEDULE_PATH"]
+          with shelve.open(path, flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              state = {
+                  "boot": 1,
+                  "total_run_count": entry.total_run_count,
+                  "last_run_at": entry.last_run_at.isoformat(),
+              }
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json"), "w") as fh:
+              json.dump(state, fh)
+          print("schedule state after the first boot:", json.dumps(state))
+          PY
+      - name: restart the worker on the same schedule file (round 2)
+        run: |
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          setsid nohup python -m apps.api.worker \
+            >> "$RUNNER_TEMP/worker-round2.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: assert the next fire survived the restart (round 2)
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shelve
+          import subprocess
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_TICKS_KEY
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "beat-state-1.json")) as fh:
+              first = json.load(fh)
+          count1 = first["total_run_count"]
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+              if ticks >= count1 + 1:
+                  break
+              time.sleep(0.1)
+          else:
+              sys.exit(f"no fire after the restart; waited for ticks >= {count1 + 1}")
+
+          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()
+          subprocess.run(["kill", pid], check=False)
+          time.sleep(3)
+          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)
+          subprocess.run(["pkill", "-f", "celery beat"], check=False)
+          time.sleep(2)
+
+          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              count2 = entry.total_run_count
+          print(f"first boot baseline: total_run_count={count1}")
+          print(f"after the restart: total_run_count={count2}")
+          # The count continued where the first boot left it. A fresh replan would have counted
+          # its fires from one, but the baseline sat well above that and stayed where it was.
+          assert count1 + 1 <= count2 <= count1 + 2, (count1, count2)
+          print("PERSISTED: the next fire carried over the restart, reset by nothing")
+          PY
+      - name: delete the schedule file and boot once more (round 3)
+        run: |
+          rm -f "$WORKER_BEAT_SCHEDULE_PATH"*
+          sleep 1
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+          setsid nohup python -m apps.api.worker \
+            >> "$RUNNER_TEMP/worker-round3.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/worker.pid"
+      - name: assert a missing schedule file is a fresh replan (round 3)
+        run: |
+          python - <<'PY'
+          import os
+          import shelve
+          import subprocess
+          import sys
+          import time
+
+          import redis
+
+          from apps.api.worker import HEARTBEAT_TICKS_KEY
+
+          client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+          before = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+          deadline = time.monotonic() + 45
+          while time.monotonic() < deadline:
+              ticks = int(client.get(HEARTBEAT_TICKS_KEY) or 0)
+              if ticks > before:
+                  break
+              time.sleep(0.1)
+          else:
+              sys.exit(f"no fire without a schedule file; waited for ticks > {before}")
+
+          pid = open(os.path.join(os.environ["RUNNER_TEMP"], "worker.pid")).read().strip()
+          subprocess.run(["kill", pid], check=False)
+          time.sleep(3)
+          subprocess.run(["pkill", "-f", "apps.api.worker"], check=False)
+          subprocess.run(["pkill", "-f", "celery beat"], check=False)
+          time.sleep(2)
+
+          with shelve.open(os.environ["WORKER_BEAT_SCHEDULE_PATH"], flag="r") as store:
+              entry = store["entries"]["gebeyalink.worker.heartbeat"]
+              count3 = entry.total_run_count
+          # Round two read a count that carried a baseline no fresh entry reaches in the same
+          # window; with the file gone, beat counted its fires from one. The file is the state.
+          assert count3 <= 2, count3
+          print(f"without the schedule file: total_run_count={count3}")
+          print("REPLANNED FRESH: the missing file is why the earlier restart kept its count")
+          PY
+      - name: show the worker logs
+        if: always()
+        run: |
+          tail -n 30 "$RUNNER_TEMP/worker-round1.log" 2>/dev/null || true
+          tail -n 30 "$RUNNER_TEMP/worker-round2.log" 2>/dev/null || true
+          tail -n 30 "$RUNNER_TEMP/worker-round3.log" 2>/dev/null || true
+      - name: stop the worker (final)
+        if: always()
+        run: |
+          kill "$(cat "$RUNNER_TEMP/worker.pid")" 2>/dev/null || true
+          pkill -f 'apps.api.worker' 2>/dev/null || true
+          pkill -f 'celery beat' 2>/dev/null || true
+
+  ussd:
+    name: USSD/SMS harness
+    runs-on: ubuntu-latest
+    # SPEC §20: full §14.3 journeys via simulator harness; SMS command parser matrix.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: detect ussd tests
+        id: gate
+        run: |
+          if out=$(pytest --collect-only -q packages/ussd apps/api/tests -m ussd 2>&1); then rc=0; else rc=$?; fi
+          n=$(printf '%s\n' "$out" | grep -c '::' || true)
+          echo "collect-exit=${rc} collected=${n:-0}"
+          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "SKIPPED: no ussd tests yet (activates with first ussd test)"
+          else
+            echo "RUNNING: ${n} ussd test(s) collected"
+          fi
+      - name: USSD journeys + SMS parser matrix
+        if: steps.gate.outputs.count != '0'
+        run: pytest packages/ussd apps/api/tests -m ussd -q
+
+  e2e:
+    name: e2e journeys
+    runs-on: ubuntu-latest
+    # SPEC §20 references apps/api/tests/e2e/ for the verbatim Gherkin features.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: detect e2e tests
+        id: gate
+        run: |
+          if out=$(pytest --collect-only -q apps/api/tests/e2e -m e2e 2>&1); then rc=0; else rc=$?; fi
+          n=$(printf '%s\n' "$out" | grep -c '::' || true)
+          echo "collect-exit=${rc} collected=${n:-0}"
+          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "SKIPPED: no e2e tests yet (activates with first e2e test)"
+          else
+            echo "RUNNING: ${n} e2e test(s) collected"
+          fi
+      - name: pytest e2e
+        if: steps.gate.outputs.count != '0'
+        run: pytest apps/api/tests/e2e -m e2e -q
+
+  load:
+    name: load (k6)
+    runs-on: ubuntu-latest
+    # SPEC §20 load layer: k6, 200 rps API mix, USSD 50 rps, webhook burst 600/min.
+    # SPEC §20 gates this at "NFR-01/02 met in staging" — this PR job is the smoke form;
+    # the full scenario is promoted to deploy.yml against staging.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: detect load tests
+        id: gate
+        run: |
+          if out=$(pytest --collect-only -q apps/api/tests -m load 2>&1); then rc=0; else rc=$?; fi
+          n=$(printf '%s\n' "$out" | grep -c '::' || true)
+          echo "collect-exit=${rc} collected=${n:-0}"
+          echo "count=${n:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "SKIPPED: no load tests yet (activates with first load test)"
+          else
+            echo "RUNNING: ${n} load test(s) collected"
+          fi
+      - name: pytest load
+        if: steps.gate.outputs.count != '0'
+        run: pytest apps/api/tests -m load -q
+
+  coverage-gate:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      # Structural guard. The gates below select tests with `-m 'unit or integration'`, and a
+      # test file carrying no layer mark is silently deselected: it runs nowhere in this job,
+      # contributes no coverage, and the service it exercises is measured as though it had no
+      # tests. That is not a hypothetical — every profile and reference test sat unmarked from
+      # c07ce07 to a1095a5 and the scoped gate read 76.91% instead of failing loudly.
+      #
+      # So unmarked is asserted to be empty. Anything collected here is a test the coverage
+      # gate cannot see, and it is named rather than counted so the fix is obvious.
+      - name: fail if any test lacks a §20 layer mark
+        run: |
+          unmarked=$(pytest --collect-only -q -m "not unit and not integration and not ussd and not e2e and not load" 2>&1 || true)
+          offenders=$(printf '%s\n' "$unmarked" | grep '::' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::tests carry no SPEC §20 layer mark, so the coverage gate cannot see them"
+            printf '%s\n' "$offenders" | cut -d: -f1 | sort -u
+            echo "::error::mark each file pytestmark = pytest.mark.unit|integration (see SPEC §20)"
+            exit 1
+          fi
+          echo "every test carries a layer mark"
+      # SPEC §20: >=85% line coverage on services/ and packages/*; >=70% overall.
+      #
+      # Each command is one line, with no backslash continuation. A continuation is broken
+      # by one stray trailing space, and what breaks it is invisible in review and becomes
+      # a shell word pytest rejects at run time.
+      - name: pytest with coverage
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-report=xml --cov-report=term -q
+      - name: scoped gate (>=85% on services/ + packages/*)
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api/services --cov=packages --cov-fail-under=85 -q
+      - name: overall gate (>=70%)
+        run: pytest apps/api/tests -m 'unit or integration' --cov=apps/api --cov=packages --cov-fail-under=70 -q
+      # --cov-report=xml names no path, so coverage.py writes ./coverage.xml in the step's
+      # working directory, which is the checkout root. Named explicitly below so the upload
+      # cannot drift from where the report is actually produced.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  build-artifacts:
+    name: build artifacts
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, unit, coverage-gate]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: detect API Dockerfile
+        id: gate
+        run: |
+          if [ -f infra/Dockerfile.api ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: building API image from infra/Dockerfile.api"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no infra/Dockerfile.api yet (activates when the Dockerfile lands)"
+          fi
+      - name: build API image
+        if: steps.gate.outputs.count != '0'
+        run: docker build -f infra/Dockerfile.api -t gebeyalink/api:${{ github.sha }} .
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.count != '0'
+        with:
+          name: api-dockerfile
+          path: infra/Dockerfile.api
+      - name: detect worker Dockerfile
+        id: gate-worker
+        run: |
+          if [ -f infra/Dockerfile.worker ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: building worker image from infra/Dockerfile.worker"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no infra/Dockerfile.worker yet (activates when the Dockerfile lands)"
+          fi
+      - name: build worker image
+        if: steps.gate-worker.outputs.count != '0'
+        run: docker build -f infra/Dockerfile.worker -t gebeyalink/worker:${{ github.sha }} .
+      - uses: actions/upload-artifact@v4
+        if: steps.gate-worker.outputs.count != '0'
+        with:
+          name: worker-dockerfile
+          path: infra/Dockerfile.worker
+
+  build-mobile:
+    name: build mobile (Flutter)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, unit, coverage-gate]
+    # Gated on the manifest existing: apps/mobile/pubspec.yaml is not created yet.
+    # Package name is pinned by user decision: et.gebeyalink.mobile (reverse-domain of
+    # gebeyalink.et). Flutter 3 per SPEC §18.2.
+    #
+    # Probed in a step and reported through $GITHUB_OUTPUT, the same idiom every other gate
+    # in this file uses. hashFiles() is not available at job-level `if:` here, and one
+    # gating idiom across the file is worth more than the brevity of the alternative.
+    steps:
+      - uses: actions/checkout@v4
+      - name: detect mobile manifest
+        id: gate
+        run: |
+          if [ -f apps/mobile/pubspec.yaml ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: mobile build (package et.gebeyalink.mobile)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no apps/mobile/pubspec.yaml yet (activates when the manifest lands)"
+          fi
+      - uses: subosito/flutter-action@v2
+        if: steps.gate.outputs.count != '0'
+        with:
+          flutter-version: '3.24.x'
+      - run: flutter pub get
+        if: steps.gate.outputs.count != '0'
+      - run: flutter analyze
+        if: steps.gate.outputs.count != '0'
+      - run: flutter test
+        if: steps.gate.outputs.count != '0'
+      - run: flutter build apk --debug
+        if: steps.gate.outputs.count != '0'
+      # SPEC §20: widget tests for critical flows; Android emulator CI is the merge gate
+      # for app changes (emulator job lands with the mobile test suite).
+
+  build-admin:
+    name: build admin (React)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, unit, coverage-gate]
+    # Gated on apps/admin/package.json existing. Package name is pinned by user decision:
+    # et.gebeyalink.admin. React 18 + TypeScript + MUI per SPEC §18.2.
+    #
+    # Probed in a step, not with hashFiles(): same idiom as build-mobile and every other
+    # gate in this file.
+    steps:
+      - uses: actions/checkout@v4
+      - name: detect admin manifest
+        id: gate
+        run: |
+          if [ -f apps/admin/package.json ]; then
+            echo "count=1" >> "$GITHUB_OUTPUT"
+            echo "RUNNING: admin build (package et.gebeyalink.admin)"
+          else
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "SKIPPED: no apps/admin/package.json yet (activates when the manifest lands)"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.count != '0'
+        with:
+          node-version: '22'
+      - run: npm ci
+        if: steps.gate.outputs.count != '0'
+        working-directory: apps/admin
+      - run: npm run lint
+        if: steps.gate.outputs.count != '0'
+        working-directory: apps/admin
+      - run: npm run typecheck
+        if: steps.gate.outputs.count != '0'
+        working-directory: apps/admin
+      - run: npm test
+        if: steps.gate.outputs.count != '0'
+        working-directory: apps/admin
+      - run: npm run build
+        if: steps.gate.outputs.count != '0'
+        working-directory: apps/admin
+
+  zap-baseline:
+    name: ZAP baseline (security)
+    runs-on: ubuntu-latest
+    needs: [coverage-gate]
+    # SPEC §20: OWASP ZAP baseline in CI; zero high/critical open.
+    # Standard documented path: zaproxy/action-baseline with the `rules_file_name` input
+    # (properties-format rules file). No autogenrun / -config_file invocation is used.
+    #
+    # The API is BOOTED here rather than scanned as an absent target. A baseline scan
+    # pointed at a port with nothing on it reports a clean result while having checked
+    # nothing at all, which is worse than no gate: it looks like coverage. Same two images
+    # the integration suite starts, so the scanner sees the API against a real database
+    # with a real geography column.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: gebeyalink
+          POSTGRES_PASSWORD: gebeyalink
+          POSTGRES_DB: gebeyalink_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://gebeyalink:gebeyalink@localhost:5432/gebeyalink_test
+      REDIS_URL: redis://localhost:6379/0
+      TERMS_VERSION: '2026-01-01'
+      # The only place the API description is served. ZAP's API scan reads /openapi.json to
+      # learn which endpoints exist, so scanning a process that hides it would be scanning the
+      # absence of a schema. Everywhere else it stays off, including in production, where it
+      # is a map of every endpoint handed to anyone who can reach the port.
+      EXPOSE_DOCS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: generate a throwaway signing keypair
+        # FIRST, and into $GITHUB_ENV, so that every step below inherits the keys from one
+        # place. Generated per run and never written down: a key committed to the repository
+        # is a key somebody could use, and a key copied out of a CI file becomes the template
+        # somebody later deploys with.
+        #
+        # The heredoc form is required, not stylistic. A PEM is several lines long, and
+        # `echo "KEY=value"` would fold it into one line and hand uvicorn a key it cannot
+        # parse. The `KEY<<EOF` / content / `EOF` form preserves the newlines exactly.
+        #
+        # This runs before `alembic upgrade head` on purpose. env.py calls get_settings(),
+        # and Settings has no default for either key - it is a required field with no
+        # fallback. Provisioning the keys inside the boot step meant the migration step ran
+        # first with no keys at all and died on a pydantic ValidationError before the API was
+        # ever started.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          private_pem = key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          ).decode()
+          public_pem = (
+              key.public_key()
+              .public_bytes(
+                  encoding=serialization.Encoding.PEM,
+                  format=serialization.PublicFormat.SubjectPublicKeyInfo,
+              )
+              .decode()
+          )
+          # The trailing newline is load-bearing. A heredoc delimiter is only recognised on a line of
+          # its own, so a value without one glues itself to the delimiter and the runner
+          # reads the entire next variable as part of this one. Normalised here, where the
+          # file is written, rather than patched up in the shell afterwards.
+          Path("/tmp/test-private.pem").write_text(private_pem.rstrip("\n") + "\n", encoding="utf-8")
+          Path("/tmp/test-public.pem").write_text(public_pem.rstrip("\n") + "\n", encoding="utf-8")
+          PY
+          # `cat` and `echo` here, not a newline-normalising pipeline: the heredoc delimiter is
+          # only recognised on a line of its own, so the value must end in a newline, and
+          # that is guaranteed one step above where the file is written rather than by
+          # trying to repair it in the shell afterwards.
+          {
+            { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; }
+            { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }
+            # Throwaway for this job, for the same reason the signing keys are.
+            python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"
+          } >> "$GITHUB_ENV"
+          rm -f /tmp/test-private.pem /tmp/test-public.pem
+      # Every setting the app reads is now resolved from two sources and no others: the
+      # job-level env above (database_url, redis_url, terms_version) and the two keys the
+      # step above wrote to $GITHUB_ENV. Nothing is provisioned inline further down, so
+      # there is no second copy to drift out of step with the first.
+      - name: apply migrations
+        run: alembic upgrade head
+      - name: boot the API
+        # Bound to 0.0.0.0 rather than 127.0.0.1, and detached with setsid as well as nohup.
+        #
+        # The bind address is why this scan could never have worked, and it is worth being
+        # exact about the order of the two faults. The API did boot and did answer: the wait
+        # step passed on its second attempt. What failed is that ZAP runs inside a container,
+        # so it reaches this runner over the docker bridge and not over loopback - and a
+        # process listening only on 127.0.0.1 is invisible to it however well the hostname
+        # resolves. A scan that cannot connect is not a scan, so the address is fixed before
+        # the scan is trusted to say anything about the application.
+        #
+        # setsid as well as nohup, and this is hardening rather than the fix: the logs show
+        # the process did survive the step boundary, so the fault was never a dead process. It
+        # was the address it listened on. setsid is here because nohup alone only ignores the
+        # hangup signal, and a new session is a stronger promise than a process group the
+        # runner happens to leave alone today.
+        run: |
+          setsid nohup python -m uvicorn apps.api.main:create_app --factory \
+            --host 0.0.0.0 --port 8000 \
+            > "$RUNNER_TEMP/api.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/api.pid"
+      - name: wait for the API to serve
+        # Two things are established here, and only together do they mean anything: uvicorn
+        # is listening, and this runner can reach itself on an address a container can use.
+        #
+        # The address is chosen by trying candidates and keeping the one that answers, rather
+        # than by trusting a formula. The obvious formula -
+        # `ip -4 route show default | cut -d' ' -f3` - returns 10.1.0.1 on a GitHub-hosted
+        # Azure runner, which is the virtual network's gateway router rather than anything on
+        # this machine: uvicorn holds no address there, and a request to it hangs until it
+        # times out. The address a container uses to reach this runner is the one on the
+        # docker bridge, so that is tried first, and the default route is kept only as a
+        # fallback for a runner whose default route really is the bridge.
+        #
+        # Each candidate gets a short connect timeout so an address that cannot possibly work
+        # costs seconds rather than the two minutes an open connect takes to give up.
+        run: |
+          candidates=()
+          bridge="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1)"
+          default_gateway="$(ip -4 route show default 2>/dev/null | cut -d' ' -f3)"
+          if [ -n "$bridge" ]; then candidates+=("$bridge"); fi
+          if [ -n "$default_gateway" ]; then candidates+=("$default_gateway"); fi
+          echo "candidates: ${candidates[*]:-none}"
+          ready=0
+          for attempt in $(seq 1 60); do
+            if curl -fsS --connect-timeout 3 --max-time 5 http://127.0.0.1:8000/health > /dev/null; then
+              echo "api is up after ${attempt}s"
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::the API did not answer /health"
+            cat "$RUNNER_TEMP/api.log"
+            exit 1
+          fi
+          # The same request a container would make: this runner, addressed by an address on
+          # the docker bridge, with the API bound to every interface. This is the reachability
+          # the scanner depends on, so it is proved here rather than discovered by the spider.
+          reachable=""
+          for address in "${candidates[@]}"; do
+            if curl -fsS --connect-timeout 3 --max-time 5 "http://${address}:8000/health" > /dev/null; then
+              reachable="$address"
+              break
+            fi
+            echo "not reachable from this runner: ${address}"
+          done
+          if [ -z "$reachable" ]; then
+            echo "::error::the API answers on loopback but on no bridge address, so a container cannot scan it"
+            ss -ltnp 2>/dev/null | grep 8000 || true
+            exit 1
+          fi
+          echo "ZAP_TARGET=http://${reachable}:8000/openapi.json" >> "$GITHUB_ENV"
+          echo "reachable from a container at ${reachable}:8000"
+      - name: ZAP API scan
+        # action-api-scan, not action-baseline, and this is the change that makes the scan mean
+        # something.
+        #
+        # The baseline scan spidered a URL and found three of them: `/`, `/robots.txt` and
+        # `/sitemap.xml`, all 404, because this API has no root document to crawl from. Its 66
+        # passes were mostly rules not firing against a 404 page. It was measuring the absence
+        # of a website, not the security of an API.
+        #
+        # The API scan is handed the OpenAPI description instead, which is a list of every
+        # endpoint with its parameters and its declared security, and it drives the scan from
+        # that list. That is why the boot step sets EXPOSE_DOCS: without /openapi.json there is
+        # no description to hand it, and the scan would go back to guessing.
+        # `main`, not `master`: this action's repository has exactly one branch and it is
+        # `main`, so `@master` fails the run before a single step executes. action-baseline,
+        # which this replaced, is on `master` - the two actions do not share a default branch.
+        uses: zaproxy/action-api-scan@main
+        with:
+          rules_file_name: infra/zap-baseline-rules.conf
+          # The input is `docker_name`. `docker-image` is not an input of this action, so it
+          # was silently ignored and the scan ran on whatever the action defaults to.
+          docker_name: ghcr.io/zaproxy/zaproxy:stable
+          # The spec URL, not the site root: `format` tells the action how to read it, and the
+          # endpoints to test are in the document rather than behind it.
+          target: ${{ env.ZAP_TARGET }}
+          format: openapi
+          # The gate. `fail_action: true` makes zap-api-scan.py's exit code decide this step,
+          # and its exit code is arithmetic, not opinion: 1 when any rule FAILed, 2 when any
+          # rule WARNed, 3 when the scan itself broke or found nothing at all, 0 when there is
+          # at least one pass and nothing failed or warned. Ignored rules are not counted, so
+          # an accepted risk in the rules file cannot redden the build - it has been triaged on
+          # purpose.
+          #
+          # This could only be turned on after the scan was made to mean something and then
+          # read clean. Run 37205542548 found two warnings; one (10021, X-Powered-By) was
+          # fixed by sending X-Content-Type-Options on every response, including 500s; the
+          # other (90004, CORP) was triaged into infra/zap-baseline-rules.conf with its
+          # rationale. Run 37268838565 then reported WARN-NEW: 0, FAIL-NEW: 0, PASS: 117, and
+          # only then did this flip. A gate armed before that would have been a gate armed
+          # against a scan that reports three 404s as its whole world.
+          fail_action: true
+          # This job scans, it does not publish. With issue writing left on, a scan that finds
+          # anything tries to open an issue, and the token here cannot - the job holds no
+          # `issues: write` - so the step dies with "Resource not accessible by integration"
+          # *after* a successful scan, which is the least useful way for a scan to fail.
+          # The alternative, granting the permission, was rejected on purpose: a scan on every
+          # push should not be filing issues, and the report is already attached as the
+          # `zap_scan` artifact by the action itself.
+          allow_issue_writing: false
+      - name: stop the API
+        if: always()
+        # By pattern as well as by the recorded pid. setsid execs uvicorn in place when it is
+        # not already a process group leader and forks when it is, so the number written at
+        # boot is not guaranteed to be the process holding port 8000. The pattern matches one
+        # process, and the pid file is kept for the case where neither is available.
+        run: |
+          pkill -f "uvicorn apps.api.main:create_app" || true
+          kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
+      # No artifact step of our own: the action already attaches the report as the `zap_scan`
+      # artifact. The step that used to sit here had an empty `path:` and an `if:` naming a
+      # step id that does not exist in this job, so it uploaded nothing - and it would have
+      # uploaded a second, redundant copy had either half been right.
+
+  openapi-snapshot:
+    name: openapi snapshot (contract drift)
+    runs-on: ubuntu-latest
+    # The served schema is checked in as a file, and this job is what keeps the file honest:
+    # it regenerates the schema from the code and compares byte-for-byte. A mismatch means
+    # either the code changed the contract or the framework that emits it moved underfoot, and
+    # the message below tells the reader which fix applies. It does not use `git diff` on the
+    # tracked path - that would only prove the file is committed, not that it matches a fresh
+    # generation. The baseline-method hash the generator also prints is deliberately NOT
+    # checked here: it is a one-time proof, not a gate.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: regenerate the snapshot to a temporary path
+        run: python -m apps.api.snapshot --write "$RUNNER_TEMP/openapi.snapshot.json"
+      - name: compare with the tracked snapshot
+        run: |
+          if cmp -s "$RUNNER_TEMP/openapi.snapshot.json" apps/api/openapi.snapshot.json; then
+            echo "the OpenAPI snapshot matches the code"
+            exit 0
+          fi
+          cat <<'EOF'
+          The OpenAPI snapshot does not match what this environment generates.
+
+          If pyproject.toml has not changed since the snapshot was last written, this is likely a
+          framework version drift: the environment resolved a different FastAPI / Pydantic pair than
+          the one the snapshot was generated under.
+
+          If pyproject.toml has changed, or you changed code, this is a code change: regenerate the
+          snapshot locally and commit it in the same commit as the change.
+
+          Either way, the fix is local:
+
+            python -m apps.api.snapshot --write apps/api/openapi.snapshot.json
+
+          Then commit apps/api/openapi.snapshot.json.
+
+          Do not regenerate the snapshot from CI output. Reconciliation is one-way (bring the local
+          environment up to CI's resolution, not the reverse).
+          EOF
+          exit 1
+
+  actionlint:
+    name: actionlint (workflow lint)
+    runs-on: ubuntu-latest
+    # W-actionlint — the workflow files are linted on every push so a file that does not
+    # parse is caught before it breaks a build. Pinned to actionlint v1.7.12 (released
+    # 2026-03-30): the expected SHA-256 below was read from the release's published
+    # actionlint_1.7.12_checksums.txt at pin time (2026-10-12) and is reviewed at the pull
+    # request. The workflow does not download that checksum file at run time, because a
+    # checksum downloaded from the same release protects against a corrupted download and
+    # not against a tampered release — the expected value lives in this file.
+    #
+    # The job has no skip path on purpose — no paths:, no job-level if:, no
+    # continue-on-error. The merge-gate finding (2026-10-12, recorded in the handoff) is
+    # that on a failed or cancelled needed job ci-green is skipped, while a skipped job
+    # leaves it running and passing: a lint job that could skip itself would read green
+    # while the files it guards were broken.
+    steps:
+      - uses: actions/checkout@v4
+      - name: download the pinned, hash-verified actionlint binary
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+      - name: lint every workflow file
+        run: ./actionlint -color
+
+  ci-green:
+    name: ci green (merge gate)
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - typecheck
+      - i18n-keys
+      - unit
+      - integration
+      - worker
+      - ussd
+      - e2e
+      - load
+      - coverage-gate
+      - build-artifacts
+      - build-mobile
+      - build-admin
+      - zap-baseline
+      - openapi-snapshot
+      - actionlint
+    # The gate is this condition, and nothing else.
+    #
+    # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per
+    # job: outside `run:` the wildcard arrives as the single literal string "Array", so the
+    # loop compared "Array" against "failure", never matched, and the job passed while
+    # zap-baseline was failing. A gate that cannot fail is worse than no gate, because the
+    # green tick it prints is believed.
+    #
+    # `contains()` is evaluated by the workflow engine rather than by a shell, which is where
+    # the wildcard actually does expand into every job's result. always() is still required:
+    # without it a failed dependency would skip this job, and a skipped job does not block a
+    # merge the way a failed one does.
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    steps:
+      # Nothing decides anything here. The job runs only when the condition above held, so
+      # every required job has already passed; this step exists to leave a record in the log
+      # of which results were considered, for whoever reads a green build later.
+      - name: record the results this gate considered
+        run: |
+          echo 'results considered by this gate:'
+          echo '${{ toJSON(needs) }}'
