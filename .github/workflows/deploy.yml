@@ -89,7 +89,7 @@ jobs:
             echo "count=0" >> "$GITHUB_OUTPUT"
             echo "SKIPPED: no alembic migrations yet (activates when the first migration lands)"
           fi
-      - run: pip install -e '.[dev]'
+      - run: pip install -e '.[dev]' -c constraints.txt
         if: steps.gate.outputs.count != '0'
       # Applies migrations to a disposable copy of the current schema, then asserts the
       # downgrade path also succeeds. A failed downgrade means the release is not
