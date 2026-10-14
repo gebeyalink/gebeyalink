@@ -46,6 +46,34 @@ from apps.api.core.idempotency import IdempotencyStore
 from apps.api.core.redis_client import get_client, init_client
 from apps.api.core.short_codes import CrockfordOrderCode
 from apps.api.db.session import get_session_factory, init_engine
+
+# The worker's tasks touch the database, and a settlement writes rows whose foreign keys reach
+# every other table: an order's seller is a user, its listing names a crop, a region, and a
+# woreda. SQLAlchemy resolves those keys across the whole *MetaData* when it flushes, so a
+# process whose own imports reached only some of the models fails at the first write with
+# ``NoReferencedTableError``. That is what the shipment sweep did — it settled nothing, and
+# only the heartbeat worked, because the heartbeat touches the store and not the database.
+#
+# Every model is loaded here, so the registry belongs to the process rather than to whichever
+# task its imports happened to reach first. It is loaded at module scope, not inside ``main``,
+# so every entry point that imports this module — the container's ``python -m``, the CI job, a
+# test — starts with a complete registry. The imports are the models alone: the worker needs no
+# router or service of its own, so ``apps.api.main`` would load everything the worker is not.
+# The names are imported for the registration side effect, which is what the ``noqa`` marks;
+# ``alembic/env.py`` assembles the same set for the migration, and the registry test beside
+# the worker asserts the whole of it.
+from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
+from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
+from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
+from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
+from apps.api.models import offer as _offer_model  # noqa: F401  (registers the table)
+from apps.api.models import order as _order_model  # noqa: F401  (registers the table)
+from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
+from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)
+from apps.api.models import quantity_reservation as _reservation_model  # noqa: F401
+from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
+from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
+from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
