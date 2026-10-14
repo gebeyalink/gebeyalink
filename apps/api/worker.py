@@ -64,7 +64,6 @@ from apps.api.db.session import get_session_factory, init_engine
 # the worker asserts the whole of it.
 from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
-from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
 from apps.api.models import offer as _offer_model  # noqa: F401  (registers the table)
 from apps.api.models import order as _order_model  # noqa: F401  (registers the table)
