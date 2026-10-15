@@ -192,6 +192,37 @@ class OrderRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_lapsed_pickup_ids(self, now: datetime, limit: int) -> list[uuid.UUID]:
+        """Pickups whose confirmation window had closed by `now`, oldest first.
+
+        The window is the platform's rather than the crop's: a pickup waits at a place, not on a
+        road, so the wait is the fixed day `PICKUP_CONFIRM_WINDOW` states, measured from
+        `ready_at`, the moment the seller said the goods were waiting. The comparison is
+        inclusive, so a pickup exactly at the boundary has lapsed -- the same answer
+        `pickup_window_closed` gives every reader.
+
+        Identities rather than rows, because the sweep then locks each one on its own and the
+        lock belongs to the settlement rather than to the question of which pickups lapsed. The
+        list is bounded so this stays a sweep and not a table scan.
+        """
+        # Imported here rather than at module scope: the order service imports this repository,
+        # so a module-scope import back into the service would close the cycle. The window and
+        # the predicate that judges it must be one value, so this is the constant and not a copy
+        # of it.
+        from apps.api.services.order_service import PICKUP_CONFIRM_WINDOW
+
+        stmt = (
+            select(Order.id)
+            .where(
+                Order.status == OrderStatus.READY_FOR_PICKUP,
+                Order.ready_at + PICKUP_CONFIRM_WINDOW <= now,
+            )
+            .order_by(Order.ready_at, Order.id)
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def crop_hold_hours_for_order(self, order_id: uuid.UUID) -> int | None:
         """The hours an escrow on this order's crop is held before it may be released.
 

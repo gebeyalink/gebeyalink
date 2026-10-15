@@ -218,6 +218,9 @@ jobs:
       # default is honest for a window measured in days; here it is what made the schedule
       # carry the sweep and never send it, so it is what the job now shortens.
       WORKER_SHIPMENT_SWEEP_INTERVAL_SECONDS: '1'
+      # The pickup sweep's cadence is shortened for the shipment sweep's reason, and the seed
+      # below is a pickup as well as a shipment so the same worker proves both.
+      WORKER_PICKUP_SWEEP_INTERVAL_SECONDS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -274,14 +277,15 @@ jobs:
         # aimed at the same DATABASE_URL, so the tables the sweep reads here are the tables
         # those two read rather than a schema this job arranged for itself.
         run: alembic upgrade head
-      - name: seed a shipment past its holding window
-        # The sweep's input is an order past its crop's window, and only seeding one makes
-        # this job's verdict about the sweep rather than about the absence of an order. The
-        # row is built here rather than walked through the API: buy-now, funding and shipping
-        # are earlier slices whose own tests stand, and driving them would re-prove those
-        # while saying nothing about the two minutes this job occupies. What "lapsed" means is
-        # written down once, on the crop (an hour) and on the order (shipped two hours ago);
-        # the boundary arithmetic itself stays the unit/integration suite's business.
+      - name: seed a shipment and a pickup past their windows
+        # The sweeps' input is a row past its window, and only seeding one makes this job's
+        # verdict about the sweeps rather than about the absence of an order. The rows are built
+        # here rather than walked through the API: buy-now, funding, marking ready and shipping
+        # are earlier slices whose own tests stand, and driving them would re-prove those while
+        # saying nothing about the two minutes this job occupies. What "lapsed" means is written
+        # down once -- the crop's window (an hour) and the order's departure (two hours ago) for
+        # the shipment, and the order's readiness (a day and an hour ago) for the pickup; the
+        # boundary arithmetic itself stays the unit/integration suite's business.
         run: |
           python - <<'PY'
           import os
@@ -313,8 +317,8 @@ jobs:
           engine = create_engine(url)
           now = datetime.now(UTC)
           with Session(engine) as session:
-              # One row each: the crop's window is what the sweep closes the order on, and the
-              # two places a listing or an order has to name are the reference rows the
+              # One row each: the crop's window is what the shipment sweep closes the order on,
+              # and the two places a listing or an order has to name are the reference rows the
               # migration above has already written.
               crop_id = session.execute(select(Crop.id).limit(1)).scalar_one()
               region_code = session.execute(select(Region.code).limit(1)).scalar_one()
@@ -326,7 +330,7 @@ jobs:
               session.add_all([seller, buyer])
               session.flush()
 
-              listing = Listing(
+              shipment_listing = Listing(
                   seller_id=seller.id,
                   source=ListingSource.APP,
                   crop_id=crop_id,
@@ -345,14 +349,31 @@ jobs:
                   status=ListingStatus.ACTIVE,
                   short_code="AAAAAA",
               )
-              session.add(listing)
+              pickup_listing = Listing(
+                  seller_id=seller.id,
+                  source=ListingSource.APP,
+                  crop_id=crop_id,
+                  quantity_kg=200,
+                  min_order_kg=50,
+                  unit_price_santim=1_000,
+                  harvest_date=now.date(),
+                  expires_at=now + timedelta(days=1),
+                  region_code=region_code,
+                  woreda_id=woreda_id,
+                  # Pickup carries no fee: the same check constraint, the other way round.
+                  delivery_options=[DeliveryOption.PICKUP],
+                  delivery_fee_santim=0,
+                  status=ListingStatus.ACTIVE,
+                  short_code="BBBBBB",
+              )
+              session.add_all([shipment_listing, pickup_listing])
               session.flush()
 
-              order = Order(
+              shipment_order = Order(
                   short_code="GL-AAAAAA",
                   buyer_id=buyer.id,
                   seller_id=seller.id,
-                  listing_id=listing.id,
+                  listing_id=shipment_listing.id,
                   quantity_kg=100,
                   unit_price_santim=1_000,
                   delivery_method=DeliveryOption.SELLER_DELIVERY,
@@ -367,23 +388,56 @@ jobs:
                   payment_mode=PaymentMode.COD,
                   shipped_at=now - timedelta(hours=2),
               )
-              session.add(order)
+              pickup_order = Order(
+                  short_code="GL-BBBBBB",
+                  buyer_id=buyer.id,
+                  seller_id=seller.id,
+                  listing_id=pickup_listing.id,
+                  quantity_kg=100,
+                  unit_price_santim=1_000,
+                  delivery_method=DeliveryOption.PICKUP,
+                  delivery_fee_santim=0,
+                  platform_fee_santim=0,
+                  vat_santim=0,
+                  total_santim=100_000,
+                  fee_payer=FeePayer.SELLER,
+                  buyer_address_woreda_id=woreda_id,
+                  buyer_address_text="the job's own address",
+                  status=OrderStatus.READY_FOR_PICKUP,
+                  payment_mode=PaymentMode.COD,
+                  # A day and an hour: past the fixed twenty-four hours the pickup window is,
+                  # with the boundary arithmetic left to the suite.
+                  ready_at=now - timedelta(hours=25),
+                  pickup_code="123456",
+              )
+              session.add_all([shipment_order, pickup_order])
               session.flush()
-              # Captured before the commit, because the commit expires the instance and the
-              # print below is outside the session that could refresh it.
-              seeded_code = order.short_code
+              # Captured before the commit, because the commit expires the instances and the
+              # prints below are outside the session that could refresh them.
+              shipment_code = shipment_order.short_code
+              pickup_code = pickup_order.short_code
 
-              session.add(
-                  QuantityReservation(
-                      listing_id=listing.id,
-                      holder_type=HolderType.ORDER,
-                      holder_id=order.id,
-                      quantity_kg=100,
-                      state=ReservationState.CONVERTED,
-                  )
+              session.add_all(
+                  [
+                      QuantityReservation(
+                          listing_id=shipment_listing.id,
+                          holder_type=HolderType.ORDER,
+                          holder_id=shipment_order.id,
+                          quantity_kg=100,
+                          state=ReservationState.CONVERTED,
+                      ),
+                      QuantityReservation(
+                          listing_id=pickup_listing.id,
+                          holder_type=HolderType.ORDER,
+                          holder_id=pickup_order.id,
+                          quantity_kg=100,
+                          state=ReservationState.CONVERTED,
+                      ),
+                  ]
               )
               session.commit()
-          print(f"seeded {seeded_code}: SHIPPED two hours ago, crop window one hour")
+          print(f"seeded {shipment_code}: SHIPPED two hours ago, crop window one hour")
+          print(f"seeded {pickup_code}: READY_FOR_PICKUP a day and an hour ago")
           PY
       - name: boot the worker (round 1 - fast schedule, persistent scheduler)
         # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only
@@ -425,14 +479,15 @@ jobs:
           print(f"ticks {HEARTBEAT_TICKS_KEY}={ticks}")
           print(f"heartbeat TTL {ttl}s")
           PY
-      - name: wait for the sweep, then assert it (round 1)
+      - name: wait for the sweeps, then assert them (round 1)
         # The heartbeat proves the loop is alive; this proves the loop did the work. It waits
-        # the way the heartbeat waits — on a fact rather than a sleep — and it reads the row
-        # from PostgreSQL rather than from the API, because the row is the record and the read
-        # path is not the thing this job proves. The three assertions are the sweep's own
-        # output: the status it moves to, the mechanism it names, and the reservation it
-        # consumes. If the sweep does not settle the order, the step fails and the job is red;
-        # that is what makes this an observation rather than the listing it used to be.
+        # the way the heartbeat waits — on a fact rather than a sleep — and it reads the rows
+        # from PostgreSQL rather than from the API, because the rows are the record and the read
+        # path is not the thing this job proves. Each order is asserted by its own short code,
+        # so the verdict is about the sweep that owns it: the shipment's assertions are the
+        # status it moves to, the mechanism it names, and the reservation it consumes; the
+        # pickup's add the pickup code the same settlement has to clear. If either sweep does
+        # not settle its order, the step fails and the job is red.
         run: |
           python - <<'PY'
           import os
@@ -443,30 +498,52 @@ jobs:
 
           url = os.environ["DATABASE_URL"].replace("+psycopg", "")
           deadline = time.monotonic() + 60
-          while time.monotonic() < deadline:
+          while True:
               with psycopg.connect(url) as connection:
-                  order = connection.execute(
+                  shipment = connection.execute(
                       "SELECT status, delivered_via, delivered_at FROM orders"
+                      " WHERE short_code = %s",
+                      ("GL-AAAAAA",),
                   ).fetchone()
-                  reservation = connection.execute(
-                      "SELECT state FROM quantity_reservations"
+                  pickup = connection.execute(
+                      "SELECT status, delivered_via, delivered_at, pickup_code FROM orders"
+                      " WHERE short_code = %s",
+                      ("GL-BBBBBB",),
                   ).fetchone()
-              if order and order[0] == "DELIVERED":
+              shipment_settled = shipment is not None and shipment[0] == "DELIVERED"
+              pickup_settled = pickup is not None and pickup[0] == "DELIVERED"
+              if shipment_settled and pickup_settled:
                   break
+              if time.monotonic() > deadline:
+                  missing = "pickup" if pickup_settled is False else "shipment"
+                  sys.exit(f"the {missing} sweep did not settle its order within 60s")
               time.sleep(1)
-          else:
-              sys.exit("the shipment sweep did not settle the order within 60s")
 
-          status, delivered_via, delivered_at = order
-          consumed = reservation[0] if reservation else None
-          print(f"orders: status={status} delivered_via={delivered_via} delivered_at={delivered_at}")
-          print(f"reservations: state={consumed}")
-          assert delivered_via == "SHIPMENT_WINDOW", delivered_via
-          assert delivered_at is not None, delivered_at
-          assert consumed == "CONSUMED", consumed
+          shipment_status, shipment_via, shipment_delivered_at = shipment
+          pickup_status, pickup_via, pickup_delivered_at, pickup_code = pickup
+          with psycopg.connect(url) as connection:
+              states = [
+                  row[0]
+                  for row in connection.execute("SELECT state FROM quantity_reservations").fetchall()
+              ]
+          print(
+              f"orders: shipment status={shipment_status} delivered_via={shipment_via}"
+              f" delivered_at={shipment_delivered_at}"
+          )
+          print(
+              f"orders: pickup status={pickup_status} delivered_via={pickup_via}"
+              f" delivered_at={pickup_delivered_at} pickup_code={pickup_code}"
+          )
+          print(f"reservations: states={states}")
+          assert shipment_via == "SHIPMENT_WINDOW", shipment_via
+          assert shipment_delivered_at is not None, shipment_delivered_at
+          assert pickup_via == "PICKUP_WINDOW", pickup_via
+          assert pickup_delivered_at is not None, pickup_delivered_at
+          assert pickup_code is None, pickup_code
+          assert states.count("CONSUMED") == 2, states
           PY
-          echo "--- the sweep, from $RUNNER_TEMP/worker-round1.log ---"
-          grep -E "gebeyalink.worker.shipment_sweep|settled=" "$RUNNER_TEMP/worker-round1.log" | head -n 8 || true
+          echo "--- the sweeps, from $RUNNER_TEMP/worker-round1.log ---"
+          grep -E "gebeyalink.worker.(shipment|pickup)_sweep|settled=" "$RUNNER_TEMP/worker-round1.log" | head -n 12 || true
       - name: stop the worker (round 1)
         # Graceful SIGTERM first, then the beat child's own pattern; the sleeps let the worker
         # run its shutdown path so the schedule file is closed and flushed before it is read.

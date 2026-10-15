@@ -173,6 +173,14 @@ class Settings(BaseSettings):
             "an infrequent sweep is one less process waking a database nobody is waiting on."
         ),
     )
+    worker_pickup_sweep_interval_seconds: int = Field(
+        default=300,
+        description=(
+            "How often the worker settles pickups whose confirmation window has passed. Five "
+            "minutes: the window is measured in a day, so a coarse cadence is honest, and the "
+            "cadence is the shipment sweep's for the same reason."
+        ),
+    )
 
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -

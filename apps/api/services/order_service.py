@@ -105,6 +105,12 @@ EXPIRY_SWEEP_LIMIT = 50
 #: left over are found by the next sweep rather than by one that grows without end.
 SHIPMENT_SWEEP_BATCH_SIZE = 100
 
+#: How many lapsed pickups one worker sweep settles, and bounded for the shipment sweep's reason:
+#: a pickup's window closes on its own, and a marketplace that left a thousand goods waiting will
+#: have many closing in the same minute, so the run takes a short list and leaves the rest to the
+#: next cadence.
+PICKUP_SWEEP_BATCH_SIZE = 100
+
 #: The largest goods value a COD order may carry: ten thousand birr, in santim. COD is a credit
 #: the seller extends, and a pilot extends it only so far. `subtotal` is the price of the kilos
 #: alone — the delivery fee and the platform fee are not part of what the seller is owed for the
@@ -1460,6 +1466,58 @@ class OrderService:
                 logger.exception("shipment sweep failed order_id=%s", order_id)
                 await self._orders.rollback()
         logger.info("shipment sweep settled=%s", settled)
+        return settled
+
+    async def settle_lapsed_pickups(self, now: datetime | None = None) -> int:
+        """Settle every pickup whose confirmation window has closed, and say how many.
+
+        The read path settles these too: `_expire_if_stale` judges the same window when a reader
+        looks. Both roads exist, and both reach the shared `_settle_delivery`, so a pickup the
+        worker settles is settled exactly as a reader would settle it. What the worker adds is
+        the write that does not wait for somebody to look -- the window is the clock's, and a
+        buyer who neither collects nor complains should not leave a seller's goods waiting only
+        because no request happened to arrive.
+
+        One transaction per order, and each acquires the row with `SKIP LOCKED`, so a stopped
+        worker costs a delay rather than a settlement made twice, and two sweepers running at
+        once cannot both settle the same pickup. The batch the query returns is capped; many
+        pickups settle across many sweeps rather than one.
+
+        A failure on one order does not abandon the rest -- the reservation still has to be
+        settled for the other windows that closed -- so the failure is logged and the sweep
+        carries on to the next candidate.
+        """
+        moment = now or datetime.now(UTC)
+        order_ids = await self._orders.list_lapsed_pickup_ids(moment, limit=PICKUP_SWEEP_BATCH_SIZE)
+        if not order_ids:
+            return 0
+        settled = 0
+        for order_id in order_ids:
+            try:
+                order = await self._orders.find_by_id_for_update_skip_locked(order_id)
+                if (
+                    order is None
+                    or order.status is not OrderStatus.READY_FOR_PICKUP
+                    or not pickup_window_closed(order, moment)
+                ):
+                    # Somebody else settled it first, or the row moved while the sweep waited
+                    # for the lock. Nothing to do, and nothing to write.
+                    await self._orders.rollback()
+                    continue
+                await self._settle_delivery(
+                    order,
+                    OrderStatus.READY_FOR_PICKUP,
+                    moment,
+                    "pickup window closed",
+                    DeliveryVia.PICKUP_WINDOW,
+                )
+                order.pickup_code = None
+                await self._orders.commit()
+                settled += 1
+            except Exception:
+                logger.exception("pickup sweep failed order_id=%s", order_id)
+                await self._orders.rollback()
+        logger.info("pickup sweep settled=%s", settled)
         return settled
 
     async def _settle_delivery(
