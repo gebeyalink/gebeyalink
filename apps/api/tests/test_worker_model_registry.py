@@ -60,8 +60,7 @@ def _tables_from_probe(code: str) -> frozenset[str]:
         check=False,
     )
     assert result.returncode == 0, (
-        "probe failed in a fresh process:\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        "probe failed in a fresh process:\n" f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     line = next(
         (line for line in result.stdout.splitlines() if line.startswith("TABLES=")),
