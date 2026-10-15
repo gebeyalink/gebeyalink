@@ -636,9 +636,11 @@ def test_a_pickup_that_waits_a_day_is_deemed_collected_by_the_read(
     """Twenty-four hours of nobody, and the honest answer is `DELIVERED`.
 
     A buyer who neither collects nor complains within a day has let the crop wait at the
-    seller's cost, so the read answers `DELIVERED` — and because the read may be the only thing
-    that ever runs, the read is the write: the kilos are consumed and the code is spent in the
-    same lazy step, exactly the way a lapsed funding window cancels an unpaid order.
+    seller's cost, so the read answers `DELIVERED` immediately. Judging it is where the read
+    stops now: the row, the reservation and the spent code belong to the worker's pickup sweep,
+    so a reader that merely looked is no longer the thing that moves the money and the kilos.
+    What the read still owes every caller is an honest answer, and this pins that — delivered,
+    without a write behind it.
     """
     seller = cod_signed_in()
     buyer = cod_signed_in_as_buyer()
@@ -651,10 +653,41 @@ def test_a_pickup_that_waits_a_day_is_deemed_collected_by_the_read(
     read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
 
     assert read["status"] == "DELIVERED"
-    assert read["delivered_at"] is not None
-    assert read["pickup_code"] is None
-    assert stored_reservations()[0]["state"] == "CONSUMED"
-    assert stored_orders()[0]["status"] == "DELIVERED"
+
+    # The read derived it; nobody wrote it. The stamp, the spent code and the consumption
+    # arrive with the worker, and until then the row still says what the seller said.
+    assert read["delivered_at"] is None
+    assert read["pickup_code"] is not None
+    assert stored_orders()[0]["status"] == "READY_FOR_PICKUP"
+    assert stored_reservations()[0]["state"] == "CONVERTED"
+
+
+def test_a_pickup_inside_its_window_is_read_as_ready(
+    cod_client: TestClient,
+    cod_signed_in: Callable[..., dict[str, str]],
+    cod_signed_in_as_buyer: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+    stored_reservations: Callable[[], list[dict[str, object]]],
+) -> None:
+    """Before the window closes, the read reports the stored status and the kilos stay held.
+
+    The other side of the same boundary: a pickup still inside its 24-hour window is
+    `READY_FOR_PICKUP`, and nothing about the read brings its collection forward.
+    """
+    seller = cod_signed_in()
+    buyer = cod_signed_in_as_buyer()
+    order_id, _ = pickup_order(cod_client, seller, buyer, listing_body, order_body, idempotency_key)
+    confirm(cod_client, buyer, order_id)
+    confirm(cod_client, seller, order_id)
+    ready(cod_client, seller, order_id, idempotency_key)
+
+    read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
+
+    assert read["status"] == "READY_FOR_PICKUP"
+    assert read["delivered_at"] is None
+    assert stored_reservations()[0]["state"] == "CONVERTED"
 
 
 def test_a_shipment_whose_holding_window_has_passed_is_deemed_received_by_the_read(

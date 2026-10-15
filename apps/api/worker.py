@@ -144,9 +144,9 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
     the same delivery road the read path reaches when its own window closed, and building the
     service here is what lets the worker ask for it without a request behind the question.
 
-    The read path settles this window too, and both roads run: a worker on a cadence, and a
-    reader that only looked. The negative case is answered by construction -- an order that has
-    already been delivered is not selected by the query, so a second run has nothing to settle.
+    The negative case is answered by construction. An order that has already been delivered is
+    not selected by the query, so a second run has nothing to settle and a stopped worker costs
+    a delay rather than a settlement made twice.
     """
     init_engine(settings)
     init_client(settings)

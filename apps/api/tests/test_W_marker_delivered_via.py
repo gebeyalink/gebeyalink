@@ -264,7 +264,7 @@ def test_the_pickup_code_is_recorded_as_the_mechanism(
     assert stored_orders()[0]["delivered_via"] == "PICKUP_CODE"
 
 
-def test_the_pickup_window_is_recorded_as_the_mechanism(
+def test_a_lapsed_pickup_reads_as_delivered_before_the_worker_writes_it(
     cod_client: TestClient,
     cod_signed_in: Callable[..., dict[str, str]],
     cod_signed_in_as_buyer: Callable[..., dict[str, str]],
@@ -274,11 +274,12 @@ def test_the_pickup_window_is_recorded_as_the_mechanism(
     backdate_ready: Callable[[str], None],
     stored_orders: Callable[[], list[dict[str, object]]],
 ) -> None:
-    """Nobody came and the window closed; the row records that, not a confirmation.
+    """Nobody came and the window closed and the read says so; the row waits for the worker.
 
-    The automatic roads are the ones that most need recording, because no party acted and there is
-    no confirmation to point at. `PICKUP_WINDOW` is the fact, written by the read that did the
-    settling.
+    A pickup the buyer never collects is released by its window, and the read reports that
+    collection immediately. The marker for it - `PICKUP_WINDOW` - is the worker's write, and this
+    pins the other half of the arrangement: until the sweep runs, the row still says ready and
+    carries no mechanism.
     """
     seller = cod_signed_in()
     buyer = cod_signed_in_as_buyer()
@@ -291,7 +292,9 @@ def test_the_pickup_window_is_recorded_as_the_mechanism(
     read = cod_client.get(f"/v1/orders/{order_id}", headers=buyer).json()
 
     assert read["status"] == "DELIVERED"
-    assert stored_orders()[0]["delivered_via"] == "PICKUP_WINDOW"
+    row = stored_orders()[0]
+    assert row["status"] == "READY_FOR_PICKUP"
+    assert row["delivered_via"] is None
 
 
 def test_a_lapsed_shipment_reads_as_delivered_before_the_worker_writes_it(

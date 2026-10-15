@@ -286,8 +286,8 @@ def effective_status(
     waiting — and the goods themselves at a roadside — at the seller's cost.
 
     Derived rather than written, because the write belongs to the paths that can afford it — the
-    funding and pickup windows to `OrderService._expire_if_stale` on a read, and the shipment
-    window to the worker's sweep — and a reader that only looked should still be told the truth.
+    funding window to `OrderService._expire_if_stale` on a read, and the pickup and shipment
+    windows to the worker's sweeps — and a reader that only looked should still be told the truth.
     What every reader gets is an honest status; what the sale path gets is the kilos back.
 
     `hold_hours` is the one argument the row cannot answer alone: the shipment window is a
@@ -647,10 +647,10 @@ class OrderService:
         waiting too long gives its kilos back on the spot, which is the lazy evaluation the
         specification asks for in place of the cron that does not exist yet.
 
-        The shipment window is the one window this read does not write. It is still judged here —
-        the response reports the order delivered once its crop's hours are up — but the row and
-        the reservation belong to the worker's sweep, so looking at an order is never the thing
-        that moves the money and the kilos.
+        The pickup and shipment windows are the two this read does not write. Both are still
+        judged here — the response reports the order delivered once either window is up — but the
+        row and the reservation belong to the worker's sweeps, so looking at an order is never the
+        thing that moves the money and the kilos.
         """
         moment = now or datetime.now(UTC)
         order = await self._orders.find_by_id(order_id)
@@ -1374,17 +1374,19 @@ class OrderService:
         return expired
 
     async def _expire_if_stale(self, order: Order, now: datetime) -> bool:
-        """Settle this one order if one of its windows closed. Did anything change, or not.
+        """Settle this order if its funding window closed. Did anything change, or not.
 
-        Two windows close here, each the same way: with the kilos recorded `CONSUMED`, because
-        delivered kilos never re-enter availability, and that is what consumption is. An order
-        still waiting for money past its funding window is cancelled and its kilos are given
-        back; a pickup that has sat ready past its window is deemed collected.
+        One window closes here, and it is the only one left to the read: an order still waiting
+        for money past its funding window is cancelled and its kilos are given back. The branch
+        stays until escrow exists.
 
-        A shipment's holding window is deliberately not among them, though the clock judges it
-        all the same. The read derives that delivery from the window (FR-2508), and the write
-        belongs to the worker's shipment sweep — one writer at a coarse cadence, rather than a
-        read that turns a request into the settlement every other observer happens to make.
+        The pickup and shipment windows are deliberately not among them, though the clock judges
+        both all the same. The read derives those deliveries from their windows
+        (`effective_status` in this module), and the writes belong to the worker's sweeps — one
+        writer at a coarse cadence, rather than a read that turns a request into the settlement
+        every other observer happens to make. A pickup that has sat ready past its window
+        therefore reads as delivered while its row still says `READY_FOR_PICKUP`, exactly as a
+        shipment's does.
 
         Committed on its own rather than left to the caller, because the caller is a read and
         there is nothing else in its transaction to commit with. The alternative — leaving the
@@ -1396,17 +1398,6 @@ class OrderService:
             order.cancel_reason = CancelReason.FUNDING_EXPIRED.value
             released = await self._reservations.release_for_order(order.id)
             logger.info("expired order order_id=%s released_kg=%s", order.id, released)
-            await self._orders.commit()
-            return True
-        if order.status is OrderStatus.READY_FOR_PICKUP and pickup_window_closed(order, now):
-            await self._settle_delivery(
-                order,
-                OrderStatus.READY_FOR_PICKUP,
-                now,
-                "auto-confirmed pickup",
-                DeliveryVia.PICKUP_WINDOW,
-            )
-            order.pickup_code = None
             await self._orders.commit()
             return True
         return False
@@ -1471,12 +1462,12 @@ class OrderService:
     async def settle_lapsed_pickups(self, now: datetime | None = None) -> int:
         """Settle every pickup whose confirmation window has closed, and say how many.
 
-        The read path settles these too: `_expire_if_stale` judges the same window when a reader
-        looks. Both roads exist, and both reach the shared `_settle_delivery`, so a pickup the
-        worker settles is settled exactly as a reader would settle it. What the worker adds is
-        the write that does not wait for somebody to look -- the window is the clock's, and a
-        buyer who neither collects nor complains should not leave a seller's goods waiting only
-        because no request happened to arrive.
+        The window is judged against the clock rather than by whoever happens to read an order,
+        and the road is the one every other delivery takes: the shared `_settle_delivery`, with
+        the same transition guard and the same consumption of the reservation. What differs is
+        only who asks -- a worker on a cadence, rather than a reader. The buyer who neither
+        collects nor complains should not leave a seller's goods waiting only because no request
+        happened to arrive.
 
         One transaction per order, and each acquires the row with `SKIP LOCKED`, so a stopped
         worker costs a delay rather than a settlement made twice, and two sweepers running at

@@ -1,12 +1,11 @@
-"""The worker settling a lapsed pickup, while the read path still settles it too.
+"""The worker settling a lapsed pickup, rather than the reader who used to.
 
 A pickup that has sat ready for a day is deemed collected: the buyer neither came nor complained,
-so the goods waited at the seller's cost. The read has judged that window lazily for as long as
-the window has existed, and the read still does — this file is about the second writer, a worker
-on a cadence, added beside the read rather than in place of it. Both roads reach the same shared
-settlement, so a pickup the worker settles is settled exactly as a reader would settle it; the
-difference this slice makes is *when* the row and the reservation are persisted, not what a user
-sees, and the read branch is removed only once the worker's is proven.
+so the goods waited at the seller's cost. That judgement is the clock's whether or not anything
+has got round to writing it down, and this file is about the half of the arrangement that writes:
+a worker on a cadence, rather than whichever reader happened to look. The read still derives the
+same status it always did — the difference the migration makes is *when* the row and the
+reservation are persisted, not what a user sees.
 
 Two things are proved here and nothing else. First, the settlement itself: the same transition,
 the same consumption, the pickup code cleared by the same transaction, one bounded batch per run,
@@ -229,9 +228,9 @@ async def test_the_worker_clears_the_pickup_code_when_it_settles(
     """The code is spent by the settlement, and it is the settler that spends it.
 
     `_settle_delivery` writes the status, the stamp and the mechanism and touches nothing else,
-    so clearing the code is the caller's job -- exactly as it is the read path's own caller. The
-    code is read back non-null before the sweep and null after it, because a code left behind is a
-    code a seller could be shown twice for one lot of goods.
+    so clearing the code is the caller's job -- the same way the seller's own confirmation spends
+    it. The code is read back non-null before the sweep and null after it, because a code left
+    behind is a code a seller could be shown twice for one lot of goods.
     """
     seller, buyer = await _parties(cod_app, code_for, postgres_url)
     order_id = await _ready_pickup_order(cod_app, seller, buyer, listing_body, order_body)
