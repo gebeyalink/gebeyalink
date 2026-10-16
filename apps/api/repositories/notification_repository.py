@@ -26,10 +26,24 @@ from apps.api.models.user import AccountStatus, User
 
 
 class NotificationRepository:
-    """Queued-message reads and the one write the drain makes."""
+    """Queued-message reads, and the writes that queue one and commit one."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def add(self, notification: Notification) -> Notification:
+        """Queue one message, and deliberately do not commit it.
+
+        ``session.add`` and ``flush`` and nothing else, the same contract as
+        ``OfferRepository.add``: the row is written into the caller's transaction and the
+        caller decides when it lands. This is what lets a producer write the message the event
+        owes in the same transaction that produced the event — the offer and its notification
+        are one commit, so a failure on either leaves neither behind. A caller that invokes
+        ``add`` and never commits has written nothing, which is the point.
+        """
+        self._session.add(notification)
+        await self._session.flush()
+        return notification
 
     async def list_queued_ids(self, now: datetime, *, limit: int) -> list[uuid.UUID]:
         """The next batch of due messages, highest lane first.

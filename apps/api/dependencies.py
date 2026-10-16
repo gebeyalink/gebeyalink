@@ -28,6 +28,7 @@ from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
+from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
@@ -210,9 +211,10 @@ SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
 def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> OfferService:
     """Bids on a listing, and the listing they are bounded by.
 
-    One session for both repositories, for the reason the listing service has one for three: a
-    counter writes an offer and reads the listing it must satisfy the rules of, and those two
-    statements have to describe the same listing.
+    One session for all five repositories, and that is not tidiness. Placing a bid writes the offer
+    and the message the seller is owed about it, and reads the seller who must be told and the crop
+    the message names; the whole of that is one commit or none of it, so everything that writes
+    beside the offer shares the session the offer is written on.
 
     Both payment-mode flags are read here and handed in as values, on the same reasoning as the
     order service below: the service decides which modes exist without reaching back into
@@ -221,6 +223,9 @@ def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> Off
     return OfferService(
         offers=OfferRepository(db_session),
         listings=ListingRepository(db_session),
+        notifications=NotificationRepository(db_session),
+        users=UserRepository(db_session),
+        crops=CropRepository(db_session),
         idempotency=IdempotencyStore(get_client()),
         escrow_enabled=settings.escrow_enabled,
         cod_enabled=settings.cod_enabled,

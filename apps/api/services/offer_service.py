@@ -44,7 +44,9 @@ from uuid import UUID
 
 from apps.api.core.idempotency import IdempotencyStore, once
 from apps.api.core.idempotency import fingerprint_of as _fingerprint
+from apps.api.models.crop import Crop
 from apps.api.models.listing import Listing, ListingStatus
+from apps.api.models.notification import Notification, NotificationChannel, NotificationStatus
 from apps.api.models.offer import (
     MAX_THREAD_DEPTH,
     Offer,
@@ -53,8 +55,11 @@ from apps.api.models.offer import (
     proposing_party,
 )
 from apps.api.models.order import PaymentMode
+from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
+from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferInContext, OfferRepository
+from apps.api.repositories.user_repository import UserRepository
 from apps.api.schemas.offer import (
     DEFAULT_VALID_HOURS,
     MAX_VALID_HOURS,
@@ -63,6 +68,10 @@ from apps.api.schemas.offer import (
 )
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from packages.shared.errors import ApiError, ErrorCode
+from packages.shared.i18n.languages import Language
+from packages.shared.i18n.templates import load_templates
+from packages.shared.messaging.dispatcher import format_etb
+from packages.shared.messaging.queues import SmsPriority, priority_rank
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -231,11 +240,48 @@ def refuse_disabled_mode(mode: PaymentMode, *, escrow_enabled: bool, cod_enabled
         raise ApiError(ErrorCode.VALIDATION_ERROR, details={"feature": "cod"})
 
 
+#: The crop column to read for each language, so a message names the crop in the words its
+#: reader uses. Oromo and Tigrinya are nullable, which is why the lookup below falls back.
+_NAME_COLUMNS: dict[Language, str] = {
+    Language.AM: "name_am",
+    Language.OM: "name_om",
+    Language.EN: "name_en",
+}
+
+
+def _crop_name(crop: Crop, language: Language) -> str:
+    """The crop's name in the reader's language, or the English one it does not carry.
+
+    A catalogue that holds no word for the crop in this language falls back the way every
+    message falls back, so the seller reads a name rather than a blank. English is the floor
+    because it is the one column that is never null.
+    """
+    column = _NAME_COLUMNS.get(language, "name_en")
+    return getattr(crop, column, None) or crop.name_en
+
+
+def _render_offer_received(language: Language, *, crop: str, price: str) -> tuple[str, str]:
+    """The message the seller reads, and the language its words were actually written in.
+
+    Rendered from the registry rather than from a sentence built here, with the same fallback
+    every other renderer uses: a language the template does not carry reads the English one.
+    The second value is that language rather than the one asked for, because the row stores the
+    language of the words it holds, and those are two different questions when the fallback
+    fires. Nothing here invents a rendering; it picks a variant and fills it in.
+    """
+    template = load_templates()["offer_received"]
+    rendered_language = language.value if language.value in template.variants else Language.EN.value
+    return template.variants[rendered_language].format(crop=crop, price=price), rendered_language
+
+
 class OfferService:
     def __init__(
         self,
         offers: OfferRepository,
         listings: ListingRepository,
+        notifications: NotificationRepository,
+        users: UserRepository,
+        crops: CropRepository,
         idempotency: IdempotencyStore,
         *,
         escrow_enabled: bool,
@@ -243,6 +289,9 @@ class OfferService:
     ) -> None:
         self._offers = offers
         self._listings = listings
+        self._notifications = notifications
+        self._users = users
+        self._crops = crops
         self._idempotency = idempotency
         self._escrow_enabled = escrow_enabled
         self._cod_enabled = cod_enabled
@@ -324,8 +373,48 @@ class OfferService:
         )
         transition_offer_status(offer, OfferStatus.OPEN, None)
         await self._offers.add(offer)
+        await self._queue_offer_received(offer, listing)
         await self._offers.commit()
         return to_response(offer, now=now)
+
+    async def _queue_offer_received(self, offer: Offer, listing: Listing) -> None:
+        """Write the seller's message into the queue, inside the offer's own transaction.
+
+        The seller is told by a row rather than by a send: this writes the message the drain
+        will carry, on the same session as the offer, so the two are one commit — a message
+        that cannot be written is not an offer that stands announced to nobody. The reads are
+        trusted rather than guarded: the listing's foreign keys guarantee the seller and the
+        crop exist, so a read that finds neither is a broken database, and the placement fails
+        loudly rather than skipping the message a corrupt read refused to describe.
+
+        The language is the seller's and the text is rendered in it; the row records the
+        language of the words it holds, which is the seller's unless the template carries no
+        variant for it, in which case it carries the English fallback's.
+        """
+        seller = await self._users.find_by_id(listing.seller_id)
+        if seller is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "offer_seller_missing"})
+        crop = await self._crops.find_by_id(listing.crop_id)
+        if crop is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "offer_crop_missing"})
+
+        rendered_text, rendered_language = _render_offer_received(
+            seller.language,
+            crop=_crop_name(crop, seller.language),
+            price=format_etb(offer.price_santim),
+        )
+        await self._notifications.add(
+            Notification(
+                user_id=listing.seller_id,
+                channel=NotificationChannel.SMS,
+                template_id="offer_received",
+                priority=priority_rank(SmsPriority.Q2),
+                language=rendered_language,
+                rendered_text=rendered_text,
+                status=NotificationStatus.QUEUED,
+                dedup_key=f"offer_received:{offer.id}",
+            )
+        )
 
     async def read_for_listing(
         self, listing_id: UUID, caller_id: UUID, now: datetime | None = None
