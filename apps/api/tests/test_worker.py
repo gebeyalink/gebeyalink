@@ -63,6 +63,25 @@ def test_the_application_schedules_the_heartbeat_in_the_pilot_timezone(
     assert entry["schedule"] == 7
 
 
+def test_the_application_schedules_the_notification_drain(
+    inert_settings: Settings,
+) -> None:
+    """The drain is on the schedule, on the cadence the setting names.
+
+    The queue's clock is itself — a message is due the moment it is written — so unlike the two
+    sweeps there is no window for the task to wait on, and the cadence is the only thing that
+    decides how long a trader waits for a message that is already owed.
+    """
+    settings = inert_settings.model_copy(update={"worker_notification_drain_interval_seconds": 11})
+
+    app = worker.build_celery(settings)
+
+    entry = app.conf.beat_schedule[worker.NOTIFICATION_DRAIN_TASK_NAME]
+    assert entry["task"] == worker.NOTIFICATION_DRAIN_TASK_NAME
+    assert entry["schedule"] == 11
+    assert worker.NOTIFICATION_DRAIN_TASK_NAME in app.tasks
+
+
 def test_the_application_wires_the_persistent_scheduler_to_the_configured_file(
     inert_settings: Settings,
 ) -> None:

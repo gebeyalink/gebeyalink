@@ -66,6 +66,7 @@ from apps.api.db.session import get_session_factory, init_engine
 from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
+from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
 from apps.api.models import offer as _offer_model  # noqa: F401  (registers the table)
 from apps.api.models import order as _order_model  # noqa: F401  (registers the table)
 from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
@@ -74,11 +75,15 @@ from apps.api.models import quantity_reservation as _reservation_model  # noqa: 
 from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
+from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.listing_repository import ListingRepository
+from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
+from packages.shared.messaging.provider import MessagingProvider
 
 logger = logging.getLogger("gebeyalink.worker")
 
@@ -104,6 +109,11 @@ SHIPMENT_SWEEP_TASK_NAME = "gebeyalink.worker.shipment_sweep"
 #: effect, the same way the shipment sweep's name is. Its clock is the pickup window, a fixed day
 #: from the moment the seller said the goods were waiting.
 PICKUP_SWEEP_TASK_NAME = "gebeyalink.worker.pickup_sweep"
+
+#: The notification drain's name, shared by the schedule, the worker that runs it and whoever
+#: looks for its effect. Its clock is the queue itself: a message is due the moment it is
+#: written, so unlike the two sweeps this task has no window to wait on and runs on a cadence.
+NOTIFICATION_DRAIN_TASK_NAME = "gebeyalink.worker.notification_drain"
 
 
 async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None) -> int:
@@ -168,6 +178,31 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
         return await service.settle_lapsed_pickups(now)
 
 
+async def run_notification_drain(
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    provider: MessagingProvider | None = None,
+) -> DrainReport:
+    """Send the messages that are due, in lane order, and report the tally.
+
+    One run, one session, and the decision is the notification service's: a message is held,
+    sent or failed by the same code a caller with a request behind it would reach. The
+    provider is built from configuration when none is handed in, which is what lets a test
+    pass a recorder it can read back; a worker builds the configured one.
+    """
+    init_engine(settings)
+    init_client(settings)
+    backend = provider or build_messaging_provider(settings.sms_provider)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = NotificationService(
+            notifications=NotificationRepository(session),
+            provider=backend,
+        )
+        return await service.drain(now)
+
+
 def record_heartbeat(client: Redis, *, ttl_seconds: int, now: datetime | None = None) -> datetime:
     """Write the liveness key and count the tick, in one round trip.
 
@@ -222,6 +257,10 @@ def build_celery(settings: Settings) -> Celery:
                 "task": PICKUP_SWEEP_TASK_NAME,
                 "schedule": settings.worker_pickup_sweep_interval_seconds,
             },
+            NOTIFICATION_DRAIN_TASK_NAME: {
+                "task": NOTIFICATION_DRAIN_TASK_NAME,
+                "schedule": settings.worker_notification_drain_interval_seconds,
+            },
         },
     )
 
@@ -254,6 +293,23 @@ def build_celery(settings: Settings) -> Celery:
         settled = asyncio.run(run_pickup_sweep(settings))
         logger.info("%s settled=%s", PICKUP_SWEEP_TASK_NAME, settled)
 
+    def worker_notification_drain() -> None:
+        """Send the due notifications. The body of the task the schedule runs.
+
+        Asynchronous work in a synchronous task, so it opens a loop of its own, and registered
+        `shared=False` below for the same reason the sweeps are: this app's settings decide
+        what the loop reads. The tally is logged whole, so a run that sent nothing and a run
+        that never happened look different in the log.
+        """
+        report = asyncio.run(run_notification_drain(settings))
+        logger.info(
+            "%s sent=%s queued=%s failed=%s",
+            NOTIFICATION_DRAIN_TASK_NAME,
+            report.sent,
+            report.queued,
+            report.failed,
+        )
+
     # `shared=False` and `lazy=False` are load-bearing. Celery's defaults defer the registration
     # through a process-global finalize hook, so a second app built in the same process can end
     # up executing the first app's task object — the heartbeat would write to the first app's
@@ -262,6 +318,7 @@ def build_celery(settings: Settings) -> Celery:
     app.task(name=HEARTBEAT_TASK_NAME, shared=False, lazy=False)(worker_heartbeat)
     app.task(name=SHIPMENT_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_shipment_sweep)
     app.task(name=PICKUP_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_pickup_sweep)
+    app.task(name=NOTIFICATION_DRAIN_TASK_NAME, shared=False, lazy=False)(worker_notification_drain)
     return app
 
 
@@ -276,13 +333,15 @@ def main() -> None:
     """
     settings = get_settings()
     app = build_celery(settings)
+    log_recording_provider_startup(settings.sms_provider, settings.environment)
     logger.info(
         "worker starting: heartbeat every %ss, TTL %ss, shipment sweep every %ss, "
-        "pickup sweep every %ss, beat schedule at %s",
+        "pickup sweep every %ss, notification drain every %ss, beat schedule at %s",
         settings.worker_heartbeat_interval_seconds,
         settings.worker_heartbeat_ttl_seconds,
         settings.worker_shipment_sweep_interval_seconds,
         settings.worker_pickup_sweep_interval_seconds,
+        settings.worker_notification_drain_interval_seconds,
         settings.worker_beat_schedule_path,
     )
     app.Worker(pool_cls="solo", loglevel="INFO", beat=True).start()

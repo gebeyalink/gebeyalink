@@ -15,7 +15,14 @@ from apps.api.core.redis_client import close_client, init_client
 from apps.api.core.response_headers import SECURITY_HEADERS
 from apps.api.core.trace import new_trace_id, set_language_from_header, set_trace_id
 from apps.api.db.session import dispose_engine, init_engine
-from apps.api.providers.sms import build_sms_provider
+
+# The app's model registry: every table SQLAlchemy may need to resolve a foreign key against
+# has to be loaded in this process, and a table with no router of its own reaches the app only
+# by being imported. The notifications table is written by the worker today and has no route,
+# so its model is loaded here beside the routers that load the rest, which is what keeps the
+# app's registry and the worker's the same set.
+from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
+from apps.api.providers.sms import build_sms_provider, log_recording_provider_startup
 from apps.api.routers import auth as auth_routes
 from apps.api.routers import health as health_routes
 from apps.api.routers import listing as listing_routes
@@ -43,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = resolved
         app.state.sms_provider = build_sms_provider(resolved.sms_provider)
+        log_recording_provider_startup(app.state.sms_provider.name, resolved.environment)
         init_engine(resolved)
         init_client(resolved)
         logger.info("api ready sms_provider=%s", app.state.sms_provider.name)

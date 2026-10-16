@@ -11,12 +11,26 @@ variable reads the same as the setting it feeds.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from packages.shared.money import FeePayer
+
+
+class Environment(StrEnum):
+    """Which deployment a process is running as.
+
+    The value decides how loud a fallback is and nothing else. Development is the default,
+    because a laptop is where a process usually starts without being told; production raises
+    the volume on a configuration that pretends to send messages when it does not.
+    """
+
+    DEVELOPMENT = "development"
+    STAGING = "staging"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -99,6 +113,14 @@ class Settings(BaseSettings):
         description="Name of the SMS backend the API builds at start-up.",
     )
 
+    # Which deployment this process is. Read by the API's start-up and the worker's, and only
+    # to choose the volume of one message: a recording provider is a warning away from
+    # production and an error in it. Nothing behaves differently because of this value.
+    environment: Environment = Field(
+        default=Environment.DEVELOPMENT,
+        description="Deployment this process runs as: development, staging or production.",
+    )
+
     # Which side funds the platform fee and its VAT. A commercial decision rather than an
     # arithmetic one: the fee, the VAT and the ledger are identical under all three, and only
     # the split between what the buyer pays and what the seller keeps moves. The buyer pays by
@@ -179,6 +201,14 @@ class Settings(BaseSettings):
             "How often the worker settles pickups whose confirmation window has passed. Five "
             "minutes: the window is measured in a day, so a coarse cadence is honest, and the "
             "cadence is the shipment sweep's for the same reason."
+        ),
+    )
+    worker_notification_drain_interval_seconds: int = Field(
+        default=60,
+        description=(
+            "How often the worker drains queued notifications. A minute: the queue is the "
+            "lane a trader must not wait on for long, and a shorter cadence is one more wake "
+            "of a database nobody is waiting on."
         ),
     )
 

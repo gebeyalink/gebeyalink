@@ -83,3 +83,13 @@ def test_the_worker_process_registers_every_model() -> None:
         f"- in app but not in worker: {sorted(missing_in_worker)}\n"
         f"- in worker but not in app: {sorted(missing_in_app)}"
     )
+
+
+def test_the_worker_registry_carries_the_notifications_table() -> None:
+    """The drain's table reaches the worker by an explicit import, so name it rather than assume.
+
+    The notifications table has no router of its own: it reaches the app only by being imported
+    in ``main`` and the worker only by the matching import beside its other models. The equality
+    check above would pass if both forgot it; this one fails by name if the worker's goes.
+    """
+    assert "notifications" in _tables_from_probe(_WORKER_PROBE)

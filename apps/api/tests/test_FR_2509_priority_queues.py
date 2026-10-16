@@ -14,7 +14,14 @@ from pathlib import Path
 import pytest
 
 from packages.shared.i18n.templates import load_templates
-from packages.shared.messaging.queues import SmsPriority, priority_for
+from packages.shared.messaging.queues import (
+    PRIORITY_RANK,
+    RANK_PRIORITY,
+    SmsPriority,
+    priority_for,
+    priority_from_rank,
+    priority_rank,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -399,6 +406,26 @@ def test_a_variant_whose_text_is_not_a_string_is_refused(tmp_path: Path) -> None
     with pytest.raises(ValueError) as failure:
         load_templates(tmp_path)
     assert "must all be non-empty strings" in str(failure.value)
+
+
+def test_the_lane_ranks_are_the_stored_order_and_round_trip() -> None:
+    """A queued row is sorted by a number, and the number names its lane back exactly.
+
+    Q1 stores as one so "highest lane first" is ``ORDER BY priority`` rather than a translation
+    the drain has to do to its own rows, and the inverse map is the same fact read the other way.
+    """
+    assert PRIORITY_RANK == {SmsPriority.Q1: 1, SmsPriority.Q2: 2, SmsPriority.Q3: 3}
+    assert {rank: lane for lane, rank in PRIORITY_RANK.items()} == RANK_PRIORITY
+    for lane, rank in PRIORITY_RANK.items():
+        assert priority_rank(lane) == rank
+        assert priority_from_rank(rank) is lane
+
+
+def test_a_rank_no_lane_stores_is_refused() -> None:
+    """The vocabulary is closed: a row carrying a rank no lane wrote cannot be interpreted."""
+    with pytest.raises(ValueError) as failure:
+        priority_from_rank(9)
+    assert "9" in str(failure.value)
 
 
 def test_an_unknown_template_id_is_refused_and_named() -> None:

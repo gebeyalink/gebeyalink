@@ -24,8 +24,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from apps.api.core.config import Environment
 from apps.api.core.hashing import generate_random_token
-from packages.shared.messaging.provider import SendResult
+from packages.shared.messaging.provider import MessagingProvider, SendResult
 from packages.shared.messaging.queues import SmsPriority
 
 logger = logging.getLogger("gebeyalink.sms")
@@ -78,7 +79,7 @@ class RecordingSmsProvider:
         self.sent.append(message)
         # Logged without the body: the body carries a verification code, and a code in a
         # log file is a code handed to everyone who can read logs.
-        logger.info("sms accepted by=%s to=%s", self.name, _mask(message.to))
+        logger.info("sms accepted by=%s to=%s", self.name, mask_phone(message.to))
         return SmsReceipt(provider=self.name, accepted=True, reference=generate_random_token(8))
 
     def messages_to(self, phone_e164: str) -> list[SmsMessage]:
@@ -87,6 +88,37 @@ class RecordingSmsProvider:
 
     def clear(self) -> None:
         self.sent.clear()
+
+
+@dataclass
+class RecordingMessagingProvider:
+    """The drain's recording backend, over the same store the sign-in flow records into.
+
+    One store, one record: a rendered notification is handed to the same in-memory recorder
+    the verification codes are, so whoever reads what a trader would have received reads it
+    from one place rather than two. It is deliberately not a mock — it is the honest behaviour
+    of a deployment with no gateway configured, and a test can assert exactly what went out.
+    """
+
+    recorder: RecordingSmsProvider
+    name: str = "recording"
+
+    async def send(
+        self,
+        phone_e164: str,
+        body: str,
+        *,
+        priority: SmsPriority,
+        template_id: str,
+    ) -> SendResult:
+        """Record a rendered message rather than hand it to a gateway.
+
+        The lane and the template are the caller's classification and carry no decision here:
+        a provider sends what it is given. The store keeps the message; the drain's own log
+        carries the addressee and the lane it was queued under.
+        """
+        receipt = await self.recorder.send(SmsMessage(to=phone_e164, body=body))
+        return SendResult(accepted=receipt.accepted, provider_ref=receipt.reference)
 
 
 class AfricasTalkingProvider:
@@ -113,7 +145,7 @@ class AfricasTalkingProvider:
         )
 
 
-def _mask(phone_e164: str) -> str:
+def mask_phone(phone_e164: str) -> str:
     """Keep the country code and the last two digits; lose the subscriber number.
 
     Enough to tell two messages apart in a log, not enough to become a list of customers.
@@ -131,3 +163,39 @@ def build_sms_provider(name: str) -> SmsProvider:
         f"No messaging backend named {name!r} is configured. "
         "The gateway integration ships with its merchant credentials."
     )
+
+
+def build_messaging_provider(
+    name: str, *, recorder: RecordingSmsProvider | None = None
+) -> MessagingProvider:
+    """Build the backend the notification drain hands rendered messages to.
+
+    The same name configures both seams, and the recording adapter is built over the store it
+    is given so a caller that already has one keeps one store. Absent a store, it is the
+    process's own: a worker drains messages and reads no code, so nothing else in it shares.
+    """
+    if name == "recording":
+        return RecordingMessagingProvider(recorder=recorder or RecordingSmsProvider())
+    raise ConfigurationError(
+        f"No messaging backend named {name!r} is configured. "
+        "The gateway integration ships with its merchant credentials."
+    )
+
+
+def log_recording_provider_startup(name: str, environment: Environment) -> None:
+    """Say, loudly enough for the deployment to hear, that nothing will leave the process.
+
+    A recording backend is the honest answer to "no gateway is configured" in development and
+    a trap in production: the process looks healthy and sends nothing. The same fact is a
+    warning on one side of that line and a critical on the other, so a deployment that has
+    left the fallback in place is loud rather than silent. Nothing behaves differently for it.
+    """
+    if name != "recording":
+        return
+    if environment is Environment.PRODUCTION:
+        logger.critical(
+            "recording SMS provider selected in production; no real SMS will be sent - "
+            "set SMS_PROVIDER to a live provider"
+        )
+    else:
+        logger.warning("recording SMS provider selected; no real SMS will be sent")

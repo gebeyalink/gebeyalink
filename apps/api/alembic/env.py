@@ -24,6 +24,7 @@ from apps.api.models import action_token as _action_token_model  # noqa: F401  (
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
+from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
 from apps.api.models import offer as _offer_model  # noqa: F401  (registers the table)
 from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
 from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)

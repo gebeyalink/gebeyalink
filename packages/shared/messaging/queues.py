@@ -39,6 +39,36 @@ class SmsPriority(StrEnum):
     Q3 = "Q3"
 
 
+#: The integer each lane is stored under in a queued row, so a drain orders by a number the
+#: database sorts rather than by a name it would have to translate. Lower is higher priority:
+#: a Q1 row is reached before any Q2 or Q3 row regardless of when it was written.
+PRIORITY_RANK: Final[dict[SmsPriority, int]] = {
+    SmsPriority.Q1: 1,
+    SmsPriority.Q2: 2,
+    SmsPriority.Q3: 3,
+}
+
+#: The inverse, so a stored rank is read back as the lane whose quiet-hour rule applies to it.
+RANK_PRIORITY: Final[dict[int, SmsPriority]] = {rank: lane for lane, rank in PRIORITY_RANK.items()}
+
+
+def priority_rank(priority: SmsPriority) -> int:
+    """The integer a lane is stored under in a queued row."""
+    return PRIORITY_RANK[priority]
+
+
+def priority_from_rank(rank: int) -> SmsPriority:
+    """The lane a stored rank names.
+
+    Raises:
+        ValueError: if the rank is not one of the three the vocabulary defines.
+    """
+    try:
+        return RANK_PRIORITY[rank]
+    except KeyError:
+        raise ValueError(f"no send lane for rank {rank!r}") from None
+
+
 def priority_for(template_id: str) -> SmsPriority:
     """The lane a template declared, read from the registry rather than from code here.
 

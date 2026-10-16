@@ -221,6 +221,10 @@ jobs:
       # The pickup sweep's cadence is shortened for the shipment sweep's reason, and the seed
       # below is a pickup as well as a shipment so the same worker proves both.
       WORKER_PICKUP_SWEEP_INTERVAL_SECONDS: '1'
+      # The notification drain runs on the same shortened cadence: the queue's clock is itself,
+      # so the seeded message is due the moment it is written and the job watches it cross to
+      # SENT within a cadence rather than waiting a minute for the default.
+      WORKER_NOTIFICATION_DRAIN_INTERVAL_SECONDS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -302,6 +306,7 @@ jobs:
               ListingStatus,
           )
           from apps.api.models.offer import Offer  # registered so orders.offer_id resolves
+          from apps.api.models.notification import Notification, NotificationChannel
           from apps.api.models.order import Order, OrderStatus, PaymentMode
           from apps.api.models.quantity_reservation import (
               HolderType,
@@ -435,9 +440,25 @@ jobs:
                       ),
                   ]
               )
+              # One queued message, owed to the buyer the sweeps leave behind. action_token_invalid
+              # is Q1 and therefore exempt from the quiet window, so the drain may send it at any
+              # hour the job happens to run; it is also a template whose text carries no one-time
+              # code, which is what lets the row be seeded without a secret in the table.
+              session.add(
+                  Notification(
+                      user_id=buyer.id,
+                      channel=NotificationChannel.SMS,
+                      template_id="action_token_invalid",
+                      priority=1,
+                      language="en",
+                      rendered_text="That action code did not work: n/a",
+                      dedup_key="ci-worker-drain",
+                  )
+              )
               session.commit()
           print(f"seeded {shipment_code}: SHIPPED two hours ago, crop window one hour")
           print(f"seeded {pickup_code}: READY_FOR_PICKUP a day and an hour ago")
+          print("seeded one Q1 notification: QUEUED, due immediately, exempt from quiet hours")
           PY
       - name: boot the worker (round 1 - fast schedule, persistent scheduler)
         # setsid as well as nohup, the same idiom the ZAP job uses to boot the API: nohup only
@@ -544,7 +565,66 @@ jobs:
           PY
           echo "--- the sweeps, from $RUNNER_TEMP/worker-round1.log ---"
           grep -E "gebeyalink.worker.(shipment|pickup)_sweep|settled=" "$RUNNER_TEMP/worker-round1.log" | head -n 12 || true
+      - name: wait for the notification drain, then assert it (round 1)
+        # The sweeps prove a clock acting on rows nobody asked about; this proves the queue half
+        # of the same machinery. A row was seeded QUEUED and owed to a real account, and the
+        # drain must hand it to the provider and write SENT down. The lane is Q1, exempt from the
+        # quiet window, so the assertion holds whatever hour the runner happens to be at. The
+        # recording store's own log line is asserted too, because SENT without a recorded message
+        # would be the platform recording a send it never made.
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import time
+
+          import psycopg
+
+          url = os.environ["DATABASE_URL"].replace("+psycopg", "")
+          deadline = time.monotonic() + 60
+          while True:
+              with psycopg.connect(url) as connection:
+                  row = connection.execute(
+                      "SELECT status, sent_at, attempt_count, failure_reason, gateway_ref"
+                      " FROM notifications WHERE dedup_key = %s",
+                      ("ci-worker-drain",),
+                  ).fetchone()
+              if row is not None and row[0] == "SENT":
+                  break
+              if time.monotonic() > deadline:
+                  sys.exit(f"the drain did not send the seeded notification within 60s: {row}")
+              time.sleep(1)
+
+          status, sent_at, attempt_count, failure_reason, gateway_ref = row
+          print(
+              f"notifications: status={status} sent_at={sent_at} attempt_count={attempt_count}"
+              f" gateway_ref={gateway_ref} failure_reason={failure_reason}"
+          )
+          assert status == "SENT", status
+          assert sent_at is not None, sent_at
+          assert attempt_count == 1, attempt_count
+          assert failure_reason is None, failure_reason
+          assert gateway_ref, gateway_ref
+          print("the seeded Q1 message crossed QUEUED -> SENT in one attempt")
+          PY
+          echo "--- the notification drain, from $RUNNER_TEMP/worker-round1.log ---"
+          grep -E "gebeyalink.(notifications|sms)" "$RUNNER_TEMP/worker-round1.log" | head -n 12 || true
+          if ! grep -q "sms accepted by=recording" "$RUNNER_TEMP/worker-round1.log"; then
+            echo "::error::the drain never handed the seeded message to the recording store"
+            exit 1
+          fi
+          echo "RECORDED: the drain handed the seeded message to the recording store"
+          echo "--- the worker's beat schedule ---"
+          python - <<'PY'
+          from apps.api.core.config import get_settings
+          from apps.api.worker import build_celery
+
+          app = build_celery(get_settings())
+          for name in sorted(app.conf.beat_schedule):
+              print(f"beat: {name} every {app.conf.beat_schedule[name]['schedule']}s")
+          PY
       - name: stop the worker (round 1)
+
         # Graceful SIGTERM first, then the beat child's own pattern; the sleeps let the worker
         # run its shutdown path so the schedule file is closed and flushed before it is read.
         run: |
