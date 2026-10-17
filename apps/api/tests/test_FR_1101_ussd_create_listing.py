@@ -33,33 +33,42 @@ EAT = timedelta(hours=3)
 
 #: The catalogue's nineteen weighed crops in the order the wizard shows them to a market where
 #: nothing is listed yet: the tie at zero listed kilos breaks on the catalogue's own number.
-CROP_ROWS = "\n".join(
-    f"{n}. {en} {am}"
-    for n, (en, am) in enumerate(
-        [
-            ("Teff", "ጤፍ"),
-            ("Wheat", "ስንዴ"),
-            ("Barley", "ገብስ"),
-            ("Maize", "በቆሎ"),
-            ("Sorghum", "ማሽላ"),
-            ("Chickpea", "ሽምብራ"),
-            ("Lentil", "ምስር"),
-            ("Faba bean", "በቀላ"),
-            ("White pea bean", "አተር"),
-            ("Niger seed", "ኑግ"),
-            ("Sesame", "ሰሊጥ"),
-            ("Linseed", "አሥላስ"),
-            ("Coffee (red cherry)", "ቡና"),
-            ("Avocado", "አቮካዶ"),
-            ("Mango", "ማንጎ"),
-            ("Banana", "ሙዝ"),
-            ("Onion", "ሽንኩርት"),
-            ("Tomato", "ቲማቲም"),
-            ("Potato", "ድንች"),
-        ],
-        start=1,
-    )
-)
+CROPS: list[tuple[str, str]] = [
+    ("Teff", "ጤፍ"),
+    ("Wheat", "ስንዴ"),
+    ("Barley", "ገብስ"),
+    ("Maize", "በቆሎ"),
+    ("Sorghum", "ማሽላ"),
+    ("Chickpea", "ሽምብራ"),
+    ("Lentil", "ምስር"),
+    ("Faba bean", "በቀላ"),
+    ("White pea bean", "አተር"),
+    ("Niger seed", "ኑግ"),
+    ("Sesame", "ሰሊጥ"),
+    ("Linseed", "አሥላስ"),
+    ("Coffee (red cherry)", "ቡና"),
+    ("Avocado", "አቮካዶ"),
+    ("Mango", "ማንጎ"),
+    ("Banana", "ሙዝ"),
+    ("Onion", "ሽንኩርት"),
+    ("Tomato", "ቲማቲም"),
+    ("Potato", "ድንች"),
+]
+
+#: The rows one crop screen shows, and the number its "more" row carries. Two, not four: a row
+#: carries Ge'ez, so the screen is UCS-2 and only two rows fit the ~80-character channel budget.
+CROP_PAGE_SIZE = 2
+_MORE_KEY = str(CROP_PAGE_SIZE + 1)
+
+
+def _crop_page(start: int) -> str:
+    """The wizard's crop screen: the page of ``CROP_PAGE_SIZE`` crops from ``start``, or a More."""
+    window = CROPS[start : start + CROP_PAGE_SIZE]
+    rows = [f"{index}. {en} {am}" for index, (en, am) in enumerate(window, start=1)]
+    if start + CROP_PAGE_SIZE < len(CROPS):
+        rows.append(f"{len(rows) + 1}. More")
+    return "Choose a crop:\n" + "\n".join(rows)
+
 
 _PUBLISHED = re.compile(r"^END Listing (?P<code>\w+) published\. ")
 
@@ -105,12 +114,12 @@ def _walk(
     return replies
 
 
-def test_the_crop_menu_lists_the_market_without_paging(
+def test_the_crop_menu_pages_two_rows_and_offers_more(
     client: TestClient,
     signed_in: Callable[..., dict[str, str]],
     ussd_session: Callable[..., httpx.Response],
 ) -> None:
-    """Nineteen crops on one screen, biggest market first, no page control to press."""
+    """Nineteen crops do not fit a UCS-2 screen: the menu shows two and a numbered "more"."""
 
     _ready(client, signed_in)
 
@@ -118,11 +127,42 @@ def test_the_crop_menu_lists_the_market_without_paging(
 
     assert replies[0].text == f"CON {MAIN_MENU}"
     assert replies[1].text == f"CON {LISTINGS_MENU}"
-    assert replies[2].text == f"CON Choose a crop:\n{CROP_ROWS}"
-    # The whole list is here - no "99 more", no "next" - because the nineteen the catalogue
-    # holds fit the same twenty-row ceiling the orders lists use. That is the paging decision.
-    assert "more" not in replies[2].text
-    assert replies[2].text.count("\n") == 19
+    assert replies[2].text == f"CON {_crop_page(0)}"
+    # Two crops and a "more" row, not the whole catalogue: a row carries Ge'ez, so the screen is
+    # UCS-2 and only two rows fit the channel's budget. That is the paging decision.
+    assert replies[2].text.endswith(f"{_MORE_KEY}. More")
+
+    more = ussd_session(client, _MORE_KEY, session_id="ses-crnl-crops", phone_number=SELLER)
+    assert more.text == f"CON {_crop_page(CROP_PAGE_SIZE)}"
+
+    picked = ussd_session(client, "1", session_id="ses-crnl-crops", phone_number=SELLER)
+    assert picked.text == "CON Quantity in kg?"
+
+
+def test_a_crop_reached_by_paging_is_the_crop_that_is_published(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    ussd_session: Callable[..., httpx.Response],
+    stored_listings: Callable[..., list[dict[str, object]]],
+) -> None:
+    """A press on a later page resolves against that page's crops, and publishes the one picked."""
+
+    _ready(client, signed_in)
+    replies = _walk(
+        client,
+        ussd_session,
+        ["1", "1", "3", "1", "500", "2500", "1", "1"],
+        session_id="ses-crnl-page2",
+    )
+    assert replies[2].text == f"CON {_crop_page(0)}"
+    assert replies[3].text == f"CON {_crop_page(CROP_PAGE_SIZE)}"
+    assert replies[4].text == "CON Quantity in kg?"
+    assert replies[-1].text.startswith("END Listing ")
+
+    rows = stored_listings()
+    assert len(rows) == 1
+    assert rows[0]["crop_id"] == 3  # the second page's first row: Barley
+    assert rows[0]["quantity_kg"] == 500
 
 
 def test_the_wizard_walks_five_screens_and_writes_a_listing(
@@ -144,7 +184,7 @@ def test_the_wizard_walks_five_screens_and_writes_a_listing(
 
     assert replies[0].text == f"CON {MAIN_MENU}"
     assert replies[1].text == f"CON {LISTINGS_MENU}"
-    assert replies[2].text == f"CON Choose a crop:\n{CROP_ROWS}"
+    assert replies[2].text == f"CON {_crop_page(0)}"
     assert replies[3].text == "CON Quantity in kg?"
     assert replies[4].text == "CON Price per kg in ETB?"
     assert replies[5].text == f"CON {HARVEST_MENU}"

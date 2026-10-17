@@ -8,6 +8,7 @@ reject and counter moves are handed to the gateway with the offer the seller pic
 
 from __future__ import annotations
 
+from packages.ussd.session import SessionState
 from packages.ussd.trees.model import (
     Action,
     Node,
@@ -16,6 +17,25 @@ from packages.ussd.trees.model import (
     index_choice,
     positive_amount,
 )
+
+
+def _after_crop(text: str, session: SessionState) -> str | None:
+    """A crop row opens the amount screen; the "more" row turns to the next page of crops.
+
+    The rows are numbered within the page they are on, so the number the trader presses is an
+    index into ``crop_ids`` and the page's last number is the more row. Both the row list and
+    the more key come from the same prefetch, so the move and the screen agree by construction.
+    """
+    value = text.strip()
+    if not value.isdigit():
+        return None
+    if value == session.context.get("crop_more_key") and session.context.get("has_more_crops"):
+        return "ussd_new_listing_crop_next"
+    ids = session.context.get("crop_ids")
+    if isinstance(ids, list) and 1 <= int(value) <= len(ids):
+        return "ussd_new_listing_quantity"
+    return None
+
 
 NODES: dict[str, Node] = {
     "listings_menu": Node(
@@ -30,11 +50,18 @@ NODES: dict[str, Node] = {
     "ussd_new_listing_crop": Node(
         id="ussd_new_listing_crop",
         prompt=("ussd_crop_menu", "ussd_rows"),
-        next=index_choice("ussd_new_listing_quantity", "crop_ids"),
+        next=_after_crop,
         requires_account=True,
         prefetch=("new_listing_crops",),
-        action=Action("select_crop"),
         arrival_action=Action("require_listing_profile"),
+    ),
+    "ussd_new_listing_crop_next": Node(
+        id="ussd_new_listing_crop_next",
+        prompt=("ussd_crop_menu", "ussd_rows"),
+        next=_after_crop,
+        requires_account=True,
+        prefetch=("new_listing_crops",),
+        arrival_action=Action("page_next_crops"),
     ),
     "ussd_new_listing_quantity": Node(
         id="ussd_new_listing_quantity",
@@ -42,6 +69,7 @@ NODES: dict[str, Node] = {
         next=digits("ussd_new_listing_price"),
         error_reason_id="error_digits",
         action=Action("set_listing_quantity"),
+        arrival_action=Action("select_crop"),
         allows_back=False,
     ),
     "ussd_new_listing_price": Node(

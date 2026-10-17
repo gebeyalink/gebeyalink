@@ -253,6 +253,7 @@ def test_the_classified_lanes_match_the_product_rules() -> None:
             "ussd_new_listing_delivery_fee",
             "ussd_new_listing_harvest",
             "ussd_new_listing_published",
+            "ussd_new_listing_more",
             "ussd_active_listings",
             "ussd_paused_listings",
             "ussd_no_listings",

@@ -184,6 +184,16 @@
     om: "Akka {code} galmeeffame. Bittoonni naannoo kee ni beeksifamu. Bulchuuf *851# bilbilaa."
     en: "Listing {code} published. Buyers near you will be notified. Dial *851# to manage."
 
+- id: ussd_new_listing_more
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "ተጨማሪ"
+    om: "Biraa"
+    en: "More"
+
 - id: ussd_active_listings
   channel: ussd
   priority: Q2

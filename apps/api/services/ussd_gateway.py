@@ -77,10 +77,18 @@ logger = logging.getLogger("gebeyalink.api")
 #: because a menu is a screen rather than a text; still capped, because a phone is a phone.
 _ORDERS_PAGE_LIMIT = 20
 
-#: How many crops the create-listing wizard shows. The same ceiling the orders lists use,
-#: because the limit is the phone rather than the list: the nineteen crops the catalogue holds
-#: fit one screen today, and the twentieth would be the one that made a menu unreadable.
+#: How many crops the create-listing wizard ranks and pages through. The catalogue holds
+#: nineteen today; the cap keeps a grown catalogue from being read in full on every keypress.
 _NEW_LISTING_CROP_LIMIT = 20
+
+#: How many of those crops one screen shows. The binding limit is the USSD channel's: a crop row
+#: carries both the English and the Amharic name, so every crop screen is UCS-2 rather than GSM
+#: 7-bit whatever language the trader chose, and the channel is assumed to hold ~80 UCS-2
+#: characters. Measured worst-case pages over the catalogue (with the ``CON `` prefix, the
+#: "Choose a crop:" heading and the "more" line): four rows 94-102 characters, three rows 85-88,
+#: two rows 66-74. Two is the largest page that fits. Africa's Talking's documented per-screen
+#: limit is the open question (O-2) that confirms or adjusts this number.
+_NEW_LISTING_CROP_PAGE = 2
 
 #: What a one-line prompt can honestly mean by "quantity" and "price". A million kilos is the
 #: listing cap itself; a million birr a kilo is past any crop this market trades. The wizard
@@ -182,19 +190,31 @@ class UssdGateway:
         return {"active_count": str(active), "paused_count": str(paused)}
 
     async def _prefetch_new_listing_crops(self, state: SessionState) -> dict[str, Any]:
-        """The create-listing wizard's crop menu, ordered by what is actually being listed.
+        """One page of the create-listing wizard's crop menu, ordered by what is listed.
 
         The row is ``{n}. {name_en} {name_am}``: both names, because a one-line menu can say
-        what a sentence cannot, and the pair is the same for every language the trader
-        chose. The crop ids travel beside the rows so a press resolves to a catalogue number.
+        what a sentence cannot. The pages are short for a reason that belongs to the channel
+        rather than to the list: a row carries Ge'ez, so the whole screen is UCS-2 and only two
+        rows fit the budget (see ``_NEW_LISTING_CROP_PAGE``). When more crops follow, the page
+        ends with a numbered "more" row whose number the move resolves; ``crop_ids`` carries
+        only the crops this page shows, so a press is an index into what is on the screen.
         """
+        offset = max(0, int(state.context.get("offset", 0)))
         crops = await self._crops.list_top_by_listed_volume(_NEW_LISTING_CROP_LIMIT)
-        lines: list[str] = []
-        crop_ids: list[int] = []
-        for index, crop in enumerate(crops, start=1):
-            lines.append(f"{index}. {crop.name_en} {crop.name_am}")
-            crop_ids.append(crop.id)
-        return {"rows": "\n".join(lines), "crop_ids": crop_ids}
+        page = list(crops[offset : offset + _NEW_LISTING_CROP_PAGE])
+        lines = [
+            f"{index}. {crop.name_en} {crop.name_am}" for index, crop in enumerate(page, start=1)
+        ]
+        has_more = offset + _NEW_LISTING_CROP_PAGE < len(crops)
+        more_key = len(page) + 1
+        if has_more:
+            lines.append(f"{more_key}. " + render("ussd_new_listing_more", state.lang, {}))
+        return {
+            "rows": "\n".join(lines),
+            "crop_ids": [crop.id for crop in page],
+            "has_more_crops": has_more,
+            "crop_more_key": str(more_key),
+        }
 
     async def _prefetch_active_listings(self, state: SessionState) -> dict[str, Any]:
         return await self._seller_listing_rows(state, ListingStatus.ACTIVE)
@@ -566,6 +586,12 @@ class UssdGateway:
         self, action: Action, text: str, state: SessionState, session_id: str
     ) -> dict[str, Any]:
         return {"offset": int(state.context.get("offset", 0)) + 3}
+
+    async def _op_page_next_crops(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        """Step the create-listing crop menu to its next page, one page at a time."""
+        return {"offset": int(state.context.get("offset", 0)) + _NEW_LISTING_CROP_PAGE}
 
     async def _op_set_quantity(
         self, action: Action, text: str, state: SessionState, session_id: str

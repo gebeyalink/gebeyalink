@@ -32,7 +32,7 @@ ERROR_REASON_IDS = {
 
 def test_the_tree_builds_every_node_of_the_five_paths() -> None:
     nodes = build_nodes()
-    assert len(nodes) == 38
+    assert len(nodes) == 39
     assert set(nodes) == {
         "language",
         "resume",
@@ -41,6 +41,7 @@ def test_the_tree_builds_every_node_of_the_five_paths() -> None:
         "help",
         "listings_menu",
         "ussd_new_listing_crop",
+        "ussd_new_listing_crop_next",
         "ussd_new_listing_quantity",
         "ussd_new_listing_price",
         "ussd_new_listing_harvest",
@@ -120,6 +121,23 @@ def test_the_listings_and_orders_menus_have_their_three_paths() -> None:
     assert orders("2", _state()) == "orders_in_progress"
     assert orders("3", _state()) == "orders_completed"
     assert orders("9", _state()) is None
+
+
+def test_the_crop_menu_routes_rows_and_the_more_line_apart() -> None:
+    """The crop screen is two moves: a row picks a crop, the numbered "more" row turns a page."""
+    node = build_nodes()["ussd_new_listing_crop"]
+    assert node.next is not None
+    page = _state()
+    page.context.update({"crop_ids": [1, 2], "has_more_crops": True, "crop_more_key": "3"})
+    assert node.next("1", page) == "ussd_new_listing_quantity"
+    assert node.next("2", page) == "ussd_new_listing_quantity"
+    assert node.next("3", page) == "ussd_new_listing_crop_next"
+    assert node.next("4", page) is None
+    # On the last page there is no "more" row, so its number is just a refused choice.
+    last = _state()
+    last.context.update({"crop_ids": [19], "has_more_crops": False, "crop_more_key": "2"})
+    assert node.next("1", last) == "ussd_new_listing_quantity"
+    assert node.next("2", last) is None
 
 
 def test_the_main_menu_renders_in_english() -> None:
