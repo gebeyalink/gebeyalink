@@ -21,7 +21,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.ussd]
 
 SELLER = "+251911000001"
 OTHER_SELLER = "+251911000002"
