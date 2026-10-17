@@ -266,27 +266,38 @@ class ListingService:
         self._idempotency = idempotency
 
     async def create(
-        self, seller_id: UUID, body: dict[str, Any], key: str | None = None
+        self,
+        seller_id: UUID,
+        body: dict[str, Any],
+        key: str | None = None,
+        *,
+        source: ListingSource = APP_SOURCE,
     ) -> ListingResponse:
         """Post a listing, live, under a code nobody else holds.
 
         ``key`` is the SMS channel's idempotency key and is absent on the app path, which has
         no way to resend a creation it did not see an answer to. When it is present, the whole
         creation runs under it, so a webhook retried by the gateway posts one listing.
+
+        ``source`` is the door the listing came in through. The app path never says, and the
+        SMS path still does not, so both keep the default; the USSD wizard passes the channel
+        it is, because the row is the only place that answers how a listing arrived.
         """
         if key is None:
-            return await self._create(seller_id, body)
+            return await self._create(seller_id, body, source)
         return await once(
             self._idempotency,
             account_id=str(seller_id),
             key=key,
             fingerprint=_fingerprint("listing", body),
-            work=lambda: self._create(seller_id, body),
+            work=lambda: self._create(seller_id, body, source),
             encode=lambda response: (201, response.model_dump(mode="json")),
             decode=ListingResponse.model_validate,
         )
 
-    async def _create(self, seller_id: UUID, body: dict[str, Any]) -> ListingResponse:
+    async def _create(
+        self, seller_id: UUID, body: dict[str, Any], source: ListingSource = APP_SOURCE
+    ) -> ListingResponse:
         now = datetime.now(UTC)
         values = self._values_from(
             _with_sms_defaults(body, now), expires_at_default=_default_expiry(now)
@@ -295,7 +306,7 @@ class ListingService:
 
         listing = Listing(
             seller_id=seller_id,
-            source=APP_SOURCE,
+            source=source,
             status=ListingStatus.DRAFT,
             short_code=await self._allocate_short_code(),
             price_outlier=await self._judge_price(values, now=now),

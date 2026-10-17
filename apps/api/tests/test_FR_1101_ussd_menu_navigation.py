@@ -280,7 +280,8 @@ async def test_a_terminal_screen_simply_rerenders_on_a_replayed_press(
     raw = FakeStore(
         seed={
             "ussd:lang:" + PHONE: "en",
-            "ussd:draft:" + PHONE: '{"_draft_step": "new_listing", "_draft_body": {}}',
+            "ussd:draft:" + PHONE: '{"_draft_step": "ussd_new_listing_published",'
+            ' "_draft_body": {"code": "K7T2QX"}}',
         }
     )
     store = SessionStore(raw)
@@ -288,11 +289,12 @@ async def test_a_terminal_screen_simply_rerenders_on_a_replayed_press(
     await _dial(nodes=engine, store=store, gateway=gateway)
     reply = await _dial(nodes=engine, store=store, gateway=gateway, text="1")
     assert reply.startswith("END ")
-    assert "New listings from USSD are coming soon" in reply
+    assert "K7T2QX" in reply
     outstanding = len(gateway.applied)
+    assert outstanding == 1
     reply = await _dial(nodes=engine, store=store, gateway=gateway, text="1")
     assert reply.startswith("END ")
-    assert "New listings from USSD are coming soon" in reply
+    assert "K7T2QX" in reply
     assert len(gateway.applied) == outstanding
 
 

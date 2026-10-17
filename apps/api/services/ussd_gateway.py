@@ -31,13 +31,13 @@ them.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from apps.api.core.config import Settings
 from apps.api.models.crop import Crop
-from apps.api.models.listing import DeliveryOption, Listing, ListingStatus
+from apps.api.models.listing import DeliveryOption, Listing, ListingSource, ListingStatus
 from apps.api.models.offer import OfferStatus
 from apps.api.models.order import Order, OrderStatus
 from apps.api.repositories.crop_repository import CropRepository
@@ -56,6 +56,7 @@ from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.schemas.search import SearchSort
 from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
+from apps.api.services.listing_service import ListingService
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.offer_service import OfferService
 from apps.api.services.offer_service import effective_status as effective_offer_status
@@ -64,6 +65,7 @@ from apps.api.services.order_service import effective_status as effective_order_
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.languages import DEFAULT_LANGUAGE, Language
 from packages.shared.messaging.dispatcher import format_etb, parse_etb_to_santim
+from packages.shared.messaging.queues import EAT_ZONE
 from packages.ussd.engine import UssdRefusalError
 from packages.ussd.render import render
 from packages.ussd.session import SessionState
@@ -74,6 +76,17 @@ logger = logging.getLogger("gebeyalink.api")
 #: How many of a trader's orders a USSD screen shows at most. Bigger than SMS budgets allow,
 #: because a menu is a screen rather than a text; still capped, because a phone is a phone.
 _ORDERS_PAGE_LIMIT = 20
+
+#: How many crops the create-listing wizard shows. The same ceiling the orders lists use,
+#: because the limit is the phone rather than the list: the nineteen crops the catalogue holds
+#: fit one screen today, and the twentieth would be the one that made a menu unreadable.
+_NEW_LISTING_CROP_LIMIT = 20
+
+#: What a one-line prompt can honestly mean by "quantity" and "price". A million kilos is the
+#: listing cap itself; a million birr a kilo is past any crop this market trades. The wizard
+#: refuses anything above these on the amount screen, where the trader can still correct it.
+_MAX_LISTING_QUANTITY_KG = 1_000_000
+_MAX_UNIT_PRICE_ETB = 1_000_000
 
 #: Orders a dialling trader cares about, grouped by what is happening to them (§14.3 Path 3).
 _AWAITING_STATUSES = frozenset({OrderStatus.CREATED, OrderStatus.AWAITING_FUNDING})
@@ -120,6 +133,7 @@ class UssdGateway:
         search: SearchRepository,
         offer_service: OfferService,
         order_service: OrderService,
+        listing_service: ListingService,
         settings: Settings,
     ) -> None:
         self._users = users
@@ -134,6 +148,7 @@ class UssdGateway:
         self._search = search
         self._offer_service = offer_service
         self._order_service = order_service
+        self._listing_service = listing_service
         self._settings = settings
 
     # -- who is dialling ----------------------------------------------------
@@ -165,6 +180,21 @@ class UssdGateway:
             1 for row in loaded if effective_listing_status(row.listing) is ListingStatus.PAUSED
         )
         return {"active_count": str(active), "paused_count": str(paused)}
+
+    async def _prefetch_new_listing_crops(self, state: SessionState) -> dict[str, Any]:
+        """The create-listing wizard's crop menu, ordered by what is actually being listed.
+
+        The row is ``{n}. {name_en} {name_am}``: both names, because a one-line menu can say
+        what a sentence cannot, and the pair is the same for every language the trader
+        chose. The crop ids travel beside the rows so a press resolves to a catalogue number.
+        """
+        crops = await self._crops.list_top_by_listed_volume(_NEW_LISTING_CROP_LIMIT)
+        lines: list[str] = []
+        crop_ids: list[int] = []
+        for index, crop in enumerate(crops, start=1):
+            lines.append(f"{index}. {crop.name_en} {crop.name_am}")
+            crop_ids.append(crop.id)
+        return {"rows": "\n".join(lines), "crop_ids": crop_ids}
 
     async def _prefetch_active_listings(self, state: SessionState) -> dict[str, Any]:
         return await self._seller_listing_rows(state, ListingStatus.ACTIVE)
@@ -556,6 +586,115 @@ class UssdGateway:
         # service consumes. Holding both means the registry can render a sentence and the
         # platform can do money arithmetic, each from the key named for it.
         return {"price_santim": santim, "price": format_etb(santim)}
+
+    async def _op_require_listing_profile(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        """The create-listing precondition: the seller's region and woreda must be known.
+
+        A listing carries both and a one-line menu has no step that could ask for them, so a
+        seller whose profile is missing one is told before the first question rather than
+        after the last. The values are read here and carried in the session so the publish
+        does not read the profile a second time.
+        """
+        assert state.user_id is not None
+        profile = await self._profiles.find_by_user_id(_as_uuid(state.user_id))
+        if profile is None or not profile.region_code:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, details={"fields": {"profile": "region"}})
+        if profile.woreda_id is None:
+            raise ApiError(ErrorCode.VALIDATION_ERROR, details={"fields": {"profile": "woreda"}})
+        return {"region_code": profile.region_code, "woreda_id": profile.woreda_id}
+
+    async def _op_set_listing_quantity(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        value = int(text.strip().replace(",", ""))
+        if not 1 <= value <= _MAX_LISTING_QUANTITY_KG:
+            raise ApiError(ErrorCode.VALIDATION_ERROR)
+        return {"quantity_kg": value}
+
+    async def _op_set_listing_price(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        etb = int(text.strip().replace(",", ""))
+        if not 1 <= etb <= _MAX_UNIT_PRICE_ETB:
+            raise ApiError(ErrorCode.VALIDATION_ERROR)
+        # The handset types whole birr and no santim, so the stored price is that many hundred
+        # santim; ``price_etb`` is kept so a later screen can repeat the figure it was given.
+        return {"unit_price_santim": etb * 100, "price_etb": etb}
+
+    async def _op_set_listing_harvest(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        # The four choices are offsets from today on the East Africa Time calendar, not the UTC
+        # one: a farmer in Addis answering after 21:00 UTC means tomorrow, and the date the
+        # listing carries must be the date they mean.
+        offset_days = {"1": 0, "2": 7, "3": 14, "4": 30}.get(text.strip())
+        if offset_days is None:
+            raise ApiError(ErrorCode.VALIDATION_ERROR)
+        harvest = datetime.now(EAT_ZONE).date() + timedelta(days=offset_days)
+        return {"harvest_date": harvest.isoformat()}
+
+    async def _op_set_listing_delivery(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        options = {
+            "1": [DeliveryOption.PICKUP],
+            "2": [DeliveryOption.SELLER_DELIVERY],
+            "3": [DeliveryOption.TRANSPORT_PARTNER],
+        }.get(text.strip())
+        if options is None:
+            raise ApiError(ErrorCode.VALIDATION_ERROR)
+        return {
+            "delivery_options": [option.value for option in options],
+            "delivery_fee_santim": 0,
+        }
+
+    async def _op_set_listing_delivery_fee(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        fee_etb = int(text.strip().replace(",", ""))
+        # A delivery that sells itself short is not a delivery; the fee must be a positive
+        # number of birr or the seller is asked again.
+        if fee_etb <= 0:
+            raise ApiError(ErrorCode.VALIDATION_ERROR)
+        return {"delivery_fee_santim": fee_etb * 100}
+
+    async def _op_publish_listing(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        """Write the listing the five screens described, through the service the app uses.
+
+        §14.4's SMS fallback fills what a one-line menu leaves unsaid: a minimum order of one
+        kilo, available now, and a thirty-day life. The region, woreda and delivery were
+        gathered by earlier screens. The key is the channel's usual
+        ``{sessionId}:{operation}:{entity}`` one, so a gateway retry of the final screen
+        posts one listing, exactly as a replay of one offer places one bid.
+        """
+        assert state.user_id is not None
+        now = datetime.now(UTC)
+        body: dict[str, Any] = {
+            "crop_id": int(state.context["crop_id"]),
+            "quantity_kg": int(state.context["quantity_kg"]),
+            "min_order_kg": 1,
+            "unit_price_santim": int(state.context["unit_price_santim"]),
+            "harvest_date": state.context["harvest_date"],
+            "available_from": now.isoformat(),
+            "expires_at": (now + timedelta(days=30)).isoformat(),
+            "region_code": state.context["region_code"],
+            "woreda_id": int(state.context["woreda_id"]),
+            "delivery_options": list(state.context["delivery_options"]),
+            "delivery_fee_santim": int(state.context.get("delivery_fee_santim", 0)),
+            "description": "",
+            "organic": False,
+            "photos": [],
+            "listing_attributes": {},
+        }
+        key = f"{session_id}:publish_listing:new"
+        listing = await self._listing_service.create(
+            _as_uuid(state.user_id), body, key=key, source=ListingSource.USSD
+        )
+        return {"code": listing.short_code}
 
     async def _op_offer_place(
         self, action: Action, text: str, state: SessionState, session_id: str

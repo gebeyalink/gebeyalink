@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.crop import Crop, CropBaseUnit
+from apps.api.models.listing import Listing, ListingStatus
 
 
 class CropRepository:
@@ -53,6 +54,31 @@ class CropRepository:
             select(Crop)
             .where(Crop.active.is_(True), Crop.base_unit == CropBaseUnit.KG)
             .order_by(Crop.id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_top_by_listed_volume(self, limit: int) -> Sequence[Crop]:
+        """The KG crops farmers are listing most, by the live weight listed for each.
+
+        The create-listing wizard orders its crop menu by what is actually on the market
+        rather than by the catalogue number, so the crop a trader is most likely to want is
+        the one nearest the top. Crops nobody is listing still appear, at the foot of the
+        list, because a farmer may be the first to list one: the outer join keeps them and
+        the identifier breaks their ties, which is the catalogue's own order and so the same
+        answer twice.
+        """
+        listed_kg = func.coalesce(func.sum(Listing.quantity_kg), 0)
+        stmt = (
+            select(Crop)
+            .outerjoin(
+                Listing,
+                (Listing.crop_id == Crop.id) & (Listing.status == ListingStatus.ACTIVE),
+            )
+            .where(Crop.active.is_(True), Crop.base_unit == CropBaseUnit.KG)
+            .group_by(Crop.id)
+            .order_by(listed_kg.desc(), Crop.id.asc())
+            .limit(limit)
         )
         result = await self._session.execute(stmt)
         return result.scalars().all()

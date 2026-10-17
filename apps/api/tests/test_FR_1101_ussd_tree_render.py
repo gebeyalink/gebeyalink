@@ -32,7 +32,7 @@ ERROR_REASON_IDS = {
 
 def test_the_tree_builds_every_node_of_the_five_paths() -> None:
     nodes = build_nodes()
-    assert len(nodes) == 32
+    assert len(nodes) == 38
     assert set(nodes) == {
         "language",
         "resume",
@@ -40,7 +40,13 @@ def test_the_tree_builds_every_node_of_the_five_paths() -> None:
         "prices",
         "help",
         "listings_menu",
-        "new_listing",
+        "ussd_new_listing_crop",
+        "ussd_new_listing_quantity",
+        "ussd_new_listing_price",
+        "ussd_new_listing_harvest",
+        "ussd_new_listing_delivery",
+        "ussd_new_listing_delivery_fee",
+        "ussd_new_listing_published",
         "active_listings",
         "paused_listings",
         "offers_list",
@@ -106,7 +112,7 @@ def test_the_listings_and_orders_menus_have_their_three_paths() -> None:
     listings = nodes["listings_menu"].next
     orders = nodes["orders_menu"].next
     assert listings is not None and orders is not None
-    assert listings("1", _state()) == "new_listing"
+    assert listings("1", _state()) == "ussd_new_listing_crop"
     assert listings("2", _state()) == "active_listings"
     assert listings("3", _state()) == "paused_listings"
     assert listings("4", _state()) is None

@@ -12,6 +12,7 @@ from packages.ussd.trees.model import (
     Action,
     Node,
     choices,
+    digits,
     index_choice,
     positive_amount,
 )
@@ -20,14 +21,77 @@ NODES: dict[str, Node] = {
     "listings_menu": Node(
         id="listings_menu",
         prompt=("ussd_listings_menu",),
-        next=choices({"1": "new_listing", "2": "active_listings", "3": "paused_listings"}),
+        next=choices(
+            {"1": "ussd_new_listing_crop", "2": "active_listings", "3": "paused_listings"}
+        ),
         requires_account=True,
         prefetch=("listing_counts",),
     ),
-    "new_listing": Node(
-        id="new_listing",
-        prompt=("ussd_new_listing_placeholder",),
+    "ussd_new_listing_crop": Node(
+        id="ussd_new_listing_crop",
+        prompt=("ussd_crop_menu", "ussd_rows"),
+        next=index_choice("ussd_new_listing_quantity", "crop_ids"),
+        requires_account=True,
+        prefetch=("new_listing_crops",),
+        action=Action("select_crop"),
+        arrival_action=Action("require_listing_profile"),
+    ),
+    "ussd_new_listing_quantity": Node(
+        id="ussd_new_listing_quantity",
+        prompt=("ussd_quantity_prompt",),
+        next=digits("ussd_new_listing_price"),
+        error_reason_id="error_digits",
+        action=Action("set_listing_quantity"),
+        allows_back=False,
+    ),
+    "ussd_new_listing_price": Node(
+        id="ussd_new_listing_price",
+        prompt=("ussd_price_prompt",),
+        next=digits("ussd_new_listing_harvest"),
+        error_reason_id="error_digits",
+        action=Action("set_listing_price"),
+        allows_back=False,
+    ),
+    "ussd_new_listing_harvest": Node(
+        id="ussd_new_listing_harvest",
+        prompt=("ussd_new_listing_harvest",),
+        next=choices(
+            {
+                "1": "ussd_new_listing_delivery",
+                "2": "ussd_new_listing_delivery",
+                "3": "ussd_new_listing_delivery",
+                "4": "ussd_new_listing_delivery",
+            }
+        ),
+        error_reason_id="error_invalid_choice",
+        action=Action("set_listing_harvest"),
+    ),
+    "ussd_new_listing_delivery": Node(
+        id="ussd_new_listing_delivery",
+        prompt=("ussd_new_listing_delivery",),
+        next=choices(
+            {
+                "1": "ussd_new_listing_published",
+                "2": "ussd_new_listing_delivery_fee",
+                "3": "ussd_new_listing_published",
+            }
+        ),
+        error_reason_id="error_invalid_choice",
+        action=Action("set_listing_delivery"),
+    ),
+    "ussd_new_listing_delivery_fee": Node(
+        id="ussd_new_listing_delivery_fee",
+        prompt=("ussd_new_listing_delivery_fee",),
+        next=digits("ussd_new_listing_published"),
+        error_reason_id="error_digits",
+        action=Action("set_listing_delivery_fee"),
+        allows_back=False,
+    ),
+    "ussd_new_listing_published": Node(
+        id="ussd_new_listing_published",
+        prompt=("ussd_new_listing_published",),
         terminal=True,
+        arrival_action=Action("publish_listing"),
     ),
     "active_listings": Node(
         id="active_listings",

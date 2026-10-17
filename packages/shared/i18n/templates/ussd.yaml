@@ -117,15 +117,72 @@
       2. Active ({active_count})
       3. Paused ({paused_count})
 
-- id: ussd_new_listing_placeholder
+- id: ussd_new_listing_harvest
   channel: ussd
   priority: Q2
   review_status: unreviewed
   placeholders: []
   variants:
-    am: "ከ USSD አዲስ ማስታወቂያ በቅርቡ ይመጣል። እባክዎ መተግበሪያውን ይጠቀሙ።"
-    om: "Beeksisa haaraa USSD irraa dhiyootti ni dhufa. Appilikeeshinii fayyadamaa."
-    en: "New listings from USSD are coming soon. Please use the app for now."
+    am: |-
+      የመሰብሰቢያ ጊዜ?
+      1. አሁን ዝግጁ
+      2. በ1 ሳምንት ውስጥ
+      3. በ2 ሳምንት ውስጥ
+      4. በሚቀጥለው ወር
+    om: |-
+      Yeroo sassaabaa?
+      1. Amma qophaa'aa
+      2. Torban 1 keessatti
+      3. Torban 2 keessatti
+      4. Ji'a dhufu
+    en: |-
+      Harvest timing?
+      1. Ready now
+      2. Within 1 week
+      3. Within 2 weeks
+      4. Next month
+
+- id: ussd_new_listing_delivery
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: |-
+      ማድረስ?
+      1. በራስ መውሰድ ብቻ
+      2. እኔ አደርሳለሁ
+      3. የትራንስፖርት አጋር
+    om: |-
+      Geessuu?
+      1. Ofumaan fudhachuu qofa
+      2. Ani nan geessa
+      3. Michuu geejjibaa
+    en: |-
+      Delivery?
+      1. Pickup only
+      2. I deliver
+      3. Transport partner
+
+- id: ussd_new_listing_delivery_fee
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: []
+  variants:
+    am: "የማድረሻ ክፍያ በኪግ ብር?"
+    om: "Kaffaltii geejjibaa kg ETB?"
+    en: "Delivery fee per kg in ETB?"
+
+- id: ussd_new_listing_published
+  channel: ussd
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code]
+  variants:
+    am: "በ{code} ታትሟል። በአካባቢዎ ያሉ ገዢዎች ይነገራቸዋል። ለማስተዳደር *851# ይደውሉ።"
+    om: "Akka {code} galmeeffame. Bittoonni naannoo kee ni beeksifamu. Bulchuuf *851# bilbilaa."
+    en: "Listing {code} published. Buyers near you will be notified. Dial *851# to manage."
 
 - id: ussd_active_listings
   channel: ussd
