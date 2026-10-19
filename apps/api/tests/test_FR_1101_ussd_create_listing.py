@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, tzinfo
+from typing import Self
 
 import httpx
 import pytest
@@ -432,15 +433,16 @@ def test_the_harvest_day_follows_the_east_africa_calendar(
 ) -> None:
     """21:30 UTC is already tomorrow in Addis; "Ready now" writes the EAT day, not the UTC one."""
 
-    class _FrozenDateTime:
+    class _FrozenDateTime(datetime):
         """A `datetime` whose ``now`` is the instant this test watches the day boundary on."""
 
-        @staticmethod
-        def now(tz: tzinfo | None = None) -> datetime:
-            moment = datetime(2026, 10, 16, 21, 30, tzinfo=UTC)
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            moment = cls(2026, 10, 16, 21, 30, tzinfo=UTC)
             return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
 
     monkeypatch.setattr("apps.api.services.ussd_gateway.datetime", _FrozenDateTime)
+    monkeypatch.setattr("apps.api.services.listing_service.datetime", _FrozenDateTime)
     _ready(client, signed_in)
     replies = _walk(
         client,
