@@ -3,8 +3,8 @@
 The fifth line of the main menu is the human help route: a number to call and the word to
 text. It is a terminal screen - there is nothing to branch from it - and the help it names
 is the same short code the SMS channel answers. The rest of the file is the boundary of the
-menus themselves: a press the menu does not name is refused on the same screen with the
-same marker, three times, and the fourth time the session parkes on the help screen.
+menus themselves: a press the menu does not name is refused with the same short reason line,
+three times, and the fourth time the session parks on the help screen.
 """
 
 from __future__ import annotations
@@ -44,27 +44,24 @@ def test_help_is_the_terminal_fifth_line(
     assert help_screen.text == HELP
 
 
-def test_an_unnamed_press_refuses_on_the_same_screen(
+def test_an_unnamed_press_is_refused_with_the_reason_line(
     client: TestClient,
     ussd_session: Callable[..., httpx.Response],
 ) -> None:
     _open_main_menu(client, ussd_session)
     refused = ussd_session(client, "9", session_id=SESSION_ID, phone_number=DIALLER)
-    assert refused.text == (
-        "CON ❌ Please choose one of the options.\n"
-        "1. My Listings\n2. Browse Crops\n3. My Orders\n4. Today's Prices\n5. Help"
-    )
+    assert refused.text == "CON ❌ Invalid choice. Try again."
 
 
 def test_fourth_invalid_press_parks_the_session_on_help(
     client: TestClient,
     ussd_session: Callable[..., httpx.Response],
 ) -> None:
-    """Three refusals keep the menu; the fourth press ends the session on the help screen."""
+    """Three refusals answer with the reason line; the fourth press ends the session on help."""
 
     _open_main_menu(client, ussd_session)
     for _ in range(3):
         refused = ussd_session(client, "9", session_id=SESSION_ID, phone_number=DIALLER)
-        assert refused.text.startswith("CON ❌ Please choose one of the options.")
+        assert refused.text == "CON ❌ Invalid choice. Try again."
     parked = ussd_session(client, "9", session_id=SESSION_ID, phone_number=DIALLER)
     assert parked.text == HELP

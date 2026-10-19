@@ -181,7 +181,7 @@ async def test_the_same_path_is_open_to_a_registered_handset(
     assert "2. Active (0)" in reply
 
 
-async def test_a_refused_choice_rerenders_with_the_failed_reason(
+async def test_a_refused_choice_answers_with_the_failed_reason(
     engine: dict[str, Node],
 ) -> None:
     store = SessionStore(FakeStore())
@@ -189,8 +189,9 @@ async def test_a_refused_choice_rerenders_with_the_failed_reason(
     await _dial(nodes=engine, store=store, gateway=gateway)
     await _dial(nodes=engine, store=store, gateway=gateway, text="2")
     reply = await _dial(nodes=engine, store=store, gateway=gateway, text="9")
-    assert reply.startswith("CON ❌ Please choose one of the options.\n1. My Listings")
-    assert "5. Help" in reply
+    # The reason line alone, not the reason with the menu under it: the two together are past the
+    # channel's one-screen budget (D-22), so the menu is not re-rendered.
+    assert reply == "CON ❌ Invalid choice. Try again."
 
 
 async def test_the_fourth_refused_choice_hands_the_session_to_help(

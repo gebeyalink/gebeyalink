@@ -557,9 +557,9 @@
   review_status: unreviewed
   placeholders: []
   variants:
-    am: "ከአማራጮቹ አንዱን ይምረጡ።"
-    om: "Filannoo keessaa tokko filadhu."
-    en: "Please choose one of the options."
+    am: "የተሳሳተ ምርጫ። እንደገና ይሞክሩ።"
+    om: "Filannoo dogoggoraa. Ammas yaali."
+    en: "Invalid choice. Try again."
 
 - id: error_digits
   channel: ussd

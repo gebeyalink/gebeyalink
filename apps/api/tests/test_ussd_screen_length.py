@@ -23,11 +23,11 @@ limit is not recorded in this repository, and when it lands (O-2) it becomes the
 these two numbers and for ``_NEW_LISTING_CROP_PAGE``. Only then can they be adjusted down (or
 up) with a reference instead of a guess.
 
-One class of screen is deliberately *not* measured here. A refusal is the prompt plus a reason
-line the renderer prefixes with ``❌ ``; that marker alone makes the screen UCS-2, and the
-longest refusal re-render (an Oromo harvest refusal) is about 130 characters — over the UCS-2
-budget. Those reason lines predate this wizard, so they are recorded as an open finding rather
-than quietly widened into the budget here.
+One class of screen is measured here only now. A refusal is the reason line the renderer
+prefixes with ``❌ ``, and the engine once re-rendered the prompt under it, which made the
+longest form (an Oromo harvest refusal) about 130 characters - over the UCS-2 budget, and so
+truncated on a feature phone. D-22 shortened the reason and stopped rendering the prompt under
+it, so a refusal is now a single short line and is held to the budget like any other screen.
 
 Marked unit: this renders templates, it does not read a database.
 """
@@ -38,7 +38,7 @@ import pytest
 
 from apps.api.services.ussd_gateway import _BROWSE_CROP_PAGE, _NEW_LISTING_CROP_PAGE
 from packages.shared.i18n.languages import Language
-from packages.ussd.render import render, render_screen
+from packages.ussd.render import ERROR_MARKER, render, render_screen
 
 pytestmark = pytest.mark.unit
 
@@ -168,6 +168,21 @@ def test_every_browse_crop_page_fits_its_ussd_budget(language: Language) -> None
             ("ussd_crop_menu", "ussd_rows"), language, {"rows": _browse_crop_rows(start, language)}
         )
         _fits(f"browse crop page at row {start + 1}", language, f"CON {body}")
+
+
+@pytest.mark.parametrize("language", list(Language))
+def test_the_refusal_screen_fits_its_ussd_budget(language: Language) -> None:
+    """A refusal is one short line, so the `❌ ` marker no longer pushes it over the budget.
+
+    The engine used to re-render the prompt under the reason, which made the longest refusal
+    (an Oromo harvest screen) about 130 characters and so truncated on the channel. D-22 cut
+    the reason and dropped the re-render, and this holds the result to the UCS-2 budget in all
+    three languages rather than recording it as an open finding.
+    """
+    reason = render("error_invalid_choice", language, {})
+    reply = f"CON {ERROR_MARKER}{reason}"
+    assert ERROR_MARKER in reply  # the marker the spec pins, kept
+    _fits("refusal", language, reply)
 
 
 def test_the_budgets_are_the_two_the_channel_uses() -> None:

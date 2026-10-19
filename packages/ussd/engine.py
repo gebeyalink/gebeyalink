@@ -288,11 +288,13 @@ async def _refuse(
             state.menu_stack = ["help"]
             await store.save(session_id, state)
             return _reply(nodes["help"], state)
-    node = nodes[state.menu_stack[-1]]
     reason = render(reason_id, state.lang, reason_context)
-    body = ERROR_MARKER + reason + "\n" + _screen(node, state)
+    # The reason line is the whole screen. A re-rendered prompt used to sit under it, but a menu
+    # plus a reason is past the channel's UCS-2 budget - a harvest refusal ran to ~130 characters
+    # - and the network truncated it on feature phones. D-22 chose the short line over the menu:
+    # a trader who presses the wrong key sees the reason, and repeated refusals hand them to Help.
     await store.save(session_id, state)
-    return f"CON {body}"
+    return f"CON {ERROR_MARKER}{reason}"
 
 
 def _screen(node: Node, state: SessionState) -> str:

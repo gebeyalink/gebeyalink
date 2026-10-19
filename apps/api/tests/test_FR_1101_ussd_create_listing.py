@@ -271,14 +271,14 @@ def test_the_wizard_refuses_an_amount_outside_its_range(
     texts = [reply.text for reply in replies]
 
     assert texts[3] == "CON Quantity in kg?"
-    assert texts[4] == "CON ❌ Please choose one of the options.\nQuantity in kg?"
-    assert texts[5] == "CON ❌ Please choose one of the options.\nQuantity in kg?"
+    assert texts[4] == "CON ❌ Invalid choice. Try again."
+    assert texts[5] == "CON ❌ Invalid choice. Try again."
     assert texts[6] == "CON Price per kg in ETB?"
-    assert texts[7] == "CON ❌ Please choose one of the options.\nPrice per kg in ETB?"
-    assert texts[8] == "CON ❌ Please enter a number.\nPrice per kg in ETB?"
-    assert texts[9] == "CON ❌ Please choose one of the options.\nPrice per kg in ETB?"
+    assert texts[7] == "CON ❌ Invalid choice. Try again."
+    assert texts[8] == "CON ❌ Please enter a number."
+    assert texts[9] == "CON ❌ Invalid choice. Try again."
     assert texts[10] == f"CON {HARVEST_MENU}"
-    assert texts[11] == f"CON ❌ Please choose one of the options.\n{HARVEST_MENU}"
+    assert texts[11] == "CON ❌ Invalid choice. Try again."
     assert texts[12] == f"CON {DELIVERY_MENU}"
     assert texts[13].startswith("END Listing ")
 
@@ -306,9 +306,9 @@ def test_seller_delivery_asks_a_fee_and_refuses_zero_and_nonsense(
     assert replies[-1].text == "CON Delivery fee per kg in ETB?"
 
     zero = ussd_session(client, "0", session_id="ses-crnl-fee", phone_number=SELLER)
-    assert zero.text == "CON ❌ Please choose one of the options.\nDelivery fee per kg in ETB?"
+    assert zero.text == "CON ❌ Invalid choice. Try again."
     junk = ussd_session(client, "abc", session_id="ses-crnl-fee", phone_number=SELLER)
-    assert junk.text == "CON ❌ Please enter a number.\nDelivery fee per kg in ETB?"
+    assert junk.text == "CON ❌ Please enter a number."
     paid = ussd_session(client, "50", session_id="ses-crnl-fee", phone_number=SELLER)
     assert paid.text.startswith("END Listing ")
 
@@ -405,9 +405,7 @@ def test_the_wizard_stops_before_it_begins_when_the_profile_has_no_region(
 
     signed_in(SELLER, language="en")
     replies = _walk(client, ussd_session, ["1", "1"], session_id="ses-crnl-noprofile")
-    assert replies[2].text == (
-        "CON ❌ Your profile is missing: region\n1. New listing\n2. Active (0)\n3. Paused (0)"
-    )
+    assert replies[2].text == "CON ❌ Your profile is missing: region"
 
 
 def test_the_wizard_names_a_missing_woreda(
