@@ -76,8 +76,7 @@ def test_a_registered_dial_walks_the_browse_path_and_places_an_offer(
     assert regions.text.endswith("\n13. Tigray")
 
     crops = ussd_session(client, "8", session_id=SESSION_ID, phone_number=BUYER)
-    assert crops.text.startswith("CON Choose a crop:\n1. Teff")
-    assert crops.text.endswith("\n19. Potato")
+    assert crops.text == "CON Choose a crop:\n1. Teff\n2. Wheat\n3. More"
 
     # One result page, with the seller's row and nothing else out of place.
     results = ussd_session(client, "1", session_id=SESSION_ID, phone_number=BUYER)

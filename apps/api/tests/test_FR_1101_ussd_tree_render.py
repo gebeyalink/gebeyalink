@@ -32,7 +32,7 @@ ERROR_REASON_IDS = {
 
 def test_the_tree_builds_every_node_of_the_five_paths() -> None:
     nodes = build_nodes()
-    assert len(nodes) == 39
+    assert len(nodes) == 40
     assert set(nodes) == {
         "language",
         "resume",
@@ -59,6 +59,7 @@ def test_the_tree_builds_every_node_of_the_five_paths() -> None:
         "counter_done",
         "browse_region_menu",
         "browse_crop_menu",
+        "browse_crop_menu_next",
         "browse_results",
         "browse_result_detail",
         "browse_results_next",
@@ -137,6 +138,23 @@ def test_the_crop_menu_routes_rows_and_the_more_line_apart() -> None:
     last = _state()
     last.context.update({"crop_ids": [19], "has_more_crops": False, "crop_more_key": "2"})
     assert node.next("1", last) == "ussd_new_listing_quantity"
+    assert node.next("2", last) is None
+
+
+def test_the_browse_crop_menu_routes_rows_and_the_more_line_apart() -> None:
+    """The buyer's crop screen pages the same way: a row browses, the "more" row turns a page."""
+    node = build_nodes()["browse_crop_menu"]
+    assert node.next is not None
+    page = _state()
+    page.context.update({"crop_ids": [1, 2], "has_more_crops": True, "crop_more_key": "3"})
+    assert node.next("1", page) == "browse_results"
+    assert node.next("2", page) == "browse_results"
+    assert node.next("3", page) == "browse_crop_menu_next"
+    assert node.next("4", page) is None
+    # On the last page there is no "more" row, so its number is just a refused choice.
+    last = _state()
+    last.context.update({"crop_ids": [19], "has_more_crops": False, "crop_more_key": "2"})
+    assert node.next("1", last) == "browse_results"
     assert node.next("2", last) is None
 
 

@@ -27,6 +27,24 @@ def _after_detail(text: str, session: SessionState) -> str | None:
     return None
 
 
+def _after_browse_crop(text: str, session: SessionState) -> str | None:
+    """A crop row opens the results; the "more" row turns to the next page of crops.
+
+    The rows are numbered within the page they are on, so the number the buyer presses is an
+    index into ``crop_ids`` and the page's last number is the more row. Both the row list and
+    the more key come from the same prefetch, so the move and the screen agree by construction.
+    """
+    value = text.strip()
+    if not value.isdigit():
+        return None
+    if value == session.context.get("crop_more_key") and session.context.get("has_more_crops"):
+        return "browse_crop_menu_next"
+    ids = session.context.get("crop_ids")
+    if isinstance(ids, list) and 1 <= int(value) <= len(ids):
+        return "browse_results"
+    return None
+
+
 NODES: dict[str, Node] = {
     "browse_region_menu": Node(
         id="browse_region_menu",
@@ -38,9 +56,15 @@ NODES: dict[str, Node] = {
     "browse_crop_menu": Node(
         id="browse_crop_menu",
         prompt=("ussd_crop_menu", "ussd_rows"),
-        next=index_choice("browse_results", "crop_ids"),
+        next=_after_browse_crop,
         prefetch=("browse_crops",),
-        action=Action("select_crop"),
+    ),
+    "browse_crop_menu_next": Node(
+        id="browse_crop_menu_next",
+        prompt=("ussd_crop_menu", "ussd_rows"),
+        next=_after_browse_crop,
+        prefetch=("browse_crops",),
+        arrival_action=Action("page_next_browse_crops"),
     ),
     "browse_results": Node(
         id="browse_results",
@@ -48,6 +72,7 @@ NODES: dict[str, Node] = {
         next=index_choice("browse_result_detail", "listing_ids"),
         prefetch=("browse_results",),
         action=Action("select_listing", indexed=True),
+        arrival_action=Action("select_crop"),
     ),
     "browse_result_detail": Node(
         id="browse_result_detail",

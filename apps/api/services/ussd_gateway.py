@@ -90,6 +90,12 @@ _NEW_LISTING_CROP_LIMIT = 20
 #: limit is the open question (O-2) that confirms or adjusts this number.
 _NEW_LISTING_CROP_PAGE = 2
 
+#: How many crop rows the buyer's browse menu shows per screen. The constraint is the channel's
+#: and not the list's, so it is the same one the wizard's crop menu is held to: a crop row can
+#: carry Ge'ez, which makes the screen UCS-2, and only two rows fit beside the heading and the
+#: "more" line. ``test_ussd_screen_length`` holds this page to that budget.
+_BROWSE_CROP_PAGE = 2
+
 #: What a one-line prompt can honestly mean by "quantity" and "price". A million kilos is the
 #: listing cap itself; a million birr a kilo is past any crop this market trades. The wizard
 #: refuses anything above these on the amount screen, where the trader can still correct it.
@@ -299,13 +305,31 @@ class UssdGateway:
         }
 
     async def _prefetch_browse_crops(self, state: SessionState) -> dict[str, Any]:
+        """One page of the buyer's crop menu, in the order the catalogue is published in.
+
+        The screen is the wizard's screen with a different list behind it, so it is held to the
+        same channel budget: a row can carry Ge'ez, and only two fit (see ``_BROWSE_CROP_PAGE``).
+        When more crops follow, the page ends with a numbered "more" row whose number the move
+        resolves; ``crop_ids`` carries only the crops this page shows, so a press is an index
+        into what is on the screen and a crop picked from a later page resolves to that page's
+        crop rather than to whatever sat at that number in the whole list.
+        """
+        offset = max(0, int(state.context.get("offset", 0)))
         crops = await self._crops.list_active_kg_crops()
-        lines: list[str] = []
-        crop_ids: list[int] = []
-        for index, crop in enumerate(crops, start=1):
-            lines.append(f"{index}. {_crop_name(crop, state.lang)}")
-            crop_ids.append(crop.id)
-        return {"rows": "\n".join(lines), "crop_ids": crop_ids}
+        page = list(crops[offset : offset + _BROWSE_CROP_PAGE])
+        lines = [
+            f"{index}. {_crop_name(crop, state.lang)}" for index, crop in enumerate(page, start=1)
+        ]
+        has_more = offset + _BROWSE_CROP_PAGE < len(crops)
+        more_key = len(page) + 1
+        if has_more:
+            lines.append(f"{more_key}. " + render("ussd_new_listing_more", state.lang, {}))
+        return {
+            "rows": "\n".join(lines),
+            "crop_ids": [crop.id for crop in page],
+            "has_more_crops": has_more,
+            "crop_more_key": str(more_key),
+        }
 
     async def _prefetch_browse_results(self, state: SessionState) -> dict[str, Any]:
         region_code = state.context.get("region_code")
@@ -592,6 +616,12 @@ class UssdGateway:
     ) -> dict[str, Any]:
         """Step the create-listing crop menu to its next page, one page at a time."""
         return {"offset": int(state.context.get("offset", 0)) + _NEW_LISTING_CROP_PAGE}
+
+    async def _op_page_next_browse_crops(
+        self, action: Action, text: str, state: SessionState, session_id: str
+    ) -> dict[str, Any]:
+        """Step the buyer's browse crop menu to its next page, one page at a time."""
+        return {"offset": int(state.context.get("offset", 0)) + _BROWSE_CROP_PAGE}
 
     async def _op_set_quantity(
         self, action: Action, text: str, state: SessionState, session_id: str

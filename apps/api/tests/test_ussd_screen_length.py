@@ -1,4 +1,4 @@
-"""FR-1101 (§14.3): every create-listing screen fits one USSD reply, in every language.
+"""FR-1101 (§14.3): every browse and create-listing screen fits one USSD reply, in each language.
 
 A USSD screen is one string. The channel carries a text, not a page that scrolls, so a screen
 that is too long is not wrapped — it is truncated by the network or refused, and the trader at
@@ -15,7 +15,8 @@ it is sent as UCS-2 and has the smaller one.
      80  UCS-2. Ge'ez, and the `❌` reason marker, are both outside GSM 7-bit, so a screen
          carrying either is UCS-2 and only fits the smaller budget. The crop list carries
          both crop names (one of them Amharic) in every language, which is why it is paginated
-         two rows at a time.
+         two rows at a time. The buyer's browse crop menu is the same screen behind the whole
+         catalogue, so it is paginated and measured here too.
 
 Both are the owner's figures rather than a citation: Africa's Talking's documented per-screen
 limit is not recorded in this repository, and when it lands (O-2) it becomes the source for
@@ -35,7 +36,7 @@ from __future__ import annotations
 
 import pytest
 
-from apps.api.services.ussd_gateway import _NEW_LISTING_CROP_PAGE
+from apps.api.services.ussd_gateway import _BROWSE_CROP_PAGE, _NEW_LISTING_CROP_PAGE
 from packages.shared.i18n.languages import Language
 from packages.ussd.render import render, render_screen
 
@@ -139,6 +140,34 @@ def test_every_crop_page_fits_its_ussd_budget(language: Language) -> None:
             ("ussd_crop_menu", "ussd_rows"), language, {"rows": _crop_rows(start, language)}
         )
         _fits(f"crop page at row {start + 1}", language, f"CON {body}")
+
+
+def _browse_crop_rows(start: int, language: Language) -> str:
+    """The rows the buyer's browse menu builds for the page at ``start``, "more" row and all.
+
+    A browse row carries the one name the trader's language asks for rather than both: Amharic
+    for an Amharic screen, and English for English and Oromo, whose catalogue rows carry no
+    Oromo name and so fall back to the English one.
+    """
+    window = CROPS[start : start + _BROWSE_CROP_PAGE]
+    name = 1 if language is Language.AM else 0
+    rows = [f"{index}. {pair[name]}" for index, pair in enumerate(window, start=1)]
+    if start + _BROWSE_CROP_PAGE < len(CROPS):
+        rows.append(f"{len(rows) + 1}. {render('ussd_new_listing_more', language, {})}")
+    return "\n".join(rows)
+
+
+@pytest.mark.parametrize("language", list(Language))
+def test_every_browse_crop_page_fits_its_ussd_budget(language: Language) -> None:
+    """The buyer's browse menu is the wizard's screen behind a different list, and fits too.
+
+    Same heading, same "more" line and the same Ge'ez constraint, so the same two rows a page.
+    """
+    for start in range(0, len(CROPS), _BROWSE_CROP_PAGE):
+        body = render_screen(
+            ("ussd_crop_menu", "ussd_rows"), language, {"rows": _browse_crop_rows(start, language)}
+        )
+        _fits(f"browse crop page at row {start + 1}", language, f"CON {body}")
 
 
 def test_the_budgets_are_the_two_the_channel_uses() -> None:
