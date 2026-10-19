@@ -166,6 +166,7 @@ def test_post_creates_a_listing_from_one_message(
     rows = stored_listings()
     assert len(rows) == 1
     assert reply == f"Your listing is live. Code {rows[0]['short_code']}"
+    assert rows[0]["source"] == "SMS"
     assert rows[0]["crop_id"] == 1
     assert rows[0]["quantity_kg"] == 2000
     assert rows[0]["unit_price_santim"] == 3250

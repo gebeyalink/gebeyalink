@@ -23,6 +23,7 @@ from uuid import UUID
 from apps.api.core.config import Settings
 from apps.api.models.crop import Crop
 from apps.api.models.listing import Listing as ListingRow
+from apps.api.models.listing import ListingSource
 from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
@@ -166,7 +167,9 @@ class SmsCommandGateway:
         return await self._order_view(_as_uuid(order_id), viewer_id)
 
     async def create_listing(self, seller: Trader, body: dict[str, Any], key: str) -> str:
-        response = await self._listing_service.create(_as_uuid(seller.id), body, key=key)
+        response = await self._listing_service.create(
+            _as_uuid(seller.id), body, key=key, source=ListingSource.SMS
+        )
         return response.short_code
 
     async def place_offer(
