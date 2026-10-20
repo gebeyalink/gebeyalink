@@ -54,6 +54,16 @@ class Node:
     resumes_draft: bool = False
     allows_back: bool = True
     error_reason_id: str | None = None
+    draft_fields: tuple[str, ...] = ()
+    """The context keys a flow has collected, checkpointed on every landing (FR-2501).
+
+    A node that names fields is a step of a resumable flow: the engine writes what the flow
+    has gathered so far under the dialling number, so a call the network drops mid-wizard can
+    be walked on from this very screen rather than from the top. The same fields on a
+    *terminal* node mean the flow has finished — the publish screen, the placed-offer screen —
+    so landing there deletes the checkpoint instead of refreshing it: a finished flow owes
+    nothing to resume, and a stale one must never be replayed into a second listing.
+    """
 
 
 def choices(mapping: Mapping[str, str]) -> NextFn:

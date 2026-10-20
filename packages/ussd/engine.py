@@ -192,8 +192,9 @@ async def _continue(
         raise UnknownNodeError(target)
     target_node = nodes[target]
 
+    resumed = False
     if node.resumes_draft:
-        await _apply_resume(store, state, phone_e164, text)
+        resumed = await _apply_resume(store, state, phone_e164, text)
 
     if target_node.requires_account and state.user_id is None:
         await store.save(session_id, state)
@@ -211,7 +212,12 @@ async def _continue(
                 await store.save_language(phone_e164, state.lang)
         state.context.update(updates)
 
-    if target_node.arrival_action is not None:
+    # An arrival action exists to commit numbers entered on the screen *before* the move, and
+    # a resume landing has no screen before it: the press that walked out of the prompt is
+    # "1", not a price and not a crop row, and firing the action on it would overwrite the
+    # very values the checkpoint restored. The draft is the answer on this landing, so the
+    # arrival action is skipped — prefetch is not, because a menu still has to be rebuilt.
+    if target_node.arrival_action is not None and not resumed:
         try:
             arrival = await gateway.apply(target_node.arrival_action, text, state, session_id)
         except ApiError as error:
@@ -227,21 +233,60 @@ async def _continue(
 
     stack.append(target)
     state.context["invalid_tries"] = 0
+    await _checkpoint(store, phone_e164, target_node, state)
     await store.save(session_id, state)
     return _reply(target_node, state)
 
 
+async def _checkpoint(
+    store: SessionStore, phone_e164: str, node: Node, state: SessionState
+) -> None:
+    """FR-2501's write: what the flow has gathered, under the number that dialled.
+
+    One key per phone holds one draft, whichever flow wrote it — the step's node id says
+    which flow it is, so a resume lands in the right one, and starting any flow overwrites
+    whatever was there before. That is deliberate: a trader gets one unfinished thing at a
+    time, and the flow they started last is the one they meant.
+
+    A terminal node that names fields is the flow's last screen, so the trader has finished
+    it and the checkpoint is deleted rather than refreshed: a completed listing or a placed
+    offer owes nothing to resume, and a stale one replayed from a later dial would walk into
+    a second publish under that dial's fresh idempotency key.
+    """
+    if not node.draft_fields:
+        return
+    if node.terminal:
+        await store.delete_draft(phone_e164)
+        return
+    await store.save_draft(
+        phone_e164,
+        {
+            "_draft_step": node.id,
+            "_draft_body": {
+                key: state.context[key] for key in node.draft_fields if key in state.context
+            },
+        },
+    )
+
+
 async def _apply_resume(
     store: SessionStore, state: SessionState, phone_e164: str, text: str
-) -> None:
+) -> bool:
+    """Carry the checkpoint into the session, or throw it away — the trader's call.
+
+    The answer says whether the move landing here is a resume, which is what tells the
+    engine that the keypress was a choice about the draft rather than a value for the
+    screen it opens.
+    """
     if text == "1":
         body = state.context.get("_draft_body")
         if isinstance(body, dict):
             state.context.update(body)
-    elif text == "2":
-        await store.delete_draft(phone_e164)
-        for key in [key for key in state.context if key.startswith("_draft")]:
-            state.context.pop(key, None)
+        return True
+    await store.delete_draft(phone_e164)
+    for key in [key for key in state.context if key.startswith("_draft")]:
+        state.context.pop(key, None)
+    return False
 
 
 async def _refuse_api(

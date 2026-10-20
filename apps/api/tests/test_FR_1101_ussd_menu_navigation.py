@@ -221,8 +221,8 @@ async def test_a_resumed_draft_leads_into_the_saved_step(
     store = SessionStore(raw)
     reply = await _dial(nodes=engine, store=store, gateway=FakeGateway())
     assert reply.startswith("CON ")
-    assert "1. Resume previous listing?" in reply
-    assert "2. Main Menu" in reply
+    assert "1. Continue where you left off" in reply
+    assert "2. Start over" in reply
 
     reply = await _dial(nodes=engine, store=store, gateway=FakeGateway(), text="1")
     assert reply.startswith("CON ")
@@ -291,8 +291,15 @@ async def test_a_terminal_screen_simply_rerenders_on_a_replayed_press(
     reply = await _dial(nodes=engine, store=store, gateway=gateway, text="1")
     assert reply.startswith("END ")
     assert "K7T2QX" in reply
+    # Landing on that last screen *through a resume* fires nothing either. The press was "1",
+    # a choice about the checkpoint, not an answer the publish screen was waiting for; the
+    # arrival action exists to commit numbers typed on the screen above, and a fresh dial
+    # typed none. FR-2501 deletes a completed flow's checkpoint when it completes, so this
+    # draft shape is one a running system no longer writes — and if one ever arrives, it is
+    # owed nothing: firing publish here would walk a finished listing into a second one under
+    # the re-dial's fresh idempotency key.
     outstanding = len(gateway.applied)
-    assert outstanding == 1
+    assert outstanding == 0
     reply = await _dial(nodes=engine, store=store, gateway=gateway, text="1")
     assert reply.startswith("END ")
     assert "K7T2QX" in reply

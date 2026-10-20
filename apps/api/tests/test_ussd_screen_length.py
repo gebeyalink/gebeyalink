@@ -116,6 +116,7 @@ WIZARD_SCREENS: tuple[tuple[str, tuple[str, ...], dict[str, str]], ...] = (
     ("delivery", ("ussd_new_listing_delivery",), {}),
     ("delivery fee", ("ussd_new_listing_delivery_fee",), {}),
     ("published", ("ussd_new_listing_published",), {"code": "K7T2QX"}),
+    ("resume", ("ussd_greeting", "ussd_resume_prompt"), {}),
 )
 
 

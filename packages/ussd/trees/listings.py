@@ -18,6 +18,25 @@ from packages.ussd.trees.model import (
     positive_amount,
 )
 
+#: What the create-listing screens have gathered, and what a resume has to put back.
+#:
+#: The publish op reads exactly these keys out of the context, so a checkpoint holding them is
+#: a wizard that can be walked to the end from any screen it stopped on. ``offset`` rides along
+#: because it is not a listing field but is where the crop menu was paging from, and a trader
+#: who dropped on the second page should not be handed the first again.
+NEW_LISTING_DRAFT_FIELDS = (
+    "crop_id",
+    "quantity_kg",
+    "unit_price_santim",
+    "price_etb",
+    "harvest_date",
+    "delivery_options",
+    "delivery_fee_santim",
+    "region_code",
+    "woreda_id",
+    "offset",
+)
+
 
 def _after_crop(text: str, session: SessionState) -> str | None:
     """A crop row opens the amount screen; the "more" row turns to the next page of crops.
@@ -54,6 +73,7 @@ NODES: dict[str, Node] = {
         requires_account=True,
         prefetch=("new_listing_crops",),
         arrival_action=Action("require_listing_profile"),
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_crop_next": Node(
         id="ussd_new_listing_crop_next",
@@ -62,6 +82,7 @@ NODES: dict[str, Node] = {
         requires_account=True,
         prefetch=("new_listing_crops",),
         arrival_action=Action("page_next_crops"),
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_quantity": Node(
         id="ussd_new_listing_quantity",
@@ -71,6 +92,7 @@ NODES: dict[str, Node] = {
         action=Action("set_listing_quantity"),
         arrival_action=Action("select_crop"),
         allows_back=False,
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_price": Node(
         id="ussd_new_listing_price",
@@ -79,6 +101,7 @@ NODES: dict[str, Node] = {
         error_reason_id="error_digits",
         action=Action("set_listing_price"),
         allows_back=False,
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_harvest": Node(
         id="ussd_new_listing_harvest",
@@ -93,6 +116,7 @@ NODES: dict[str, Node] = {
         ),
         error_reason_id="error_invalid_choice",
         action=Action("set_listing_harvest"),
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_delivery": Node(
         id="ussd_new_listing_delivery",
@@ -106,6 +130,7 @@ NODES: dict[str, Node] = {
         ),
         error_reason_id="error_invalid_choice",
         action=Action("set_listing_delivery"),
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_delivery_fee": Node(
         id="ussd_new_listing_delivery_fee",
@@ -114,12 +139,14 @@ NODES: dict[str, Node] = {
         error_reason_id="error_digits",
         action=Action("set_listing_delivery_fee"),
         allows_back=False,
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "ussd_new_listing_published": Node(
         id="ussd_new_listing_published",
         prompt=("ussd_new_listing_published",),
         terminal=True,
         arrival_action=Action("publish_listing"),
+        draft_fields=NEW_LISTING_DRAFT_FIELDS,
     ),
     "active_listings": Node(
         id="active_listings",

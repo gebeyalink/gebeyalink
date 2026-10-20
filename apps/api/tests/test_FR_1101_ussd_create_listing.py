@@ -494,3 +494,50 @@ def test_a_tier_zero_seller_may_publish_from_ussd(
     )
     assert replies[-1].text.startswith("END Listing ")
     assert len(stored_listings()) == 1
+
+
+def test_a_dropped_wizard_resumes_on_the_next_dial_and_publishes_once(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    ussd_session: Callable[..., httpx.Response],
+    stored_listings: Callable[..., list[dict[str, object]]],
+) -> None:
+    """FR-2501 across a real session boundary: the drop, the offer, the resume, the publish.
+
+    Three dials on one number, each with its own session id the way the network hands them
+    out after a timeout. The first walks to the price screen and is abandoned there — a
+    timeout sends no last call, so nothing ends it. The second dial must find the offer
+    before the main menu, and finishing the wizard on that session must carry the crop, the
+    kilos and the profile gathered in the first one to the row PostgreSQL holds. The third
+    dial is the promise's other half: a completed publish owes nothing to resume, so it goes
+    straight to the menu instead of offering the finished wizard again.
+    """
+
+    _ready(client, signed_in)
+
+    dropped = _walk(client, ussd_session, ["1", "1", "1", "500"], session_id="ses-crnl-drop")
+    assert dropped[-1].text == "CON Price per kg in ETB?"
+
+    offer = ussd_session(client, "", session_id="ses-crnl-resume", phone_number=SELLER)
+    assert "1. Continue where you left off" in offer.text
+    assert "2. Start over" in offer.text
+    landed = ussd_session(client, "1", session_id="ses-crnl-resume", phone_number=SELLER)
+    assert landed.text == "CON Price per kg in ETB?"
+
+    for key in ["2500", "1", "1"]:
+        reply = ussd_session(client, key, session_id="ses-crnl-resume", phone_number=SELLER)
+    assert reply.text.startswith("END Listing ")
+    code = _code(reply)
+
+    rows = stored_listings()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["crop_id"] == 1
+    assert row["quantity_kg"] == 500
+    assert row["unit_price_santim"] == 250_000
+    assert row["region_code"] == "OR"
+    assert row["woreda_id"] == 1
+    assert row["short_code"] == code
+
+    after = ussd_session(client, "", session_id="ses-crnl-after", phone_number=SELLER)
+    assert after.text == f"CON {MAIN_MENU}"

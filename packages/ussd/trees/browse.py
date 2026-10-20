@@ -17,6 +17,17 @@ from packages.ussd.trees.model import (
     positive_amount,
 )
 
+#: What the offer flow has gathered, and what a resume has to put back. The listing the bid is
+#: on was chosen a screen before the flow's own first step, so it belongs to the checkpoint
+#: too: a resume that restored the numbers but not the listing would bid on nothing.
+OFFER_DRAFT_FIELDS = (
+    "selected_listing_id",
+    "selected_listing_code",
+    "quantity_kg",
+    "price_santim",
+    "price",
+)
+
 
 def _after_detail(text: str, session: SessionState) -> str | None:
     value = text.strip()
@@ -93,6 +104,7 @@ NODES: dict[str, Node] = {
         next=positive_amount("offer_price"),
         requires_account=True,
         error_reason_id="error_digits",
+        draft_fields=OFFER_DRAFT_FIELDS,
     ),
     "offer_price": Node(
         id="offer_price",
@@ -100,17 +112,20 @@ NODES: dict[str, Node] = {
         next=positive_amount("offer_confirm"),
         arrival_action=Action("set_quantity"),
         error_reason_id="error_digits",
+        draft_fields=OFFER_DRAFT_FIELDS,
     ),
     "offer_confirm": Node(
         id="offer_confirm",
         prompt=("ussd_offer_confirm",),
         next=choices({"1": "offer_done"}),
         arrival_action=Action("set_price"),
+        draft_fields=OFFER_DRAFT_FIELDS,
     ),
     "offer_done": Node(
         id="offer_done",
         prompt=("ussd_offer_placed",),
         terminal=True,
         arrival_action=Action("offer_place", entity_from="selected_listing_id"),
+        draft_fields=OFFER_DRAFT_FIELDS,
     ),
 }

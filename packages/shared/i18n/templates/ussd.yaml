@@ -49,25 +49,27 @@
       2. English
       3. Afaan Oromoo
 
+# FR-2501's re-dial prompt, with the SPEC's own wording replaced. §14.5 prescribes
+# "1. Resume previous listing? 2. Main Menu", but the checkpoint covers the offer flow as
+# well as the listing wizard and "previous listing" would misdescribe a half-made bid; the
+# rows also say "start over", which is what the second choice now does — it discards the
+# checkpoint rather than merely stepping past it. Every word here is ours, so every variant
+# is unreviewed and O-3 reads all three.
 - id: ussd_resume_prompt
   channel: ussd
   priority: Q2
-  review_status: spec_supplied
-  variant_review_status:
-    am: unreviewed
-    om: unreviewed
-    en: spec_supplied
+  review_status: unreviewed
   placeholders: []
   variants:
     am: |-
-      1. ያለፈውን ማስታወቂያ ይቀጥሉ?
-      2. ዋና ምናሌ
+      1. ከተቋረጠበት ቦታ ይቀጥሉ
+      2. እንደገና ይጀምሩ
     om: |-
-      1. Beeksisa duraanii itti fufi?
-      2. Baafata Guddaa
+      1. Itti fufi asuma
+      2. Ammas jalqabi
     en: |-
-      1. Resume previous listing?
-      2. Main Menu
+      1. Continue where you left off
+      2. Start over
 
 - id: ussd_main_menu
   channel: ussd
