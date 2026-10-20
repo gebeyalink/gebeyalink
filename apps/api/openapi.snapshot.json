@@ -262,6 +262,114 @@
         "title": "HealthStatus",
         "type": "object"
       },
+      "KycCaseResponse": {
+        "additionalProperties": false,
+        "description": "A submitted case, as the trader who sent it may read it back.\n\nThe receipt rather than the case: enough to quote in a support message and to poll the\noutcome by, and no copy of the evidence the sender already holds.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "doc_type": {
+            "$ref": "#/components/schemas/KycDocType"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/KycStatus"
+          },
+          "tier_requested": {
+            "$ref": "#/components/schemas/KycTier"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "tier_requested",
+          "doc_type",
+          "created_at"
+        ],
+        "title": "KycCaseResponse",
+        "type": "object"
+      },
+      "KycDocType": {
+        "description": "The identity documents a case may cite.\n\n§11.1's list, unchanged. ``FAYDA`` is the national ID and the usual path to ``TIER_1``;\nthe others are the accepted alternatives, and ``BUSINESS_LICENSE`` is the one a business\naccount submits — the submission that also carries a tax number.",
+        "enum": [
+          "FAYDA",
+          "PASSPORT",
+          "DRIVERS_LICENSE",
+          "BUSINESS_LICENSE"
+        ],
+        "title": "KycDocType",
+        "type": "string"
+      },
+      "KycStatus": {
+        "description": "Where a case sits in its own life.\n\n``PENDING`` is the state every submission lands in and the only one this slice writes.\n``APPROVED`` and ``REJECTED`` are the two a verifier's decision moves it to; the enum\ncarries them so the column and the reader agree on the whole vocabulary, even though the\nproducers for those two are the admin queue's.",
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "REJECTED"
+        ],
+        "title": "KycStatus",
+        "type": "string"
+      },
+      "KycSubmissionBody": {
+        "additionalProperties": false,
+        "description": "A trader asking to be moved to a higher tier, with the document that justifies it.",
+        "properties": {
+          "doc_images": {
+            "description": "Where the document images are hosted; at most three.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 0,
+            "title": "Doc Images",
+            "type": "array"
+          },
+          "doc_type": {
+            "$ref": "#/components/schemas/KycDocType",
+            "description": "Which identity document is being submitted."
+          },
+          "tax_identification_number": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "TIN for a business account; written to the profile with the case.",
+            "title": "Tax Identification Number"
+          },
+          "tier_requested": {
+            "$ref": "#/components/schemas/KycTier",
+            "description": "The tier being asked for; must be higher than the one the account holds."
+          }
+        },
+        "required": [
+          "tier_requested",
+          "doc_type",
+          "doc_images"
+        ],
+        "title": "KycSubmissionBody",
+        "type": "object"
+      },
+      "KycTier": {
+        "description": "The tiers a trader may ask to be moved to.\n\n§6's ladder has three rungs; ``TIER_0`` is where every account starts and is not something\na case asks *for*, so the requestable set is the two above it. A submission for the tier\nthe account already holds is refused by the service rather than stored here, because the\nvocabulary and the rule are different things: this names what may be asked for, the\nservice decides what a given asker may request.",
+        "enum": [
+          "TIER_1",
+          "TIER_2"
+        ],
+        "title": "KycTier",
+        "type": "string"
+      },
       "Language": {
         "description": "Languages a user may choose, stored per account.",
         "enum": [
@@ -3242,6 +3350,66 @@
           }
         },
         "summary": "Update Own Profile",
+        "tags": [
+          "Profile"
+        ]
+      }
+    },
+    "/v1/me/kyc": {
+      "post": {
+        "description": "Open a tier-upgrade case for the caller.\n\nAny authenticated account may ask to be verified; the tier is not moved here. The case\nwaits for a verifier's decision, which is the admin queue's and lands in a later slice, so\nwhat a submission returns is the waiting case's receipt rather than a new tier.",
+        "operationId": "submit_kyc_case_v1_me_kyc_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycSubmissionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycCaseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Kyc Case",
         "tags": [
           "Profile"
         ]

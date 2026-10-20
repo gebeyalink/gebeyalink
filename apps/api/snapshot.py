@@ -39,7 +39,7 @@ from apps.api.main import create_app
 #: The baseline-method hash: the SHA-256 of the compact, key-sorted OpenAPI document under an
 #: inert settings profile, recorded when the pin landed. It proves the schema did not change;
 #: it is not a value CI checks.
-BASELINE_METHOD_HASH = "de8d68d2542f079fdeb9917b90bf83e7bb2f55a33fe1a7632f4a916a938ecd13"
+BASELINE_METHOD_HASH = "ddbb82c01bb69d05bcde3b1c3da41520b44bea12987ebef5c884ec1683241fb3"
 
 
 def _inert_settings() -> Settings:

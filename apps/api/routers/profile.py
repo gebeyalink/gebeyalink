@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from apps.api.dependencies import AccessTokenDep, ProfileServiceDep
+from apps.api.dependencies import AccessTokenDep, KycServiceDep, ProfileServiceDep
 from apps.api.models.profile import Profile
 from apps.api.models.user import User
+from apps.api.schemas.kyc import KycCaseResponse, KycSubmissionBody
 from apps.api.schemas.profile import ProfileResponse, ProfileUpdateBody
+from apps.api.services.kyc_service import Submission
 from apps.api.services.profile_service import ProfileChanges
 
 router = APIRouter(prefix="", tags=["Profile"])
@@ -88,3 +90,31 @@ async def update_own_profile(
     )
     user, profile = await profiles.update(caller.user_id, changes)
     return _as_response(user, profile)
+
+
+@router.post(
+    "/me/kyc",
+    response_model=KycCaseResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_kyc_case(
+    body: KycSubmissionBody,
+    caller: AccessTokenDep,
+    kyc: KycServiceDep,
+) -> KycCaseResponse:
+    """Open a tier-upgrade case for the caller.
+
+    Any authenticated account may ask to be verified; the tier is not moved here. The case
+    waits for a verifier's decision, which is the admin queue's and lands in a later slice, so
+    what a submission returns is the waiting case's receipt rather than a new tier.
+    """
+    case = await kyc.submit(
+        caller.user_id,
+        Submission(
+            tier_requested=body.tier_requested,
+            doc_type=body.doc_type,
+            doc_images=body.doc_images,
+            tax_identification_number=body.tax_identification_number,
+        ),
+    )
+    return KycCaseResponse.model_validate(case)

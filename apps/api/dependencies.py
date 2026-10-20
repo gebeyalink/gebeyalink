@@ -28,6 +28,7 @@ from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.kyc_case_repository import KycCaseRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
@@ -43,6 +44,7 @@ from apps.api.repositories.verification_code_repository import VerificationCodeR
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.services.agent_service import AgentService
 from apps.api.services.auth_service import AuthService
+from apps.api.services.kyc_service import KycService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.offer_service import OfferService
 from apps.api.services.order_service import OrderService
@@ -171,6 +173,23 @@ def get_profile_service(db_session: db_session_dep) -> ProfileService:
 DbSessionDep = db_session_dep
 AccessTokenDep = Annotated[VerifiedToken, Depends(require_access_token)]
 ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
+
+
+def get_kyc_service(db_session: db_session_dep) -> KycService:
+    """Opening a tier-upgrade case for the signed-in account.
+
+    One session for the case and the profile write, on the same reasoning the profile service
+    shares its own: a submission that carries a tax number writes the case and the number
+    together, and separate sessions would let one land without the other.
+    """
+    return KycService(
+        users=UserRepository(db_session),
+        cases=KycCaseRepository(db_session),
+        profiles=ProfileRepository(db_session),
+    )
+
+
+KycServiceDep = Annotated[KycService, Depends(get_kyc_service)]
 
 
 def get_listing_service(db_session: db_session_dep) -> ListingService:

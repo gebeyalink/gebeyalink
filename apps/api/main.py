@@ -24,6 +24,7 @@ from apps.api.db.session import dispose_engine, init_engine
 # by the agent routes, but their models are loaded explicitly as well so the registry is the
 # same set whichever route is hit first.
 from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
+from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
 from apps.api.models import user_role as _user_role_model  # noqa: F401  (registers it)
 from apps.api.providers.sms import build_sms_provider, log_recording_provider_startup
