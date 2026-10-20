@@ -648,6 +648,40 @@ def test_an_agent_cannot_change_payouts_or_otp_settings(
     assert "settings" not in joined
 
 
+def test_an_agents_owner_scoped_write_lands_on_the_agent_not_the_farmer(
+    cod_client: TestClient,
+    agent_headers: dict[str, str],
+    code_for: Callable[[str], str],
+    sql: Callable[..., list[dict[str, object]]],
+) -> None:
+    """FR-1707: an existing owner-scoped route acts on the caller's account and only it.
+
+    ``PATCH /v1/me`` is the owner-scoped write that exists today, so it is the one the
+    boundary is proved on: the agent calls it with the agent's own token, and the change lands
+    on the *agent's* profile. There is no parameter by which the call can be aimed at the
+    farmer, so the farmer's row is read back and found untouched. This is the boundary as a
+    working door that opens the caller's own room — the positive complement to the absence
+    checks above, and the reason FR-1707's first clause needs no new code.
+    """
+    confirmed = _onboard(cod_client, agent_headers, code_for, FARMER_PHONE)
+    farmer_id = confirmed.json()["id"]
+
+    changed = cod_client.patch(
+        "/v1/me",
+        json={"display_name": "Agent's own name"},
+        headers=agent_headers,
+    )
+
+    assert changed.status_code == 200, changed.text
+    # The response is the agent's own account, named by the agent's own id.
+    agent_id = sql("SELECT id FROM users WHERE phone_e164 = %s", (AGENT_PHONE,))[0]["id"]
+    assert changed.json()["id"] == str(agent_id)
+    assert changed.json()["display_name"] == "Agent's own name"
+    # The farmer's profile was never named and never moved.
+    farmer_profiles = sql("SELECT display_name FROM profiles WHERE user_id = %s", (farmer_id,))
+    assert farmer_profiles == []
+
+
 def test_an_agent_cannot_accept_an_offer_as_the_farmer(
     cod_client: TestClient,
     agent_headers: dict[str, str],
