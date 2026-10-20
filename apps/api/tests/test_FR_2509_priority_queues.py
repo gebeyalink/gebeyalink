@@ -232,6 +232,7 @@ def test_the_classified_lanes_match_the_product_rules() -> None:
             "price_unavailable",
             "post_success",
             "post_failure",
+            "listing_created",
             "offer_placed",
             "cancel_confirmed",
             "status",

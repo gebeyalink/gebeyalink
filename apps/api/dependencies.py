@@ -171,17 +171,19 @@ ProfileServiceDep = Annotated[ProfileService, Depends(get_profile_service)]
 
 
 def get_listing_service(db_session: db_session_dep) -> ListingService:
-    """Postings, their lifecycle, and the price index they are judged against.
+    """Postings, their lifecycle, and the message a USSD publish owes its seller.
 
-    One session for all three repositories, so that a listing, the index row read while creating
-    it and the reservations that decide whether it may be edited are all seen in the same
-    transaction as the listing itself.
+    One session for all five repositories, so that a listing, the index row read while creating
+    it, the reservations that decide whether it may be edited and the confirmation AC-3.1 owes
+    are all seen in the same transaction as the listing itself.
     """
     return ListingService(
         listings=ListingRepository(db_session),
         price_indices=PriceIndexRepository(db_session),
         reservations=ReservationRepository(db_session),
         idempotency=IdempotencyStore(get_client()),
+        users=UserRepository(db_session),
+        notifications=NotificationRepository(db_session),
     )
 
 

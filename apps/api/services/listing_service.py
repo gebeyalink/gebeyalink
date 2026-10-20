@@ -53,12 +53,18 @@ from apps.api.models.listing import (
     ListingSource,
     ListingStatus,
 )
+from apps.api.models.notification import Notification, NotificationChannel, NotificationStatus
 from apps.api.models.price_index import PriceIndex
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
+from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.user_repository import UserRepository
 from apps.api.schemas.listing import ListingResponse, PhotoResponse
 from packages.shared.errors import ApiError, ErrorCode
+from packages.shared.i18n.languages import Language
+from packages.shared.i18n.templates import load_templates
+from packages.shared.messaging.queues import SmsPriority, priority_rank
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -208,6 +214,19 @@ def is_price_outlier(unit_price_santim: int, average_santim: int | None) -> bool
     return price < average * OUTLIER_LOWER_MULTIPLE or price > average * OUTLIER_UPPER_MULTIPLE
 
 
+def _render_listing_created(language: Language, *, code: str) -> tuple[str, str]:
+    """The confirmation AC-3.1 owes a seller, and the language it was written in.
+
+    Rendered from the registry like every other message, with the same fallback: a language
+    the template does not carry reads the English one. The second value is that language
+    rather than the one asked for, because the row stores the language of the words it holds,
+    and those are two different questions when the fallback fires.
+    """
+    template = load_templates()["listing_created"]
+    rendered_language = language.value if language.value in template.variants else Language.EN.value
+    return template.variants[rendered_language].format(code=code), rendered_language
+
+
 @dataclass(frozen=True, slots=True)
 class ListingValues:
     """Every field a listing's shape is judged by, at one moment.
@@ -259,11 +278,15 @@ class ListingService:
         price_indices: PriceIndexRepository,
         reservations: ReservationRepository,
         idempotency: IdempotencyStore,
+        users: UserRepository,
+        notifications: NotificationRepository,
     ) -> None:
         self._listings = listings
         self._price_indices = price_indices
         self._reservations = reservations
         self._idempotency = idempotency
+        self._users = users
+        self._notifications = notifications
 
     async def create(
         self,
@@ -322,9 +345,48 @@ class ListingService:
         transition_listing_status(listing, ListingStatus.ACTIVE)
         await self._listings.add(listing)
         photos = await self._listings.replace_photos(listing.id, list(values.photos))
+        # AC-3.1's confirmation, inside the listing's own transaction: the message the seller
+        # is owed is written with the listing, so a publish that cannot announce itself has not
+        # half-happened. Only the USSD door queues it — the SMS command answers its own POST
+        # with `post_success`, and no acceptance criterion asks to text an app seller.
+        if source is ListingSource.USSD:
+            await self._queue_listing_created(seller_id, listing)
         await self._listings.commit()
         return to_response(
             LoadedListing(listing=listing, photos=photos), available_kg=values.quantity_kg
+        )
+
+    async def _queue_listing_created(self, seller_id: UUID, listing: Listing) -> None:
+        """The queued row a USSD publish owes its seller, and the words that row carries.
+
+        Queued rather than sent, the same way every other trader-facing message is: the
+        drain is what carries it, so a seller whose phone is unreachable has a row waiting
+        instead of a confirmation nobody received. The text is rendered here, in the seller's
+        own language, because this transaction is the one that already holds the listing it
+        describes.
+
+        The dedup key names the listing, not the attempt. A gateway retry of the wizard's
+        final screen replays the creation under the same idempotency key and so re-enters
+        here with the same listing; a second confirmation for the same listing is not a
+        second thing worth saying.
+        """
+        seller = await self._users.find_by_id(seller_id)
+        if seller is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "listing_seller_missing"})
+        rendered_text, rendered_language = _render_listing_created(
+            seller.language, code=listing.short_code
+        )
+        await self._notifications.add(
+            Notification(
+                user_id=seller_id,
+                channel=NotificationChannel.SMS,
+                template_id="listing_created",
+                priority=priority_rank(SmsPriority.Q2),
+                language=rendered_language,
+                rendered_text=rendered_text,
+                status=NotificationStatus.QUEUED,
+                dedup_key=f"listing_created:{listing.id}",
+            )
         )
 
     async def read(self, listing_id: UUID) -> ListingResponse:

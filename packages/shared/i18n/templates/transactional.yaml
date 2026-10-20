@@ -1,4 +1,4 @@
-# Offer news a trader acted on or is waiting on.
+# Offer news a trader acted on or is waiting on, and the confirmation a publish owes.
 
 - id: offer_received
   channel: sms
@@ -29,3 +29,16 @@
     am: "ቅናሽዎ ውድቅ ሆኗል - {crop}"
     om: "Beezniiteen kee haqamte - {crop}"
     en: "Your offer for {crop} is no longer available"
+
+# AC-3.1's confirmation, sent to a seller whose listing was posted from the USSD wizard. It
+# carries the short code the acceptance criterion names; the copy is this team's own (the
+# specification supplies nothing verbatim here), so it is unreviewed and O-3 reads it.
+- id: listing_created
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [code]
+  variants:
+    am: "ማስታወቂያዎ በቀጥታ ተለጥፏል። ገዢዎች አሁን ያገኙታሉ። ኮድ {code}"
+    om: "Beeksisni kee tasgazeera. Miisyyooni amma argatu. Koodii {code}"
+    en: "Your listing is live. Buyers can find it now. Code {code}"
