@@ -14,6 +14,9 @@ dated revocation. An account that never held the role is likewise a no-op, not a
 
 Like approval, this is a pilot workaround for the admin console (FR-1301-1302), and the FR-1203
 audit entry the console would write is deferred with §11.1's ``audit_log`` table.
+
+Bootstrap-only; superseded by POST /v1/admin/agents/approve and /revoke, which audit identically.
+Use the CLI only if staff auth is unavailable.
 """
 
 from __future__ import annotations

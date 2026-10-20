@@ -11,6 +11,7 @@ what was sent, and a fresh instance per request would remember nothing.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated, cast
 
@@ -23,10 +24,13 @@ from apps.api.core.idempotency import IdempotencyStore
 from apps.api.core.redis_client import get_client
 from apps.api.core.security import ACCESS_TOKEN_KIND, TokenError, TokenService, VerifiedToken
 from apps.api.core.short_codes import CrockfordOrderCode
+from apps.api.core.staff_secrets import StaffSecretCipher
 from apps.api.db.session import get_session_factory
+from apps.api.models.staff_user import StaffRole, StaffUser
 from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
+from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
 from apps.api.repositories.listing_repository import ListingRepository
@@ -39,10 +43,18 @@ from apps.api.repositories.region_repository import RegionRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
 from apps.api.repositories.search_repository import SearchRepository
 from apps.api.repositories.session_repository import SessionRepository
+from apps.api.repositories.staff_session_repository import StaffSessionRepository
+from apps.api.repositories.staff_user_repository import StaffUserRepository
 from apps.api.repositories.user_repository import UserRepository
+from apps.api.repositories.user_role_repository import UserRoleRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
-from apps.api.services.agent_service import AgentService
+from apps.api.services.admin_service import (
+    SCOPE_FULL,
+    AdminService,
+    StaffAuthService,
+)
+from apps.api.services.agent_service import AgentRoleAdmin, AgentService
 from apps.api.services.auth_service import AuthService
 from apps.api.services.kyc_service import KycService
 from apps.api.services.listing_service import ListingService
@@ -235,6 +247,7 @@ def get_agent_service(
         profiles=ProfileRepository(db_session),
         otp=get_otp_service(get_client(), settings, sms),
         listings=get_listing_service(db_session),
+        audit=AuditLogRepository(db_session),
         settings=settings,
     )
 
@@ -402,3 +415,144 @@ def get_ussd_engine() -> dict[str, Node]:
 
 
 ussd_engine_dep = Annotated[dict[str, Node], Depends(get_ussd_engine)]
+
+
+# -- staff -------------------------------------------------------------------
+
+
+def _secret_cipher(settings: Settings) -> StaffSecretCipher:
+    """The Fernet cipher the staff TOTP secrets are encrypted with."""
+    return StaffSecretCipher(settings.totp_encryption_key.get_secret_value())
+
+
+def get_staff_auth_service(db_session: db_session_dep, settings: settings_dep) -> StaffAuthService:
+    """Sign-in, password change and logout for staff accounts."""
+    return StaffAuthService(
+        staff=StaffUserRepository(db_session),
+        sessions=StaffSessionRepository(db_session),
+        audit=AuditLogRepository(db_session),
+        tokens=_token_service(settings),
+        secrets=_secret_cipher(settings),
+        settings=settings,
+    )
+
+
+StaffAuthServiceDep = Annotated[StaffAuthService, Depends(get_staff_auth_service)]
+
+
+def get_admin_service(db_session: db_session_dep, settings: settings_dep) -> AdminService:
+    """Staff administration, the KYC queue, and the audited agent decisions.
+
+    One session for every repository on purpose: a decision and the audit row that records it
+    must land together or not at all, so they share the transaction. The agent admin service
+    built here is the *same* one the CLI builds, so the two write one audit shape.
+    """
+    audit = AuditLogRepository(db_session)
+    agent_admin = AgentRoleAdmin(
+        users=UserRepository(db_session),
+        user_roles=UserRoleRepository(db_session),
+        assignments=AgentAssignmentRepository(db_session),
+        audit=audit,
+    )
+    return AdminService(
+        staff=StaffUserRepository(db_session),
+        sessions=StaffSessionRepository(db_session),
+        users=UserRepository(db_session),
+        cases=KycCaseRepository(db_session),
+        user_roles=UserRoleRepository(db_session),
+        assignments=AgentAssignmentRepository(db_session),
+        agent_admin=agent_admin,
+        audit=audit,
+        secrets=_secret_cipher(settings),
+        settings=settings,
+    )
+
+
+AdminServiceDep = Annotated[AdminService, Depends(get_admin_service)]
+
+
+async def require_staff(
+    settings: settings_dep,
+    service: StaffAuthServiceDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> _StaffContext:
+    """Identify the signed-in staff caller.
+
+    The token is verified first, then the *session row* it names is loaded: the token says a
+    session existed when it was minted, and the row says whether it is still live now. A
+    disabled account, a role change, a password change and a logout all end a token that is
+    otherwise well signed, and this is where they are honoured.
+
+    This dependency carries no role gate: a role belongs to a route, and the routes declare it
+    through the wrappers below. Keeping the role out of *this* signature matters for a subtler
+    reason than tidiness — a plain parameter on a dependency function is one FastAPI tries to
+    read from the request body, so a ``roles`` argument here would demand a body field the
+    routes do not have. The gate lives in the wrappers, where it is a check rather than a
+    parameter.
+    """
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise ApiError(ErrorCode.AUTH_REQUIRED, details={"reason": "no_bearer_token"})
+    try:
+        verified = _token_service(settings).verify_staff(token)
+    except TokenError as exc:
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "unreadable"}) from exc
+
+    session = await service.resolve_session(
+        staff_user_id=verified.staff_user_id, session_id=verified.session_id
+    )
+    return _StaffContext(
+        staff=session.staff,
+        session_id=session.session_id,
+        scope=verified.scope,
+    )
+
+
+class _StaffContext:
+    """The staff actor a route sees: who they are, their session, and their token's scope."""
+
+    __slots__ = ("scope", "session_id", "staff")
+
+    def __init__(self, *, staff: StaffUser, session_id: uuid.UUID, scope: str) -> None:
+        self.staff = staff
+        self.session_id = session_id
+        self.scope = scope
+
+
+#: The caller on the sign-in handshake routes: any scope, any role.
+CurrentStaffDep = Annotated[_StaffContext, Depends(require_staff)]
+
+
+async def require_full_staff(
+    settings: settings_dep,
+    service: StaffAuthServiceDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> _StaffContext:
+    """A staff caller whose token is a full one, not the change-password-only scope."""
+    context = await require_staff(settings=settings, service=service, authorization=authorization)
+    if context.scope != SCOPE_FULL:
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "change_password_required"})
+    return context
+
+
+FullStaffDep = Annotated[_StaffContext, Depends(require_full_staff)]
+
+
+def require_kyc_reviewer(context: FullStaffDep) -> _StaffContext:
+    """A full-scoped staff caller whose role may work the KYC queue (VERIFIER or ADMIN)."""
+    if context.staff.role not in (StaffRole.VERIFIER, StaffRole.ADMIN):
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "role_required"})
+    return context
+
+
+KycReviewerDep = Annotated[_StaffContext, Depends(require_kyc_reviewer)]
+
+
+def require_admin_staff(context: FullStaffDep) -> _StaffContext:
+    """A full-scoped staff caller whose role is ADMIN."""
+    if context.staff.role != StaffRole.ADMIN:
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "role_required"})
+    return context
+
+
+AdminOnlyDep = Annotated[_StaffContext, Depends(require_admin_staff)]

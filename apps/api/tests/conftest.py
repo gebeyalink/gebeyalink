@@ -48,6 +48,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTAINER_PREFIX = "gebeyalink-test"
 
 TERMS_VERSION = "2026-01-01"
+#: A fixed 32-byte Fernet key for the staff TOTP secrets in tests. A constant rather than a
+#: fresh random one per run because a settings object is built in several fixtures and they must
+#: agree: a secret encrypted by one process's key has to be readable by the next.
+TOTP_ENCRYPTION_KEY = "ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGk="
 
 #: The shared secret every test application checks inbound SMS signatures against. A throwaway:
 #: it exists so a test can sign a body the gateway way, and it protects nothing but the run.
@@ -201,6 +205,7 @@ def inert_settings() -> Settings:
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
     )
 
 
@@ -221,6 +226,7 @@ def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         # Escrow is the platform's funding path, so the tests that create orders the way most
         # deployments will have it on. The COD configuration below is the exception that leaves
         # it off, because the two modes are the same switch seen from two sides.
@@ -242,6 +248,7 @@ def impatient_settings(
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         otp_ttl_seconds=2,
         otp_resend_cooldown_seconds=1,
     )
@@ -264,6 +271,7 @@ def spray_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, s
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         auth_endpoint_limit_per_minute_per_ip=100,
     )
 
@@ -297,6 +305,7 @@ def migrated_database(postgres_url: str) -> Iterator[None]:
         "SIGNING_PUBLIC_KEY": "unused-outside-the-application",
         "GATEWAY_SECRET": GATEWAY_SECRET,
         "TERMS_VERSION": TERMS_VERSION,
+        "TOTP_ENCRYPTION_KEY": TOTP_ENCRYPTION_KEY,
     }
     result = subprocess.run(
         # Run through the interpreter that is running the tests, so the migration uses the
@@ -733,6 +742,7 @@ def seller_pays_settings(
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         fee_payer=FeePayer.SELLER,
         # The same reason the default settings fund escrow: the fee split is what this fixture
         # varies, and an order that could not be created would prove nothing about who pays.
@@ -822,6 +832,7 @@ def cod_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         cod_enabled=True,
     )
 
@@ -1023,6 +1034,7 @@ def both_modes_settings(
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         escrow_enabled=True,
         cod_enabled=True,
     )
@@ -1045,6 +1057,7 @@ def no_modes_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str
         signing_key_id="test-key",
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
+        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
         escrow_enabled=False,
         cod_enabled=False,
     )

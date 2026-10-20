@@ -13,6 +13,9 @@ until that lands, an operator's shell is where the decision is recorded, and the
 entry the console would write is deferred with the audit table itself (§11.1's ``audit_log``
 is not in this schema yet).
 
+Bootstrap-only; superseded by POST /v1/admin/agents/approve and /revoke, which audit identically.
+Use the CLI only if staff auth is unavailable.
+
 The command also checks that the account is not suspended or closed. An account in either of
 those states is not one the platform will trade as, so it is not one that may act as an agent.
 """

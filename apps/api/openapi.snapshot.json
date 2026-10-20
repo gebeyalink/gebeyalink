@@ -14,6 +14,48 @@
         "title": "AccountStatus",
         "type": "string"
       },
+      "AgentApproveBody": {
+        "additionalProperties": false,
+        "description": "The account an admin is approving as an agent, identified by its user id.",
+        "properties": {
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "AgentApproveBody",
+        "type": "object"
+      },
+      "AgentDecisionResponse": {
+        "additionalProperties": false,
+        "description": "The outcome of an agent approval or revocation.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "boolean"
+          },
+          "assignments_ended": {
+            "default": 0,
+            "title": "Assignments Ended",
+            "type": "integer"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "agent"
+        ],
+        "title": "AgentDecisionResponse",
+        "type": "object"
+      },
       "CropBaseUnit": {
         "description": "The unit a price for this crop is quoted in.",
         "enum": [
@@ -90,6 +132,39 @@
           "escrow_hold_hours"
         ],
         "title": "CropSummary",
+        "type": "object"
+      },
+      "CursorPage_KycCaseAdminResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/KycCaseAdminResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[KycCaseAdminResponse]",
         "type": "object"
       },
       "CursorPage_ListingResponse_": {
@@ -262,6 +337,82 @@
         "title": "HealthStatus",
         "type": "object"
       },
+      "KycCaseAdminResponse": {
+        "additionalProperties": false,
+        "description": "A KYC case as a reviewer reads it, documents included.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "doc_images": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Doc Images",
+            "type": "array"
+          },
+          "doc_type": {
+            "$ref": "#/components/schemas/KycDocType"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KycRejectionReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviewer_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/KycStatus"
+          },
+          "tier_requested": {
+            "$ref": "#/components/schemas/KycTier"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "tier_requested",
+          "doc_type",
+          "doc_images",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "KycCaseAdminResponse",
+        "type": "object"
+      },
       "KycCaseResponse": {
         "additionalProperties": false,
         "description": "A submitted case, as the trader who sent it may read it back.\n\nThe receipt rather than the case: enough to quote in a support message and to poll the\noutcome by, and no copy of the evidence the sender already holds.",
@@ -305,6 +456,32 @@
           "BUSINESS_LICENSE"
         ],
         "title": "KycDocType",
+        "type": "string"
+      },
+      "KycRejectionBody": {
+        "additionalProperties": false,
+        "description": "A reviewer's refusal, with §10.7's reason code.",
+        "properties": {
+          "reason_code": {
+            "$ref": "#/components/schemas/KycRejectionReason"
+          }
+        },
+        "required": [
+          "reason_code"
+        ],
+        "title": "KycRejectionBody",
+        "type": "object"
+      },
+      "KycRejectionReason": {
+        "description": "Why a case was refused. §10.7's list, carried in full by the enum.\n\nNo producer today: every value here is written by the reject path the admin queue owns.\nThe vocabulary lives on the type so a reader never meets a word the database has not\nadmitted, which is what an enum column is for.",
+        "enum": [
+          "DOC_BLURRY",
+          "DOC_MISMATCH",
+          "DOC_EXPIRED",
+          "DOC_FRAUD_SUSPECTED",
+          "OTHER"
+        ],
+        "title": "KycRejectionReason",
         "type": "string"
       },
       "KycStatus": {
@@ -1950,6 +2127,274 @@
         "title": "SearchSort",
         "type": "string"
       },
+      "StaffCreateBody": {
+        "additionalProperties": false,
+        "description": "An admin creating a staff account.\n\n``password`` is optional: omitted, the server draws a strong one and returns it in the\nresponse for the admin to hand over; supplied, the admin's choice is used. Either way the\nnew account must change it at first sign-in.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "minLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "email",
+          "role"
+        ],
+        "title": "StaffCreateBody",
+        "type": "object"
+      },
+      "StaffCreatedResponse": {
+        "additionalProperties": false,
+        "description": "The one response that carries a provisioning URI, plus the password if we drew it.",
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "generated_password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated Password"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "must_change_password": {
+            "title": "Must Change Password",
+            "type": "boolean"
+          },
+          "provisioning_uri": {
+            "title": "Provisioning Uri",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "must_change_password",
+          "provisioning_uri"
+        ],
+        "title": "StaffCreatedResponse",
+        "type": "object"
+      },
+      "StaffDisableBody": {
+        "additionalProperties": false,
+        "description": "The one mutation ``PATCH /admin/staff/{id}`` performs.",
+        "properties": {
+          "disabled": {
+            "title": "Disabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "disabled"
+        ],
+        "title": "StaffDisableBody",
+        "type": "object"
+      },
+      "StaffLoginBody": {
+        "additionalProperties": false,
+        "description": "A staff member proving themselves: what they know, and what they have.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "totp_code": {
+            "maxLength": 8,
+            "minLength": 6,
+            "title": "Totp Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "totp_code"
+        ],
+        "title": "StaffLoginBody",
+        "type": "object"
+      },
+      "StaffPasswordChangeBody": {
+        "additionalProperties": false,
+        "description": "A staff member choosing their own password, proved by the old one and a code.",
+        "properties": {
+          "new_password": {
+            "description": "SEC-12's floor: a staff password is at least twelve characters.",
+            "minLength": 12,
+            "title": "New Password",
+            "type": "string"
+          },
+          "old_password": {
+            "minLength": 1,
+            "title": "Old Password",
+            "type": "string"
+          },
+          "totp_code": {
+            "maxLength": 8,
+            "minLength": 6,
+            "title": "Totp Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "old_password",
+          "new_password",
+          "totp_code"
+        ],
+        "title": "StaffPasswordChangeBody",
+        "type": "object"
+      },
+      "StaffResponse": {
+        "additionalProperties": false,
+        "description": "A staff account as it may be read back: no secret, no URI.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "disabled_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled At"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Login At"
+          },
+          "must_change_password": {
+            "title": "Must Change Password",
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "must_change_password",
+          "created_at"
+        ],
+        "title": "StaffResponse",
+        "type": "object"
+      },
+      "StaffRole": {
+        "description": "§5.2's staff roles.\n\n``ADMIN`` is the widest: it alone may create staff, disable staff and change roles.\n``VERIFIER`` works the KYC queue. ``SUPPORT`` and ``MODERATOR`` are carried in the\nvocabulary because §5.2 names them; the routes that use them land in a later slice.",
+        "enum": [
+          "VERIFIER",
+          "SUPPORT",
+          "MODERATOR",
+          "ADMIN"
+        ],
+        "title": "StaffRole",
+        "type": "string"
+      },
+      "StaffRoleChangeBody": {
+        "additionalProperties": false,
+        "description": "An admin moving a staff member to a new role.",
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/StaffRole"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "StaffRoleChangeBody",
+        "type": "object"
+      },
+      "StaffTokenResponse": {
+        "additionalProperties": false,
+        "description": "The token a signed-in staff member carries, and how long it lasts.\n\n``scope`` is stated rather than implied: a token minted on an account that must change its\npassword can do only that, and reading the scope is how a client learns it is in that state\nwithout trying another route and being refused.",
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "token_type": {
+            "default": "bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_at",
+          "scope"
+        ],
+        "title": "StaffTokenResponse",
+        "type": "object"
+      },
       "TokenPairResponse": {
         "additionalProperties": false,
         "description": "A signed-in session.",
@@ -2147,6 +2592,766 @@
         "summary": "Health",
         "tags": [
           "Health"
+        ]
+      }
+    },
+    "/v1/admin/agents/approve": {
+      "post": {
+        "description": "Approve an account as an agent, audited. The CLI's workaround, now a route.",
+        "operationId": "approve_agent_v1_admin_agents_approve_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentApproveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Agent",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/agents/{user_id}/revoke": {
+      "post": {
+        "description": "Revoke the agent role and end the relationships the agent holds, audited.",
+        "operationId": "revoke_agent_v1_admin_agents__user_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Agent",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/change-password": {
+      "post": {
+        "description": "Replace the caller's own password. Reachable with either scope.",
+        "operationId": "change_password_v1_admin_change_password_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffPasswordChangeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Password",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc-cases": {
+      "get": {
+        "description": "One page of the reviewer's queue. Defaults to the waiting cases.",
+        "operationId": "list_kyc_cases_v1_admin_kyc_cases_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/KycStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tier_requested",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/KycTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tier Requested"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_KycCaseAdminResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Kyc Cases",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc-cases/{case_id}": {
+      "get": {
+        "description": "One case, documents included.",
+        "operationId": "read_kyc_case_v1_admin_kyc_cases__case_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycCaseAdminResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Kyc Case",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc-cases/{case_id}/approve": {
+      "post": {
+        "description": "Approve a waiting case and move the account's tier.",
+        "operationId": "approve_kyc_case_v1_admin_kyc_cases__case_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycCaseAdminResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Kyc Case",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc-cases/{case_id}/reject": {
+      "post": {
+        "description": "Reject a waiting case with a reason; a fraud suspicion freezes the account.",
+        "operationId": "reject_kyc_case_v1_admin_kyc_cases__case_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycRejectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycCaseAdminResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Kyc Case",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/login": {
+      "post": {
+        "description": "Prove a password and a one-time code, and open a session.",
+        "operationId": "login_v1_admin_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffLoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffTokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/logout": {
+      "post": {
+        "description": "End the caller's own session.",
+        "operationId": "logout_v1_admin_logout_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/staff": {
+      "post": {
+        "description": "Create a staff account. The provisioning URI is returned exactly once, here.",
+        "operationId": "create_staff_v1_admin_staff_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffCreatedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Staff",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/staff/{staff_id}": {
+      "patch": {
+        "description": "Disable or enable a staff account.",
+        "operationId": "set_staff_disabled_v1_admin_staff__staff_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "staff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Staff Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffDisableBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Staff Disabled",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/staff/{staff_id}/role": {
+      "post": {
+        "description": "Move a staff account to a new role, ending the sessions the old role opened.",
+        "operationId": "change_staff_role_v1_admin_staff__staff_id__role_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "staff_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Staff Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffRoleChangeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Staff Role",
+        "tags": [
+          "admin"
         ]
       }
     },

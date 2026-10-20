@@ -15,11 +15,12 @@ history and does not block a fresh submission.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.models.kyc_case import KycCase, KycStatus
+from apps.api.models.kyc_case import KycCase, KycStatus, KycTier
 
 
 class KycCaseRepository:
@@ -27,6 +28,16 @@ class KycCaseRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    @property
+    def session(self) -> AsyncSession:
+        """The session this repository writes on.
+
+        Exposed because the reviewer's approve and reject both mutate a case and write an audit
+        row in one transaction, and the audit repository must share the very same session. A
+        service that reached for its own session could land a decision without its record.
+        """
+        return self._session
 
     async def add(self, case: KycCase) -> KycCase:
         """Add a case and give it its identity, without making the write permanent.
@@ -64,3 +75,34 @@ class KycCaseRepository:
 
     async def commit(self) -> None:
         await self._session.commit()
+
+    async def page_queue(
+        self,
+        *,
+        status: KycStatus | None,
+        tier_requested: KycTier | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> list[KycCase]:
+        """One page of the reviewer's queue, newest first.
+
+        Ordered by ``created_at`` with the id as a tiebreak, because two cases can share a
+        timestamp and a keyset cursor over a non-unique key skips rows. The filter is applied
+        to the same columns the order uses, so the seek and the sort agree.
+        """
+        stmt = select(KycCase)
+        if status is not None:
+            stmt = stmt.where(KycCase.status == status)
+        if tier_requested is not None:
+            stmt = stmt.where(KycCase.tier_requested == tier_requested)
+        if after is not None:
+            created_at, case_id = after
+            stmt = stmt.where(
+                or_(
+                    KycCase.created_at < created_at,
+                    and_(KycCase.created_at == created_at, KycCase.id < case_id),
+                )
+            )
+        stmt = stmt.order_by(KycCase.created_at.desc(), KycCase.id.desc()).limit(limit + 1)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())

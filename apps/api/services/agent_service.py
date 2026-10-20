@@ -18,11 +18,11 @@ a payout account or an OTP setting, and nothing here lets an agent accept an off
 a delivery as the farmer; those routes are owner-scoped and an agent's session is not the
 farmer's. FR-1707 is most of the reason this module is shaped the way it is.
 
-What is *not* here, deliberately: the audit-log write. §11.1's ``audit_log`` table does not
-exist in this schema, and creating it is out of scope for this slice (it lands with the admin
-basics). The four action names this module would write are named as constants below, so the
-admin slice has the vocabulary rather than a guess at it; the report records that every
-producer below is currently unaudited for exactly that reason.
+Every action here writes a row into §11.1's ``audit_log``, in the same transaction as the
+action itself: the agent who onboarded a farmer and the agent who posted a listing on a
+farmer's behalf are both named, when it happened, and what they touched. The four action
+names are held as constants below so the writers and the readers share one vocabulary rather
+than each deriving the strings from call sites.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from apps.api.repositories.agent_assignment_repository import (
     AgentAssignmentRepository,
     assignment_expiry,
 )
+from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.user_role_repository import UserRoleRepository
@@ -67,6 +68,15 @@ ACTION_AGENT_APPROVED = "AGENT_APPROVED"
 ACTION_AGENT_REVOKED = "AGENT_REVOKED"
 ACTION_FARMER_ONBOARDED = "FARMER_ONBOARDED"
 ACTION_LISTING_CREATED_ON_BEHALF = "LISTING_CREATED_ON_BEHALF"
+
+#: The actor role carried when there is no human staff actor — a bootstrap command, or any
+#: action the platform takes on its own. Held here so the CLI's audit rows and a system action's
+#: rows agree on the word.
+ACTOR_SYSTEM = "SYSTEM"
+
+#: The actor role an agent's own action carries in the log. An agent acts as themselves — the
+#: audit says an agent did it, which is different from the staff role an approval carries.
+ACTOR_AGENT = "AGENT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +111,19 @@ class AgentRoleAdmin:
     """Granting and revoking the agent role. The pilot's approval path.
 
     Kept apart from the rest of the agent service because it is a different kind of actor's
-    work: this is the operator's command, run from a terminal, and it needs three
-    repositories and nothing else — no OTP provider, no listing path, no Redis. The service
-    below is what an *agent* does once approved; this is what *makes* an agent and *unmakes*
-    one, and the two are cleanly separable.
+    work: this is the operator's decision, whether it arrives from a terminal (bootstrap) or
+    from the admin route, and it needs four repositories and nothing else — no OTP provider,
+    no listing path, no Redis. The service below is what an *agent* does once approved; this
+    is what *makes* an agent and *unmakes* one, and the two are cleanly separable.
 
-    Both methods are idempotent, because an operator re-running a command is a normal thing,
-    not an error: approving an account twice leaves one role, and revoking one that does not
-    hold it changes nothing.
+    Both methods are idempotent, because re-running a command or replaying a request is a
+    normal thing, not an error: approving an account twice leaves one role, and revoking one
+    that does not hold it changes nothing.
+
+    Both write the audit row themselves, in the same transaction as the change. That is what
+    makes the CLI and the route produce *identical* audit entries: they call these methods, and
+    these methods are the only place AGENT_APPROVED and AGENT_REVOKED are written. There is no
+    second site to drift.
     """
 
     def __init__(
@@ -117,41 +132,118 @@ class AgentRoleAdmin:
         users: UserRepository,
         user_roles: UserRoleRepository,
         assignments: AgentAssignmentRepository,
+        audit: AuditLogRepository,
     ) -> None:
         self._users = users
         self._user_roles = user_roles
         self._assignments = assignments
+        self._audit = audit
 
     async def approve(self, phone_e164: str) -> User:
-        """Grant an approved account the AGENT role.
+        """Grant an approved account the AGENT role, by phone. The CLI's entry point.
 
-        Two gates, in this order. The account must exist and be ``TIER_1`` — FR-1201's
-        requirement, and the identity check behind it is done out of band by whoever runs the
-        approval. Then the role is granted once.
+        Returns the account alone: the CLI only needs to report who was approved. The id-based
+        entry point below returns the ``granted`` flag as well, because the route reports whether
+        the approval was a fresh grant or an idempotent repeat.
         """
-        user = await self._require_account(phone_e164)
+        user = await self._require_account_by_phone(phone_e164)
+        approved, _granted = await self._approve(user)
+        return approved
+
+    async def approve_by_id(
+        self,
+        user_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID | None,
+        actor_role: str,
+        ip: str | None = None,
+    ) -> tuple[User, bool]:
+        """Grant the AGENT role to an account named by id. The admin route's entry point.
+
+        ``granted`` is False when the account already held the role: the write is idempotent
+        and the audit row is written either way, because a re-approval is still an administrative
+        act and the log should say it happened.
+        """
+        user = await self._require_account_by_id(user_id)
+        return await self._approve(user, actor_id=actor_id, actor_role=actor_role, ip=ip)
+
+    async def revoke(self, phone_e164: str) -> tuple[User, int]:
+        """Take the AGENT role away by phone, ending every relationship. The CLI's entry point."""
+        user = await self._require_account_by_phone(phone_e164)
+        return await self._revoke(user, actor_id=None, actor_role=ACTOR_SYSTEM, ip=None)
+
+    async def revoke_by_id(
+        self,
+        user_id: uuid.UUID,
+        *,
+        actor_id: uuid.UUID | None,
+        actor_role: str,
+        ip: str | None = None,
+    ) -> tuple[User, int]:
+        """Take the AGENT role away by id, ending relationships. The admin route's entry point."""
+        user = await self._require_account_by_id(user_id)
+        return await self._revoke(user, actor_id=actor_id, actor_role=actor_role, ip=ip)
+
+    async def _approve(
+        self,
+        user: User,
+        *,
+        actor_id: uuid.UUID | None = None,
+        actor_role: str = ACTOR_SYSTEM,
+        ip: str | None = None,
+    ) -> tuple[User, bool]:
+        """The one approval: gate on ``TIER_1``, grant once, audit once."""
         if user.kyc_tier != VerificationTier.TIER_1:
             raise ApiError(
                 ErrorCode.FORBIDDEN,
                 details={"reason": "tier_1_required", "kyc_tier": user.kyc_tier.value},
             )
-        await self._user_roles.grant(user.id, Role.AGENT)
-        return user
+        granted = await self._user_roles.grant(user.id, Role.AGENT)
+        await self._audit.record(
+            actor_id=actor_id,
+            actor_role=actor_role,
+            action=ACTION_AGENT_APPROVED,
+            target_type="user",
+            target_id=user.id,
+            before={"agent": not granted},
+            after={"agent": True},
+            ip=ip,
+        )
+        await self._audit.commit()
+        return user, granted
 
-    async def revoke(self, phone_e164: str) -> tuple[User, int]:
-        """Take the AGENT role away, and end every relationship the agent holds.
-
-        Both happen, and the count of ended relationships is reported: a revoked agent with
-        live assignments would still be an agent to the listing path, so the relationships
-        are ended too.
-        """
-        user = await self._require_account(phone_e164)
-        await self._user_roles.revoke(user.id, Role.AGENT)
+    async def _revoke(
+        self,
+        user: User,
+        *,
+        actor_id: uuid.UUID | None,
+        actor_role: str,
+        ip: str | None,
+    ) -> tuple[User, int]:
+        """The one revocation: role away, relationships ended, audited once."""
+        revoked = await self._user_roles.revoke(user.id, Role.AGENT)
         ended = await self._assignments.revoke(agent_id=user.id)
+        await self._audit.record(
+            actor_id=actor_id,
+            actor_role=actor_role,
+            action=ACTION_AGENT_REVOKED,
+            target_type="user",
+            target_id=user.id,
+            before={"agent": revoked},
+            after={"agent": False, "assignments_ended": ended},
+            ip=ip,
+        )
+        await self._audit.commit()
         return user, ended
 
-    async def _require_account(self, phone_e164: str) -> User:
+    async def _require_account_by_phone(self, phone_e164: str) -> User:
         user = await self._users.find_by_phone(phone_e164)
+        if user is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"reason": "account_not_found"})
+        return user
+
+    async def _require_account_by_id(self, user_id: uuid.UUID) -> User:
+        user = await self._users.find_by_id(user_id)
         if user is None:
             raise ApiError(ErrorCode.NOT_FOUND, details={"reason": "account_not_found"})
         return user
@@ -169,6 +261,7 @@ class AgentService:
         profiles: ProfileRepository,
         otp: OtpService,
         listings: ListingService,
+        audit: AuditLogRepository,
         settings: Settings,
     ) -> None:
         self._users = users
@@ -177,6 +270,7 @@ class AgentService:
         self._profiles = profiles
         self._otp = otp
         self._listings = listings
+        self._audit = audit
         self._settings = settings
 
     # -- onboarding ------------------------------------------------------------
@@ -276,6 +370,18 @@ class AgentService:
             )
         await self._assignments.commit()
 
+        # FR-1203's record, in the transaction that created the relationship. The actor is the
+        # agent — the person who did it — and the target is the farmer whose number was proved.
+        await self._audit.record(
+            actor_id=agent_id,
+            actor_role=ACTOR_AGENT,
+            action=ACTION_FARMER_ONBOARDED,
+            target_type="user",
+            target_id=farmer.id,
+            after={"phone_e164": phone_e164, "agent_id": str(agent_id)},
+        )
+        await self._audit.commit()
+
         return FarmerSummary(
             id=farmer.id,
             phone_e164=phone_e164,
@@ -307,11 +413,22 @@ class AgentService:
                 ErrorCode.FORBIDDEN,
                 details={"reason": "no_active_assignment", "user_id": str(farmer_id)},
             )
-        return await self._listings.create_on_behalf(
+        listing = await self._listings.create_on_behalf(
             agent_id=agent_id,
             farmer_id=farmer_id,
             body=body,
         )
+        # FR-1203's record for the delegated act: the agent posted it, on the farmer's behalf.
+        await self._audit.record(
+            actor_id=agent_id,
+            actor_role=ACTOR_AGENT,
+            action=ACTION_LISTING_CREATED_ON_BEHALF,
+            target_type="listing",
+            target_id=listing.id,
+            after={"farmer_id": str(farmer_id), "agent_id": str(agent_id)},
+        )
+        await self._audit.commit()
+        return listing
 
     # -- helpers ---------------------------------------------------------------
 

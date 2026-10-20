@@ -24,10 +24,14 @@ from apps.api.db.session import dispose_engine, init_engine
 # by the agent routes, but their models are loaded explicitly as well so the registry is the
 # same set whichever route is hit first.
 from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
+from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
+from apps.api.models import staff_session as _staff_session_model  # noqa: F401  (registers it)
+from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (registers it)
 from apps.api.models import user_role as _user_role_model  # noqa: F401  (registers it)
 from apps.api.providers.sms import build_sms_provider, log_recording_provider_startup
+from apps.api.routers import admin as admin_routes
 from apps.api.routers import agent as agent_routes
 from apps.api.routers import auth as auth_routes
 from apps.api.routers import health as health_routes
@@ -87,6 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # versioned to ask whether the process is up.
     app.include_router(health_routes.router)
     app.include_router(auth_routes.router, prefix=API_PREFIX)
+    app.include_router(admin_routes.router, prefix=API_PREFIX)
     app.include_router(reference_routes.router, prefix=API_PREFIX)
     app.include_router(profile_routes.router, prefix=API_PREFIX)
     app.include_router(listing_routes.router, prefix=API_PREFIX)

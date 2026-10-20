@@ -21,6 +21,7 @@ from sqlalchemy.pool import NullPool
 from apps.api.core.config import get_settings
 from apps.api.db.base import Base
 from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
+from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
@@ -30,6 +31,8 @@ from apps.api.models import offer as _offer_model  # noqa: F401  (registers the 
 from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
 from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)
 from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
+from apps.api.models import staff_session as _staff_session_model  # noqa: F401  (registers it)
+from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (registers it)
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
 

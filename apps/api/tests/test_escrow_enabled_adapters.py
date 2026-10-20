@@ -53,6 +53,7 @@ def _inert_settings(*, escrow_enabled: bool) -> Settings:
         signing_key_id="test-key",
         gateway_secret=SecretStr("test-gateway-secret"),
         terms_version="2026-01-01",
+        totp_encryption_key=SecretStr("ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGk="),
         escrow_enabled=escrow_enabled,
     )
 

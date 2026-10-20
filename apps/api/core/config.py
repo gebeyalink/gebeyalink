@@ -165,6 +165,39 @@ class Settings(BaseSettings):
         description="Version stamped on every terms acceptance recorded from now on.",
     )
 
+    # Staff sign-in (§5.2, SEC-12). A staff account is separate from a trader account and its
+    # session is short: eight hours, after which the staff member signs in again. The lifetime
+    # is written into the staff_sessions row at login and is the authority on whether a session
+    # is live — the token's own exp is checked too, but the row is what the dependency trusts.
+    admin_jwt_ttl_seconds: int = Field(
+        default=8 * 60 * 60,
+        description="How long a staff session stays usable; written to staff_sessions.expires_at.",
+    )
+
+    # The Fernet key that encrypts staff TOTP secrets at rest. Required, no default, for the
+    # same reason the signing keys have none: a deployment that forgot to inject it would
+    # otherwise encrypt with a value in the source tree. Generate one with:
+    #   python -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+    totp_encryption_key: SecretStr = Field(
+        description="Base64-encoded 32-byte Fernet key for staff TOTP secrets at rest.",
+    )
+
+    # The scrypt parameters a staff password is hashed with. OWASP's figures, exposed so an
+    # operator can raise the cost without a code change; the value stored on each row carries
+    # the parameters it was hashed with, so a bump re-hashes on the next login.
+    staff_password_scrypt_n: int = Field(
+        default=2**17,
+        description="scrypt cost parameter N for staff passwords.",
+    )
+    staff_password_scrypt_r: int = Field(
+        default=8,
+        description="scrypt block-size parameter r for staff passwords.",
+    )
+    staff_password_scrypt_p: int = Field(
+        default=1,
+        description="scrypt parallelism parameter p for staff passwords.",
+    )
+
     # The worker's schedule. Read by the worker process and by nothing the API serves, but it
     # lives here so the worker resolves the same configuration the API resolves, from the same
     # environment, rather than growing a second settings object that can drift. The interval is

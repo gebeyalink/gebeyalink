@@ -23,6 +23,10 @@ from apps.api.core.hashing import generate_random_token, hash_token
 
 ACCESS_TOKEN_KIND: Final = "access"
 REFRESH_TOKEN_KIND: Final = "refresh"
+#: The kind stamped into a staff token. A distinct kind is what keeps a staff token from being
+#: presented to a trader route and vice versa: both are signed with the same keys, and the kind
+#: is the whole of what tells them apart.
+STAFF_TOKEN_KIND: Final = "staff"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +48,34 @@ class VerifiedToken:
     user_id: UUID
     session_id: str
     token_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class StaffToken:
+    """A minted staff token and what it carries beyond the signature.
+
+    ``scope`` is read back by the staff dependency and decides which routes a token may reach:
+    ``full`` reaches everything its role allows, ``change_password_only`` reaches exactly the
+    change-password route. ``role`` is carried so a route can refuse on it without a second read,
+    though the dependency still loads the row — a role in a token is a claim as of signing time,
+    and the row is the truth.
+    """
+
+    access_token: str
+    expires_at: datetime
+    session_id: UUID
+    scope: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedStaffToken:
+    """What we trust about a staff token after its signature checked out."""
+
+    staff_user_id: UUID
+    session_id: UUID
+    scope: str
+    role: str
 
 
 class TokenError(Exception):
@@ -147,3 +179,73 @@ class TokenService:
             raise TokenError("token is missing its subject") from exc
 
         return VerifiedToken(user_id=user_id, session_id=session_id, token_kind=expected_kind)
+
+    def issue_staff(
+        self,
+        *,
+        staff_user_id: UUID,
+        session_id: UUID,
+        role: str,
+        scope: str,
+        lifetime_seconds: int,
+    ) -> StaffToken:
+        """Mint a staff token over the same keys a trader token is signed with.
+
+        The lifetime is passed in rather than read from ``self._access_lifetime``: a staff
+        session's length is its own setting (``admin_jwt_ttl_seconds``), and the row written
+        beside this token is the authority on it. The token's ``exp`` is a second, independent
+        copy of the same moment.
+        """
+        token, expires_at = self._encode(
+            {
+                "sub": str(staff_user_id),
+                "sid": str(session_id),
+                "role": role,
+                "scope": scope,
+                "nonce": generate_random_token(16),
+            },
+            timedelta(seconds=lifetime_seconds),
+            STAFF_TOKEN_KIND,
+        )
+        return StaffToken(
+            access_token=token,
+            expires_at=expires_at,
+            session_id=session_id,
+            scope=scope,
+            role=role,
+        )
+
+    def verify_staff(self, token: str) -> VerifiedStaffToken:
+        """Check a staff token's signature, lifetime, kind, and the claims a staff route needs.
+
+        A trader token presented here fails on ``kind``, exactly as a staff token presented to a
+        trader route would: the two are signed with the same key and told apart by what they say
+        they are.
+        """
+        try:
+            claims = jwt.decode(
+                token,
+                self._public_key,
+                algorithms=["RS256"],
+                options={"require": ["exp", "sub", "kind", "sid", "role", "scope"]},
+            )
+        except InvalidTokenError as exc:
+            raise TokenError("staff token rejected") from exc
+
+        if claims.get("kind") != STAFF_TOKEN_KIND:
+            raise TokenError("token presented for the wrong purpose")
+
+        try:
+            staff_user_id = UUID(str(claims["sub"]))
+            session_id = UUID(str(claims["sid"]))
+            scope = str(claims["scope"])
+            role = str(claims["role"])
+        except (KeyError, ValueError) as exc:
+            raise TokenError("staff token is missing its subject") from exc
+
+        return VerifiedStaffToken(
+            staff_user_id=staff_user_id,
+            session_id=session_id,
+            scope=scope,
+            role=role,
+        )

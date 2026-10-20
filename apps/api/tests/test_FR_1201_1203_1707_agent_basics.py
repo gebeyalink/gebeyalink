@@ -95,6 +95,9 @@ def run_command(postgres_url: str, redis_url: str) -> Callable[[str, str], Compl
         "SIGNING_PUBLIC_KEY": "unused-outside-the-application",
         "GATEWAY_SECRET": GATEWAY_SECRET,
         "TERMS_VERSION": TERMS_VERSION,
+        # The agent commands build their service graph from configuration, and the graph now
+        # includes the staff cipher the audit path shares. A base64 32-byte placeholder.
+        "TOTP_ENCRYPTION_KEY": "ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGk=",
     }
     environment.pop("PYTHONIOENCODING", None)
 
@@ -778,14 +781,16 @@ def test_an_agent_cannot_confirm_delivery_as_the_farmer(
 # --------------------------------------------------------------------------- FR-1203 audit
 
 
-def test_the_audit_table_is_absent_and_its_producers_are_deferred(postgres_url: str) -> None:
-    """FR-1203, stated honestly: there is no audit trail yet, and this records that.
+def test_the_audit_table_exists_and_its_producers_are_wired(postgres_url: str) -> None:
+    """FR-1203, its deferral closed: §11.1's ``audit_log`` now exists and its producers write it.
 
-    §11.1's ``audit_log`` table is not in this schema, so every agent action above is
-    currently unaudited. Creating the table is out of scope for this slice and belongs with the
-    admin basics; this test pins the current state so the slice that adds the table turns it
-    red and has to update it, rather than the gap going unnoticed. The four action names the
-    producers would write are named in ``agent_service`` for that slice to use.
+    This test used to assert the opposite — that the table was absent and every agent action
+    above was therefore unaudited — and it was written to go red the moment the admin basics
+    slice landed. It has. The table exists, is append-only, and the four action names this
+    module holds as constants are written by the producers: ``AGENT_APPROVED`` and
+    ``AGENT_REVOKED`` by the admin routes, ``FARMER_ONBOARDED`` and
+    ``LISTING_CREATED_ON_BEHALF`` by the agent paths above. The admin slice's own test file
+    exercises each of the four; this pins that the pin itself was retargeted deliberately.
     """
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(sync_url) as connection:
@@ -793,7 +798,6 @@ def test_the_audit_table_is_absent_and_its_producers_are_deferred(postgres_url: 
         cursor.execute("SELECT to_regclass('audit_log')")
         row = cursor.fetchone()
         assert row is not None
-        assert row[0] is None, (
-            "audit_log now exists: the admin basics slice has landed and FR-1203's producers "
-            "must be wired to it and this assertion replaced"
-        )
+        assert (
+            row[0] == "audit_log"
+        ), "audit_log is absent again: FR-1203's producers have nothing to write to"

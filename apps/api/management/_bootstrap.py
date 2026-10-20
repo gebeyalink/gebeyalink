@@ -20,13 +20,23 @@ from contextlib import asynccontextmanager
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.core.config import get_settings
+from apps.api.core.security import TokenService
+from apps.api.core.staff_secrets import StaffSecretCipher
 from apps.api.db.session import dispose_engine, get_session_factory, init_engine
 
 # Loaded for its registration side effect, which is what the noqa marks.
+from apps.api.models import audit_log as _audit_log_model  # noqa: F401
+from apps.api.models import staff_session as _staff_session_model  # noqa: F401
+from apps.api.models import staff_user as _staff_user_model  # noqa: F401
 from apps.api.models import user as _user_model  # noqa: F401
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
+from apps.api.repositories.audit_log_repository import AuditLogRepository
+from apps.api.repositories.kyc_case_repository import KycCaseRepository
+from apps.api.repositories.staff_session_repository import StaffSessionRepository
+from apps.api.repositories.staff_user_repository import StaffUserRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.user_role_repository import UserRoleRepository
+from apps.api.services.admin_service import AdminService, StaffAuthService
 from apps.api.services.agent_service import AgentRoleAdmin
 from packages.shared.errors import ApiError
 
@@ -45,11 +55,54 @@ async def open_session() -> AsyncIterator[AsyncSession]:
 
 
 def build_role_admin(session: AsyncSession) -> AgentRoleAdmin:
-    """The approval/revocation service over one session."""
+    """The approval/revocation service over one session.
+
+    Built with the audit repository the routes build theirs with, because R6 says the command
+    and the route must write the *same* audit row: they call the same service, and this is how
+    the command reaches it.
+    """
     return AgentRoleAdmin(
         users=UserRepository(session),
         user_roles=UserRoleRepository(session),
         assignments=AgentAssignmentRepository(session),
+        audit=AuditLogRepository(session),
+    )
+
+
+def build_staff_auth(session: AsyncSession) -> StaffAuthService:
+    """The staff sign-in service over one session, for a command that needs it."""
+    settings = get_settings()
+    return StaffAuthService(
+        staff=StaffUserRepository(session),
+        sessions=StaffSessionRepository(session),
+        audit=AuditLogRepository(session),
+        tokens=TokenService(
+            private_key=settings.signing_private_key.get_secret_value(),
+            public_key=settings.signing_public_key.get_secret_value(),
+            key_id=settings.signing_key_id,
+            access_lifetime_seconds=settings.access_token_lifetime_seconds,
+            refresh_lifetime_seconds=settings.refresh_token_lifetime_seconds,
+        ),
+        secrets=StaffSecretCipher(settings.totp_encryption_key.get_secret_value()),
+        settings=settings,
+    )
+
+
+def build_admin_service(session: AsyncSession) -> AdminService:
+    """The admin service over one session, for a command that administers staff."""
+    settings = get_settings()
+    audit = AuditLogRepository(session)
+    return AdminService(
+        staff=StaffUserRepository(session),
+        sessions=StaffSessionRepository(session),
+        users=UserRepository(session),
+        cases=KycCaseRepository(session),
+        user_roles=UserRoleRepository(session),
+        assignments=AgentAssignmentRepository(session),
+        agent_admin=build_role_admin(session),
+        audit=audit,
+        secrets=StaffSecretCipher(settings.totp_encryption_key.get_secret_value()),
+        settings=settings,
     )
 
 
