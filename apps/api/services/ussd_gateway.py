@@ -518,7 +518,12 @@ class UssdGateway:
                         state.lang,
                         {
                             "crop": _crop_name(crop, state.lang),
-                            "price": f"{index.avg_unit_price_santim // 100:,}",
+                            # The board stores the per-kilogram price in santim and the row
+                            # quotes birr per quintal; the two are the same figure, because a
+                            # hundred kilograms to the quintal cancels a hundred santim to the
+                            # birr. Dividing here would quote a hundredth of what the board
+                            # published, which is the same mistake the SMS price reply made.
+                            "price": f"{index.avg_unit_price_santim:,}",
                         },
                     )
                 )

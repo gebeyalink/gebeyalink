@@ -41,7 +41,10 @@ def test_a_registered_trader_in_a_region_reads_todays_board(
     """One published average for teff in Oromia is one row on the board."""
 
     _profile_in_oromia(client, signed_in)
-    publish_price_index()
+    # The board stores the per-kilogram price in santim, and that figure is the birr per
+    # quintal the row quotes: 32,500 santim/kg is 325 ETB/kg, which is 32,500 ETB/quintal,
+    # because a quintal is a hundred kilograms and a birr is a hundred santim.
+    publish_price_index(average_santim=32_500)
 
     opened = ussd_session(client, "", session_id="ses-price-1", phone_number=SELLER)
     assert opened.text == (

@@ -220,7 +220,11 @@ async def _price(
         return "price_unavailable", {"crop": command.crop or ""}
     name = await deps.crop_display_name(crop_id, trader.language) or command.crop or ""
     # The reply quotes birr per quintal, which is the unit the price board is published in.
-    return "price", {"crop": name, "price_per_quintal": f"{average // 100:,}"}
+    # The board stores the per-kilogram price in santim, and the two are the same figure:
+    # a hundred kilograms to the quintal cancels a hundred santim to the birr, so 3,200
+    # santim per kilogram is 32 birr per kilogram and 3,200 birr per quintal. Dividing here
+    # would quote a hundredth of the price the board published.
+    return "price", {"crop": name, "price_per_quintal": f"{average:,}"}
 
 
 async def _post(

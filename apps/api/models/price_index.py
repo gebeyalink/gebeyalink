@@ -46,6 +46,12 @@ class PriceIndex(TimestampMixin, Base):
     # Null when no average could be computed. A zero here would read as a price of nothing,
     # and every listing against it would look like a mistake.
     avg_unit_price_santim: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    # The edges of the same window the average came out of: the cheapest and the dearest
+    # unit price anybody asked or paid in it. Null alongside a null average, because a
+    # range of two points is not a range - it is two prices dressed as one - and the board
+    # exists to not do that.
+    min_unit_price_santim: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
+    max_unit_price_santim: Mapped[int | None] = mapped_column(BigInteger(), nullable=True)
     # How many sales the average rests on, so a thin average can be recognised as thin
     # without re-reading the transactions.
     sample_size: Mapped[int] = mapped_column(Integer(), server_default="0", nullable=False)

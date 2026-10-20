@@ -525,6 +525,9 @@ def publish_price_index(postgres_url: str) -> Callable[..., None]:
 
     Written directly because the aggregation is not part of this work: a price test needs an
     average to have been published before it can ask whether a listing was judged against it.
+
+    The range comes with the average, because the board publishes all three together or none
+    of them: a test that wants a published day states the edges it published as well.
     """
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
 
@@ -533,6 +536,8 @@ def publish_price_index(postgres_url: str) -> Callable[..., None]:
         crop_id: int = 1,
         region_code: str = "OR",
         average_santim: int | None = 3_250_000,
+        min_santim: int | None = None,
+        max_santim: int | None = None,
         sample_size: int = 40,
         insufficient_data: bool = False,
         day: date | None = None,
@@ -540,14 +545,16 @@ def publish_price_index(postgres_url: str) -> Callable[..., None]:
         with psycopg.connect(sync_url, autocommit=True) as connection:
             connection.execute(
                 "INSERT INTO price_indices"
-                " (crop_id, region_code, day, avg_unit_price_santim, sample_size,"
-                "  insufficient_data)"
-                " VALUES (%s, %s, %s, %s, %s, %s)",
+                " (crop_id, region_code, day, avg_unit_price_santim, min_unit_price_santim,"
+                "  max_unit_price_santim, sample_size, insufficient_data)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     crop_id,
                     region_code,
                     day or datetime.now(UTC).date(),
                     average_santim,
+                    min_santim,
+                    max_santim,
                     sample_size,
                     insufficient_data,
                 ),

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from celery.beat import PersistentScheduler  # type: ignore[import-untyped]
+from celery.schedules import crontab  # type: ignore[import-untyped]
 from redis import Redis
 
 from apps.api import worker
@@ -80,6 +81,26 @@ def test_the_application_schedules_the_notification_drain(
     assert entry["task"] == worker.NOTIFICATION_DRAIN_TASK_NAME
     assert entry["schedule"] == 11
     assert worker.NOTIFICATION_DRAIN_TASK_NAME in app.tasks
+
+
+def test_the_application_schedules_the_price_board_for_two_in_the_morning(
+    inert_settings: Settings,
+) -> None:
+    """The board is due on the calendar rather than on an interval.
+
+    Two in the morning is a wall-clock fact, not a cadence: the figure a trader reads at dawn
+    has to be the one the overnight window finished computing, and a run that drifted later
+    every restart would publish a board whose freshness nobody could state. The entry is
+    therefore a crontab on the same Ethiopian clock the schedule is expressed in, and the
+    task is registered under the name the schedule names.
+    """
+    app = worker.build_celery(inert_settings)
+
+    assert app.conf.timezone == "Africa/Addis_Ababa"
+    entry = app.conf.beat_schedule[worker.PRICE_INDEX_TASK_NAME]
+    assert entry["task"] == worker.PRICE_INDEX_TASK_NAME
+    assert entry["schedule"] == crontab(hour=2, minute=0)
+    assert worker.PRICE_INDEX_TASK_NAME in app.tasks
 
 
 def test_the_application_wires_the_persistent_scheduler_to_the_configured_file(

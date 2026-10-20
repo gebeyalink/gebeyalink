@@ -1366,6 +1366,61 @@
         "title": "PickupConfirmBody",
         "type": "object"
       },
+      "PriceBoardResponse": {
+        "description": "FR-405's board for one crop in one region: the published day's five figures.\n\nThe three prices are withheld together when the day judged too little to say, which is\nwhat `insufficient_data` carries; an average with no edges beside it, or edges with no\naverage, would be the very presentation the thin-sample rule exists to refuse.",
+        "properties": {
+          "avg_price_santim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Price Santim"
+          },
+          "insufficient_data": {
+            "title": "Insufficient Data",
+            "type": "boolean"
+          },
+          "max_price_santim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Price Santim"
+          },
+          "min_price_santim": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Price Santim"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "avg_price_santim",
+          "min_price_santim",
+          "max_price_santim",
+          "sample_size",
+          "insufficient_data"
+        ],
+        "title": "PriceBoardResponse",
+        "type": "object"
+      },
       "PrimaryRole": {
         "description": "The one activity an account is primarily known for.\n\nA person who both grows and buys carries both, but the marketplace needs a single\nlabel to decide which journeys to offer by default.",
         "enum": [
@@ -3941,6 +3996,78 @@
         "summary": "Record Weight",
         "tags": [
           "Orders"
+        ]
+      }
+    },
+    "/v1/prices": {
+      "get": {
+        "description": "FR-405's board, public: what this crop has been costing in this region, or that we\ndo not know yet.\n\nPublic on purpose, and that is a decision rather than an oversight: the board is the\nplatform's answer to \"is this price odd\", and a buyer standing in a market with no\naccount and a farmer checking whether today's offer is fair are exactly who needs to\nask it.\n\nThe latest published day is read rather than today's alone, because the aggregation runs\nat two in the morning and a board read at dawn is meant to be yesterday's arithmetic -\nthat is the day it finished. No row at all is not a 404: the board exists and says there\nis not yet enough to say, which is the same honest answer a thin row gives, and a reader\nlearns the same thing either way.",
+        "operationId": "price_board_v1_prices_get",
+        "parameters": [
+          {
+            "description": "One crop, by the taxonomy's number.",
+            "in": "query",
+            "name": "crop_id",
+            "required": true,
+            "schema": {
+              "description": "One crop, by the taxonomy's number.",
+              "minimum": 1,
+              "title": "Crop Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "One of the thirteen regions.",
+            "in": "query",
+            "name": "region_code",
+            "required": true,
+            "schema": {
+              "description": "One of the thirteen regions.",
+              "enum": [
+                "AA",
+                "AF",
+                "AM",
+                "BE",
+                "DD",
+                "GA",
+                "HA",
+                "OR",
+                "SI",
+                "SO",
+                "SW",
+                "SN",
+                "TI"
+              ],
+              "title": "Region Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceBoardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Price Board",
+        "tags": [
+          "Reference"
         ]
       }
     },

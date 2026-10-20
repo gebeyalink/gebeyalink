@@ -27,3 +27,18 @@ class WoredaSummary(BaseModel):
     name: str
     region_code: str
     zone: str
+
+
+class PriceBoardResponse(BaseModel):
+    """FR-405's board for one crop in one region: the published day's five figures.
+
+    The three prices are withheld together when the day judged too little to say, which is
+    what `insufficient_data` carries; an average with no edges beside it, or edges with no
+    average, would be the very presentation the thin-sample rule exists to refuse.
+    """
+
+    avg_price_santim: int | None
+    min_price_santim: int | None
+    max_price_santim: int | None
+    sample_size: int
+    insufficient_data: bool

@@ -21,15 +21,32 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from typing import Final
 
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import Date, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.crop import Crop
 from apps.api.models.listing import Listing
 from apps.api.models.order import Order, OrderStatus
 from apps.api.models.quantity_reservation import QuantityReservation
+
+#: The states an order can be in while somebody's money is genuinely at stake: the platform
+#: has taken the money for it and is holding or spending it on the trade's behalf. An order
+#: reaches one of these only by being funded first. Cash on delivery has no such moment —
+#: the platform never holds the money, the buyer hands it over at the door — so a COD order
+#: never stands in one of these states and never speaks to the price board.
+_FUNDED_STATUSES: Final[frozenset[OrderStatus]] = frozenset(
+    {
+        OrderStatus.FUNDED,
+        OrderStatus.READY_FOR_PICKUP,
+        OrderStatus.SHIPPED,
+        OrderStatus.DELIVERED,
+        OrderStatus.COMPLETED,
+        OrderStatus.DISPUTED,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +277,50 @@ class OrderRepository:
         )
         result = await self._session.execute(stmt)
         return dict(result.all())
+
+    async def funded_price_observations(
+        self, first_day: date, last_day: date
+    ) -> list[tuple[int, str, int, int]]:
+        """Every order the platform holds money for, as a price signal for the board.
+
+        One row per order: ``(crop_id, region_code, unit_price_santim, quantity_kg)``. The
+        crop and the region are the listing's, because that is where the trade happened — an
+        order inherits its geography rather than carrying one of its own.
+
+        An order counts once the platform took money for it, in whatever state it has
+        reached since: funded, ready for pickup, shipped, delivered, completed or disputed
+        are all one fact as far as the board is concerned — somebody agreed this price for
+        real kilos that are moving. Cash on delivery never moves money through the platform,
+        so a COD order has no funding moment and never appears here; through a COD-only pilot
+        the board rests on what sellers are asking alone, which is the honest state of a
+        market nobody has bought from yet.
+
+        The window is measured on the EAT calendar day the order was placed, never on UTC:
+        the day a trader in Addis would put the trade in is the day the board's window
+        counts (NFR-11), and three hours of drift at either edge would move a trade across a
+        boundary no trader would have moved it across.
+        """
+        stmt = (
+            select(
+                Listing.crop_id,
+                Listing.region_code,
+                Order.unit_price_santim,
+                Order.quantity_kg,
+            )
+            .join(Listing, Order.listing_id == Listing.id)
+            .where(
+                Order.funded_at.is_not(None),
+                Order.status.in_(tuple(_FUNDED_STATUSES)),
+                func.date_trunc("day", Order.created_at.op("AT TIME ZONE")("Africa/Addis_Ababa"))
+                .cast(Date)
+                .between(first_day, last_day),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return [
+            (row["crop_id"], row["region_code"], row["unit_price_santim"], row["quantity_kg"])
+            for row in result.mappings().all()
+        ]
 
     async def commit(self) -> None:
         await self._session.commit()

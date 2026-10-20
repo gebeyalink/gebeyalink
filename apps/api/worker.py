@@ -3,9 +3,11 @@
 The API is request-shaped: it does work only while somebody is waiting for an answer. Some work
 has no request behind it — a heartbeat that says the machinery is alive, and the deadline
 evaluations that used to run lazily on the read path. That work needs a process of its own, and
-this is it. Today there are three such evaluations: the heartbeat, the shipment sweep that
-settles orders whose crop's holding window has closed without anybody asking, and the pickup
-sweep that settles a pickup whose day at the counter has passed.
+this is it. Today there are five such jobs: the heartbeat, the shipment sweep that settles
+orders whose crop's holding window has closed without anybody asking, the pickup sweep that
+settles a pickup whose day at the counter has passed, the notification drain that sends the
+messages the queue's own clock has made due, and the price board, computed while the pilot
+sleeps so the morning reads a finished figure.
 
 Celery is the scheduler and the executor. The broker is the Redis the API already declares and
 points at, so a deployment adds no datastore to run a worker: the same instance that holds
@@ -40,6 +42,7 @@ import logging
 from datetime import UTC, datetime
 
 from celery import Celery  # type: ignore[import-untyped]
+from celery.schedules import crontab  # type: ignore[import-untyped]
 from redis import Redis
 
 from apps.api.core.config import Settings, get_settings
@@ -80,9 +83,11 @@ from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
+from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
 from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
+from apps.api.services.pricing_service import PricingService
 from packages.shared.messaging.provider import MessagingProvider
 
 logger = logging.getLogger("gebeyalink.worker")
@@ -114,6 +119,12 @@ PICKUP_SWEEP_TASK_NAME = "gebeyalink.worker.pickup_sweep"
 #: looks for its effect. Its clock is the queue itself: a message is due the moment it is
 #: written, so unlike the two sweeps this task has no window to wait on and runs on a cadence.
 NOTIFICATION_DRAIN_TASK_NAME = "gebeyalink.worker.notification_drain"
+
+#: The price board's name, shared by the schedule, the worker that runs it and whoever looks
+#: for its effect, the same way the sweeps' names are. Its clock is the calendar rather than
+#: an interval: the board is due once a day at two in the morning on the operator's clock, so
+#: it is a crontab below and not every N seconds.
+PRICE_INDEX_TASK_NAME = "gebeyalink.worker.price_index"
 
 
 async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None) -> int:
@@ -203,6 +214,30 @@ async def run_notification_drain(
         return await service.drain(now)
 
 
+async def run_price_index(settings: Settings, *, now: datetime | None = None) -> int:
+    """Compute and publish today's price board, and say how many pairs it wrote.
+
+    One run, one session, and the arithmetic is the pricing service's: the same board no
+    request computes, computed here because nothing asked for it yet and the traders of
+    tomorrow morning are the ones who will. `now` is injectable so a test can put a window's
+    edge under the clock without waiting a month for the calendar.
+
+    Re-running is harmless by construction. The board is written as an upsert against the
+    day's own unique row, so a crashed run that is retried or a second run that overlaps
+    leaves one row rather than two — which is also why this task, unlike the sweeps, needs no
+    idempotency store: the table already knows how to be asked the same question twice.
+    """
+    init_engine(settings)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = PricingService(
+            orders=OrderRepository(session),
+            listings=ListingRepository(session),
+            price_indices=PriceIndexRepository(session),
+        )
+        return await service.compute_and_persist(now=now)
+
+
 def record_heartbeat(client: Redis, *, ttl_seconds: int, now: datetime | None = None) -> datetime:
     """Write the liveness key and count the tick, in one round trip.
 
@@ -261,6 +296,16 @@ def build_celery(settings: Settings) -> Celery:
                 "task": NOTIFICATION_DRAIN_TASK_NAME,
                 "schedule": settings.worker_notification_drain_interval_seconds,
             },
+            PRICE_INDEX_TASK_NAME: {
+                "task": PRICE_INDEX_TASK_NAME,
+                # A crontab rather than an interval, because the board is due on the
+                # calendar and not every N seconds: two in the morning, on the Ethiopian
+                # clock the schedule above is already expressed in. It fires before the
+                # trading day opens, so the price a trader reads at dawn is the figure the
+                # overnight window finished computing, and it is hours clear of the sweeps
+                # so the run has the database to itself.
+                "schedule": crontab(hour=2, minute=0),
+            },
         },
     )
 
@@ -310,6 +355,18 @@ def build_celery(settings: Settings) -> Celery:
             report.failed,
         )
 
+    def worker_price_index() -> None:
+        """Publish today's price board. The body of the task the schedule runs.
+
+        The work is asynchronous and this is a Celery task, so it opens a loop of its own for
+        the length of the run, and registered `shared=False` below for the same reason the
+        sweeps are: this app's settings decide what the loop reads. The pair count is logged
+        whole, so a morning that published a board and a morning that found nothing to say
+        look different in the log rather than equally silent.
+        """
+        pairs = asyncio.run(run_price_index(settings))
+        logger.info("%s pairs=%s", PRICE_INDEX_TASK_NAME, pairs)
+
     # `shared=False` and `lazy=False` are load-bearing. Celery's defaults defer the registration
     # through a process-global finalize hook, so a second app built in the same process can end
     # up executing the first app's task object — the heartbeat would write to the first app's
@@ -319,6 +376,7 @@ def build_celery(settings: Settings) -> Celery:
     app.task(name=SHIPMENT_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_shipment_sweep)
     app.task(name=PICKUP_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_pickup_sweep)
     app.task(name=NOTIFICATION_DRAIN_TASK_NAME, shared=False, lazy=False)(worker_notification_drain)
+    app.task(name=PRICE_INDEX_TASK_NAME, shared=False, lazy=False)(worker_price_index)
     return app
 
 
@@ -336,7 +394,8 @@ def main() -> None:
     log_recording_provider_startup(settings.sms_provider, settings.environment)
     logger.info(
         "worker starting: heartbeat every %ss, TTL %ss, shipment sweep every %ss, "
-        "pickup sweep every %ss, notification drain every %ss, beat schedule at %s",
+        "pickup sweep every %ss, notification drain every %ss, price board daily at 02:00, "
+        "beat schedule at %s",
         settings.worker_heartbeat_interval_seconds,
         settings.worker_heartbeat_ttl_seconds,
         settings.worker_shipment_sweep_interval_seconds,

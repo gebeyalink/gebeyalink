@@ -40,7 +40,10 @@ def test_price_quotes_the_published_average_for_the_senders_region(
     sms_recorder: RecordingSmsProvider,
 ) -> None:
     _signed_in_with_region(client, signed_in, "OR")
-    publish_price_index(crop_id=1, region_code="OR", average_santim=485_000)
+    # The board stores the per-kilogram price in santim, and that figure is the birr per
+    # quintal the reply quotes: 4,850 santim/kg is 48.50 ETB/kg, which is 4,850 ETB/quintal,
+    # because a quintal is a hundred kilograms and a birr is a hundred santim.
+    publish_price_index(crop_id=1, region_code="OR", average_santim=4_850)
     sms_inbound(client, "PRICE teff", from_phone=TRADER)
     assert sms_recorder.messages_to(TRADER)[-1].body == "Today Teff: 4,850 ETB/quintal"
 
@@ -53,8 +56,8 @@ def test_price_honours_a_region_argument_over_the_profile(
     sms_recorder: RecordingSmsProvider,
 ) -> None:
     _signed_in_with_region(client, signed_in, "OR")
-    publish_price_index(crop_id=1, region_code="OR", average_santim=485_000)
-    publish_price_index(crop_id=1, region_code="AA", average_santim=999_900)
+    publish_price_index(crop_id=1, region_code="OR", average_santim=4_850)
+    publish_price_index(crop_id=1, region_code="AA", average_santim=9_999)
     sms_inbound(client, "PRICE teff AA", from_phone=TRADER)
     assert sms_recorder.messages_to(TRADER)[-1].body == "Today Teff: 9,999 ETB/quintal"
 
@@ -91,6 +94,6 @@ def test_price_refuses_an_average_recorded_as_insufficient(
     """A row that says "not enough sales" is not a price, however numeric it looks."""
 
     _signed_in_with_region(client, signed_in, "OR")
-    publish_price_index(crop_id=1, region_code="OR", average_santim=485_000, insufficient_data=True)
+    publish_price_index(crop_id=1, region_code="OR", average_santim=4_850, insufficient_data=True)
     sms_inbound(client, "PRICE teff", from_phone=TRADER)
     assert sms_recorder.messages_to(TRADER)[-1].body == "No price is available for teff."

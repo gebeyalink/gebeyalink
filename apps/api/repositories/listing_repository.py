@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import Date, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.models.listing import Listing, ListingPhoto
+from apps.api.models.listing import Listing, ListingPhoto, ListingStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +156,43 @@ class ListingRepository:
         stmt = select(Listing).where(Listing.short_code == short_code.strip().upper())
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def priced_observations(
+        self, first_day: date, last_day: date
+    ) -> list[tuple[int, str, int, int]]:
+        """Every listing still for sale, as a price signal for the board.
+
+        One row per listing: ``(crop_id, region_code, unit_price_santim, quantity_kg)``.
+        The whole country's open shelves in one statement, because the board is computed
+        once for every pair at the same moment rather than per page.
+
+        Only what a buyer could actually act on counts. Open and sold out are the same
+        evidence — somebody put these kilos on the board at this price, and a batch that
+        sold out still says what the crop was worth while it lasted. Every other state —
+        paused by its seller, expired by the clock, suspended under review, a draft nobody
+        published, closed — is a price no buyer can reach, so it is not evidence of what the
+        crop costs and does not appear.
+
+        The window is measured on the EAT calendar day the listing was written, the same
+        clock the orders' window uses (NFR-11), so both halves of the board are cut on the
+        day a trader in Addis would name.
+        """
+        stmt = select(
+            Listing.crop_id,
+            Listing.region_code,
+            Listing.unit_price_santim,
+            Listing.quantity_kg,
+        ).where(
+            Listing.status.in_((ListingStatus.ACTIVE, ListingStatus.SOLD_OUT)),
+            func.date_trunc("day", Listing.created_at.op("AT TIME ZONE")("Africa/Addis_Ababa"))
+            .cast(Date)
+            .between(first_day, last_day),
+        )
+        result = await self._session.execute(stmt)
+        return [
+            (row["crop_id"], row["region_code"], row["unit_price_santim"], row["quantity_kg"])
+            for row in result.mappings().all()
+        ]
 
     async def commit(self) -> None:
         await self._session.commit()
