@@ -26,6 +26,7 @@ from typing import Any, Final
 
 import yaml
 
+from packages.shared.i18n.languages import Language
 from packages.shared.messaging.queues import SmsPriority
 
 TEMPLATES_DIR: Final[Path] = Path(__file__).parent / "templates"
@@ -254,3 +255,21 @@ def _parse_variants(template_id: str, path: Path, raw: Any) -> dict[str, str]:
     if not all(isinstance(text, str) and text for text in raw.values()):
         raise ValueError(f"{path}: template {template_id!r} variants must all be non-empty strings")
     return dict(raw)
+
+
+def render_template(template_id: str, language: Language, **fields: str) -> tuple[str, str]:
+    """Fill one template's variant and answer with the language its words are actually in.
+
+    The registry is the one place a message's words live, so every producer renders through
+    here rather than formatting a sentence of its own: a message and its template cannot drift
+    if there is only one of them. The second value is the language of the words returned, not
+    the one asked for — when a template carries no variant for the requested language the
+    English fallback is returned and named, because a row stores which language it holds and
+    those are two different questions the moment the fallback fires.
+
+    Raises:
+        KeyError: if the registry carries no template by that id.
+    """
+    template = load_templates()[template_id]
+    rendered_language = language.value if language.value in template.variants else Language.EN.value
+    return template.variants[rendered_language].format(**fields), rendered_language

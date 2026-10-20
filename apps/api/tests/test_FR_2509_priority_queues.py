@@ -240,6 +240,7 @@ def test_the_classified_lanes_match_the_product_rules() -> None:
             "profile_incomplete_for_order",
             "order_funded",
             "order_ready_for_pickup",
+            "order_ready_for_pickup_code",
             "order_shipped",
             "order_delivered",
             "offer_received",

@@ -57,6 +57,7 @@ from apps.api.core.idempotency import IdempotencyStore, once
 from apps.api.core.idempotency import fingerprint_of as _fingerprint
 from apps.api.core.short_codes import OrderCodeSource, new_pickup_code
 from apps.api.models.listing import DeliveryOption, Listing, ListingStatus
+from apps.api.models.notification import Notification, NotificationChannel, NotificationStatus
 from apps.api.models.offer import OfferStatus, proposing_party
 from apps.api.models.order import CancelReason, DeliveryVia, Order, OrderStatus, PaymentMode
 from apps.api.models.quantity_reservation import (
@@ -64,20 +65,27 @@ from apps.api.models.quantity_reservation import (
     QuantityReservation,
     ReservationState,
 )
+from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
+from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.user_repository import UserRepository
 from apps.api.schemas.order import OrderResponse
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.listing_service import transition_listing_status
-from apps.api.services.offer_service import effective_status as effective_offer_status
 from apps.api.services.offer_service import (
+    _crop_name,
     may_answer,
     refuse_disabled_mode,
     transition_offer_status,
 )
+from apps.api.services.offer_service import effective_status as effective_offer_status
 from packages.shared.errors import ApiError, ErrorCode
+from packages.shared.i18n.templates import load_templates, render_template
+from packages.shared.messaging.dispatcher import format_etb
+from packages.shared.messaging.queues import priority_rank
 from packages.shared.money import FeePayer, OrderTotals, order_totals
 
 logger = logging.getLogger("gebeyalink.api")
@@ -383,6 +391,9 @@ class OrderService:
         listings: ListingRepository,
         offers: OfferRepository,
         reservations: ReservationRepository,
+        notifications: NotificationRepository,
+        users: UserRepository,
+        crops: CropRepository,
         *,
         fee_payer: FeePayer,
         cod_enabled: bool,
@@ -395,6 +406,9 @@ class OrderService:
         self._listings = listings
         self._offers = offers
         self._reservations = reservations
+        self._notifications = notifications
+        self._users = users
+        self._crops = crops
         self._fee_payer = fee_payer
         self._cod_enabled = cod_enabled
         self._escrow_enabled = escrow_enabled
@@ -859,6 +873,7 @@ class OrderService:
                 )
             transition_order_status(order, OrderStatus.READY_FOR_PICKUP, current)
             order.ready_at = now
+            await self._queue_order_ready(order)
             await self._orders.commit()
             return order
 
@@ -898,6 +913,7 @@ class OrderService:
                 )
             transition_order_status(order, OrderStatus.SHIPPED, current)
             order.shipped_at = now
+            await self._queue_order_shipped(order)
             await self._orders.commit()
             return order
 
@@ -1323,6 +1339,13 @@ class OrderService:
             # listing leaves it sold out and the seller closes it or lists again.
             transition_listing_status(listing, ListingStatus.SOLD_OUT)
 
+        # An acceptance owes the buyer a word, and it belongs to this transaction rather than to
+        # the caller's: this method owns the commit that lands the order, so a message written
+        # after it would be a message written into a transaction nothing commits. A buy-now has
+        # no bid behind it and so writes nothing here.
+        if offer_id is not None:
+            await self._queue_offer_accepted(order, listing)
+
         await self._orders.commit()
         return order
 
@@ -1534,8 +1557,137 @@ class OrderService:
         order.delivered_at = now
         order.delivered_via = delivered_via
         consumed = await self._reservations.consume_for_order(order.id)
+        await self._queue_delivery_settled(order, delivered_via)
         logger.info("delivered order order_id=%s consumed_kg=%s why=%s", order.id, consumed, why)
         return consumed
+
+    async def _notify(
+        self,
+        user_id: UUID,
+        template_id: str,
+        dedup_key: str,
+        **fields: str,
+    ) -> None:
+        """Write one lifecycle message into the queue, in this transaction, for this account.
+
+        The N1b pattern the offer events follow: ``NotificationRepository.add`` writes into the
+        caller's transaction and the caller's ``commit`` lands it, so the message and the event
+        that owes it are one commit and a message that cannot be written is an event that does
+        not happen. The recipient's language is read from their account and the text rendered
+        in it; the lane is the template's own Q2, fetched from the registry rather than named
+        here, so a template that moved lanes moves this row with it.
+
+        The account read is trusted rather than guarded: an order's foreign keys guarantee the
+        buyer and seller exist, so a read that finds nobody is a broken database, and the event
+        fails loudly rather than moving an order without the sentence it owes.
+        """
+        recipient = await self._users.find_by_id(user_id)
+        if recipient is None:
+            raise ApiError(
+                ErrorCode.INTERNAL_ERROR,
+                details={"reason": "notification_recipient_missing", "template": template_id},
+            )
+        rendered_text, rendered_language = render_template(
+            template_id, recipient.language, **fields
+        )
+        template = load_templates()[template_id]
+        await self._notifications.add(
+            Notification(
+                user_id=user_id,
+                channel=NotificationChannel.SMS,
+                template_id=template_id,
+                priority=priority_rank(template.priority),
+                language=rendered_language,
+                rendered_text=rendered_text,
+                status=NotificationStatus.QUEUED,
+                dedup_key=dedup_key,
+            )
+        )
+
+    async def _queue_offer_accepted(self, order: Order, listing: Listing) -> None:
+        """Tell the buyer their bid was accepted, in the acceptance's own transaction.
+
+        The bid is the buyer's and the acceptance is the seller's answer to it, so the buyer is
+        owed the word. The message names the crop and the agreed price, both read here rather
+        than taken from the request, and the dedup key is the order's: one acceptance, one word
+        to the buyer, however many times the request is replayed under its key.
+        """
+        crop = await self._crops.find_by_id(listing.crop_id)
+        if crop is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "order_crop_missing"})
+        buyer = await self._users.find_by_id(order.buyer_id)
+        if buyer is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "order_buyer_missing"})
+        await self._notify(
+            order.buyer_id,
+            "offer_accepted",
+            f"offer_accepted:{order.offer_id}",
+            crop=_crop_name(crop, buyer.language),
+            price=format_etb(order.unit_price_santim),
+        )
+
+    async def _queue_order_ready(self, order: Order) -> None:
+        """Tell the buyer their pickup is waiting, with the code they collect it by.
+
+        The code is the seller's check at the counter and the buyer's to present, so the ready
+        message is the one place it is spoken to the party who needs it. The template carrying
+        it is `order_ready_for_pickup_code`, authored for this event; the plainer
+        `order_ready_for_pickup` names no code and is the one to read when the handover has no
+        code to give. The key is the order's, so a replayed ready is one row.
+        """
+        pickup_code = order.pickup_code
+        if pickup_code is None:
+            # A ready order that carries no code has nothing to present: fall back to the
+            # code-less template rather than render a sentence with a blank in it.
+            await self._notify(order.buyer_id, "order_ready_for_pickup", f"order_ready:{order.id}")
+            return
+        await self._notify(
+            order.buyer_id,
+            "order_ready_for_pickup_code",
+            f"order_ready:{order.id}",
+            order_code=order.short_code,
+            pickup_code=pickup_code,
+        )
+
+    async def _queue_order_shipped(self, order: Order) -> None:
+        """Tell the buyer their order is on its way, in the shipment's own transaction.
+
+        The buyer is the one waiting on a delivery they arranged or agreed to, so the shipment
+        is addressed to them. The key is the order's: one shipment, one word.
+        """
+        await self._notify(
+            order.buyer_id,
+            "order_shipped",
+            f"order_shipped:{order.id}",
+            order_code=order.short_code,
+        )
+
+    async def _queue_delivery_settled(self, order: Order, delivered_via: DeliveryVia) -> None:
+        """Tell the party who did not act that the handover is done.
+
+        Whoever moved the order to delivered already knows; the message exists for the other
+        side, and which side that is depends on the road the delivery took. A buyer's own
+        confirmation leaves the seller to be told; a seller checking the pickup code leaves the
+        buyer to be told; and a window that closed on its own settled a handover nobody
+        witnessed, so both parties are told. The key names the order and the recipient, so a
+        settlement that should somehow be reached twice still writes one row per party.
+        """
+        recipients: tuple[UUID, ...]
+        if delivered_via is DeliveryVia.BUYER_CONFIRMED:
+            recipients = (order.seller_id,)
+        elif delivered_via is DeliveryVia.PICKUP_CODE:
+            recipients = (order.buyer_id,)
+        else:
+            # SHIPMENT_WINDOW and PICKUP_WINDOW: nobody acted, so both parties are owed it.
+            recipients = (order.buyer_id, order.seller_id)
+
+        for recipient_id in recipients:
+            await self._notify(
+                recipient_id,
+                "order_delivered",
+                f"order_delivered:{order.id}:{recipient_id}",
+                order_code=order.short_code,
+            )
 
     def _require_tolerable(self, order: Order) -> None:
         """Refuse a buyer's confirmation when the record shows a shortfall past tolerance.

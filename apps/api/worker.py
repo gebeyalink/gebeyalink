@@ -79,12 +79,14 @@ from apps.api.models import region as _region_model  # noqa: F401  (registers th
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
+from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.user_repository import UserRepository
 from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
 from apps.api.services.pricing_service import PricingService
@@ -148,6 +150,9 @@ async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None)
             listings=ListingRepository(session),
             offers=OfferRepository(session),
             reservations=ReservationRepository(session),
+            notifications=NotificationRepository(session),
+            users=UserRepository(session),
+            crops=CropRepository(session),
             fee_payer=settings.fee_payer,
             cod_enabled=settings.cod_enabled,
             escrow_enabled=settings.escrow_enabled,
@@ -179,6 +184,9 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
             listings=ListingRepository(session),
             offers=OfferRepository(session),
             reservations=ReservationRepository(session),
+            notifications=NotificationRepository(session),
+            users=UserRepository(session),
+            crops=CropRepository(session),
             fee_payer=settings.fee_payer,
             cod_enabled=settings.cod_enabled,
             escrow_enabled=settings.escrow_enabled,

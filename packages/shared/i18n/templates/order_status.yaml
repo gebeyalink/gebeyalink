@@ -20,6 +20,21 @@
     om: "Ajajni kee {order_code} fudhachuuf qophii dha"
     en: "Your order {order_code} is ready for pickup"
 
+# The pickup handover's own message, carrying the six-digit code the seller checks before the
+# crop changes hands. FR-1002's ready event tells the buyer where to collect and with which
+# code, and the template above names neither, so this is the variant the ready producer uses.
+# This team's copy (the specification supplies nothing verbatim here), so it is unreviewed and
+# O-3 reads it.
+- id: order_ready_for_pickup_code
+  channel: sms
+  priority: Q2
+  review_status: unreviewed
+  placeholders: [order_code, pickup_code]
+  variants:
+    am: "ትዕዛዝዎ {order_code} ለመውሰድ ዝግጁ ነው። ኮድ {pickup_code}"
+    om: "Ajajni kee {order_code} fudhachuuf qophii dha. Koodii {pickup_code}"
+    en: "Your order {order_code} is ready for pickup. Code {pickup_code}"
+
 - id: order_shipped
   channel: sms
   priority: Q2

@@ -69,7 +69,7 @@ from apps.api.schemas.offer import (
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.languages import Language
-from packages.shared.i18n.templates import load_templates
+from packages.shared.i18n.templates import render_template
 from packages.shared.messaging.dispatcher import format_etb
 from packages.shared.messaging.queues import SmsPriority, priority_rank
 
@@ -260,18 +260,24 @@ def _crop_name(crop: Crop, language: Language) -> str:
     return getattr(crop, column, None) or crop.name_en
 
 
+def _render_offer_event(template_id: str, language: Language, **fields: str) -> tuple[str, str]:
+    """The words one offer event owes, and the language they were actually written in.
+
+    Rendered from the registry rather than from a sentence built here, so the template is the
+    one place the message lives and the producer cannot drift from it. The second value is the
+    language of the words returned rather than the one asked for, because the row stores the
+    language it holds and those part company the moment the fallback fires.
+    """
+    return render_template(template_id, language, **fields)
+
+
 def _render_offer_received(language: Language, *, crop: str, price: str) -> tuple[str, str]:
     """The message the seller reads, and the language its words were actually written in.
 
-    Rendered from the registry rather than from a sentence built here, with the same fallback
-    every other renderer uses: a language the template does not carry reads the English one.
-    The second value is that language rather than the one asked for, because the row stores the
-    language of the words it holds, and those are two different questions when the fallback
-    fires. Nothing here invents a rendering; it picks a variant and fills it in.
+    Kept as its own name because the placement path read it by that name before the other
+    offer events existed; it is now one call to the registry's renderer like the rest.
     """
-    template = load_templates()["offer_received"]
-    rendered_language = language.value if language.value in template.variants else Language.EN.value
-    return template.variants[rendered_language].format(crop=crop, price=price), rendered_language
+    return _render_offer_event("offer_received", language, crop=crop, price=price)
 
 
 class OfferService:
@@ -416,6 +422,44 @@ class OfferService:
             )
         )
 
+    async def _queue_offer_rejected(self, offer: Offer, listing: Listing) -> None:
+        """Write the buyer's message into the queue, inside the refusal's own transaction.
+
+        A refusal is the seller's word on the buyer's bid, so the buyer is the one owed the
+        sentence that ends the wait — a bid that simply stopped showing in a list would leave
+        its owner checking forever. The row is written on the same session as the refusal and
+        the two are one commit, the N1b pattern the accepted and lifecycle messages follow too.
+
+        The reads are trusted rather than guarded, for `_queue_offer_received`'s reason: the
+        listing's foreign keys guarantee the buyer and the crop exist, so a read that finds
+        neither is a broken database and the refusal fails loudly rather than closing a bid
+        with no word to the party who was waiting on it.
+        """
+        buyer = await self._users.find_by_id(offer.buyer_id)
+        if buyer is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "offer_buyer_missing"})
+        crop = await self._crops.find_by_id(listing.crop_id)
+        if crop is None:
+            raise ApiError(ErrorCode.INTERNAL_ERROR, details={"reason": "offer_crop_missing"})
+
+        rendered_text, rendered_language = _render_offer_event(
+            "offer_rejected",
+            buyer.language,
+            crop=_crop_name(crop, buyer.language),
+        )
+        await self._notifications.add(
+            Notification(
+                user_id=offer.buyer_id,
+                channel=NotificationChannel.SMS,
+                template_id="offer_rejected",
+                priority=priority_rank(SmsPriority.Q2),
+                language=rendered_language,
+                rendered_text=rendered_text,
+                status=NotificationStatus.QUEUED,
+                dedup_key=f"offer_rejected:{offer.id}",
+            )
+        )
+
     async def read_for_listing(
         self, listing_id: UUID, caller_id: UUID, now: datetime | None = None
     ) -> list[OfferResponse]:
@@ -475,6 +519,7 @@ class OfferService:
         transition_offer_status(
             context.offer, OfferStatus.REJECTED, effective_status(context.offer, now), now=now
         )
+        await self._queue_offer_rejected(context.offer, context.listing)
         await self._offers.commit()
         return to_response(context.offer, now=now)
 
