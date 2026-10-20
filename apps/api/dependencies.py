@@ -26,6 +26,7 @@ from apps.api.core.short_codes import CrockfordOrderCode
 from apps.api.db.session import get_session_factory
 from apps.api.providers.sms import SmsProvider
 from apps.api.repositories.action_token_repository import ActionTokenRepository
+from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
@@ -40,6 +41,7 @@ from apps.api.repositories.session_repository import SessionRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.verification_code_repository import VerificationCodeRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
+from apps.api.services.agent_service import AgentService
 from apps.api.services.auth_service import AuthService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.offer_service import OfferService
@@ -47,6 +49,7 @@ from apps.api.services.order_service import OrderService
 from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
+from apps.api.services.redis_challenge_store import AgentChallengeRepository
 from apps.api.services.search_service import SearchService
 from apps.api.services.sms_command_gateway import SmsCommandGateway
 from apps.api.services.ussd_gateway import UssdGateway
@@ -188,6 +191,36 @@ def get_listing_service(db_session: db_session_dep) -> ListingService:
 
 
 ListingServiceDep = Annotated[ListingService, Depends(get_listing_service)]
+
+
+def get_agent_service(
+    db_session: db_session_dep,
+    settings: settings_dep,
+    sms: sms_dep,
+) -> AgentService:
+    """Agents, the farmers they carry, and the postings made on a farmer's behalf.
+
+    One session for every repository and both sub-services, for the reason the listing
+    service shares its own: onboarding a farmer writes an account and a relationship that
+    must land together or not at all, and a delegated listing is written by the *same*
+    listing service every other door uses, so it cannot drift into a second, looser path.
+
+    The OTP service is built here exactly as it is for sign-in, over the same Redis and the
+    same messaging backend, so the code sent to a farmer's phone is issued and checked by the
+    one implementation rather than a parallel one.
+    """
+    return AgentService(
+        users=UserRepository(db_session),
+        assignments=AgentAssignmentRepository(db_session),
+        challenges=AgentChallengeRepository(get_client()),
+        profiles=ProfileRepository(db_session),
+        otp=get_otp_service(get_client(), settings, sms),
+        listings=get_listing_service(db_session),
+        settings=settings,
+    )
+
+
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
 
 
 def get_search_service(db_session: db_session_dep) -> SearchService:

@@ -318,8 +318,39 @@ class ListingService:
             decode=ListingResponse.model_validate,
         )
 
+    async def create_on_behalf(
+        self,
+        agent_id: UUID,
+        farmer_id: UUID,
+        body: dict[str, Any],
+    ) -> ListingResponse:
+        """Post a listing as the farmer it belongs to, at an agent's hand.
+
+        The authorization is not decided here. By the time this is reached the agent service
+        has already found an active assignment between the two, and this method's job is to
+        write the row the way that relationship describes it: the seller is the *farmer*, and
+        ``on_behalf_of_user_id`` records whose behalf it was posted on. An agent's own id
+        never reaches this call as the seller, so no listing can end up owned by an agent
+        merely because an agent typed it.
+
+        It goes through ``_create``, the same path every other door uses, so a listing
+        posted on a farmer's behalf is held to every rule a listing is — including the price
+        judgement and the publish transition — rather than being a second, looser way in.
+        """
+        return await self._create(
+            farmer_id,
+            body,
+            ListingSource.AGENT,
+            on_behalf_of_user_id=farmer_id,
+        )
+
     async def _create(
-        self, seller_id: UUID, body: dict[str, Any], source: ListingSource = APP_SOURCE
+        self,
+        seller_id: UUID,
+        body: dict[str, Any],
+        source: ListingSource = APP_SOURCE,
+        *,
+        on_behalf_of_user_id: UUID | None = None,
     ) -> ListingResponse:
         now = datetime.now(UTC)
         values = self._values_from(
@@ -329,6 +360,7 @@ class ListingService:
 
         listing = Listing(
             seller_id=seller_id,
+            on_behalf_of_user_id=on_behalf_of_user_id,
             source=source,
             status=ListingStatus.DRAFT,
             short_code=await self._allocate_short_code(),

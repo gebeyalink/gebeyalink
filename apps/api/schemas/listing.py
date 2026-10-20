@@ -58,10 +58,23 @@ class ListingCreateBody(BaseModel):
 
     ``expires_at`` is optional because a listing that nobody thought about should still be
     postable: thirty days is the default the specification gives.
+
+    ``on_behalf_of_user_id`` is the one field here that is not the seller's own hand. When it
+    is present the request is a delegated posting: the caller must be an agent holding an
+    active assignment for that farmer, the listing's seller becomes the farmer, and this field
+    names whose behalf it was posted on. An ordinary seller never sends it, and sending it
+    without the assignment is refused rather than ignored.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    on_behalf_of_user_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Post this listing as another account, whose behalf an agent is acting on. "
+            "Requires an active agent assignment for that account."
+        ),
+    )
     crop_id: int = Field(ge=1)
     quantity_kg: int = Field(ge=1, le=1_000_000)
     min_order_kg: int = Field(ge=1)

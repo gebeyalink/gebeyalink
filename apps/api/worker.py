@@ -67,6 +67,7 @@ from apps.api.db.session import get_session_factory, init_engine
 # ``alembic/env.py`` assembles the same set for the migration, and the registry test beside
 # the worker asserts the whole of it.
 from apps.api.models import action_token as _action_token_model  # noqa: F401  (registers it)
+from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
@@ -77,6 +78,7 @@ from apps.api.models import profile as _profile_model  # noqa: F401  (registers 
 from apps.api.models import quantity_reservation as _reservation_model  # noqa: F401
 from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
+from apps.api.models import user_role as _user_role_model  # noqa: F401
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.crop_repository import CropRepository

@@ -16,7 +16,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, status
 
-from apps.api.dependencies import AccessTokenDep, ListingServiceDep
+from apps.api.dependencies import AccessTokenDep, AgentServiceDep, ListingServiceDep
 from apps.api.schemas.listing import ListingCreateBody, ListingResponse, ListingUpdateBody
 from apps.api.schemas.pagination import CursorPage
 
@@ -34,6 +34,7 @@ async def create_listing(
     body: ListingCreateBody,
     caller: AccessTokenDep,
     listings: ListingServiceDep,
+    agents: AgentServiceDep,
 ) -> ListingResponse:
     """Post a listing, live.
 
@@ -41,8 +42,21 @@ async def create_listing(
     code it is quoted by and whether its price looks unusual are all decided here rather than
     asked for, because a client that could set its own status could post a listing nobody
     reviewed.
+
+    One field changes who the seller is. When ``on_behalf_of_user_id`` is present the request
+    is a delegated posting: it goes through the agent service, which checks the caller is an
+    agent holding an active assignment for that farmer and writes the listing in the farmer's
+    name. Without that field the caller is the seller, exactly as before.
     """
-    return await listings.create(caller.user_id, body.model_dump(mode="json"))
+    payload = body.model_dump(mode="json")
+    farmer_id = body.on_behalf_of_user_id
+    if farmer_id is None:
+        return await listings.create(caller.user_id, payload)
+    return await agents.create_listing_on_behalf(
+        agent_id=caller.user_id,
+        farmer_id=farmer_id,
+        body=payload,
+    )
 
 
 @router.get("/mine", response_model=CursorPage[ListingResponse])

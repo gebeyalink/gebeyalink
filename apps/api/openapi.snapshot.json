@@ -168,6 +168,39 @@
         "title": "DeliveryOption",
         "type": "string"
       },
+      "FarmerSummaryResponse": {
+        "additionalProperties": false,
+        "description": "The farmer, as far as the agent who onboarded them may see.",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone_e164": {
+            "title": "Phone E164",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "phone_e164",
+          "display_name"
+        ],
+        "title": "FarmerSummaryResponse",
+        "type": "object"
+      },
       "FeePayer": {
         "description": "Which side of the order funds the platform fee and its VAT.\n\nRead from configuration, because it is a commercial decision rather than a calculation:\nthe same arithmetic holds whichever side is chosen, and only the split moves. It is a\nstring enum so that the setting can be written `SPLIT_50` in an environment variable and\nstored in that form, without a mapping table translating it on the way in.",
         "enum": [
@@ -241,7 +274,7 @@
       },
       "ListingCreateBody": {
         "additionalProperties": false,
-        "description": "A listing as a seller states it.\n\nEverything here is what the seller knows at the moment of posting. What the platform\nadds around it — the source it arrived through, the status it starts in, the short code\nit is quoted by — is not accepted from the client, because a client that could set its\nown status could also set a listing that was never reviewed.\n\n``expires_at`` is optional because a listing that nobody thought about should still be\npostable: thirty days is the default the specification gives.",
+        "description": "A listing as a seller states it.\n\nEverything here is what the seller knows at the moment of posting. What the platform\nadds around it — the source it arrived through, the status it starts in, the short code\nit is quoted by — is not accepted from the client, because a client that could set its\nown status could also set a listing that was never reviewed.\n\n``expires_at`` is optional because a listing that nobody thought about should still be\npostable: thirty days is the default the specification gives.\n\n``on_behalf_of_user_id`` is the one field here that is not the seller's own hand. When it\nis present the request is a delegated posting: the caller must be an agent holding an\nactive assignment for that farmer, the listing's seller becomes the farmer, and this field\nnames whose behalf it was posted on. An ordinary seller never sends it, and sending it\nwithout the assignment is refused rather than ignored.",
         "properties": {
           "available_from": {
             "anyOf": [
@@ -319,6 +352,19 @@
             "minimum": 1.0,
             "title": "Min Order Kg",
             "type": "integer"
+          },
+          "on_behalf_of_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Post this listing as another account, whose behalf an agent is acting on. Requires an active agent assignment for that account.",
+            "title": "On Behalf Of User Id"
           },
           "organic": {
             "default": false,
@@ -867,6 +913,69 @@
         ],
         "title": "OfferStatus",
         "type": "string"
+      },
+      "OnboardAccepted": {
+        "additionalProperties": false,
+        "description": "A code is on its way to the farmer, and a handle accompanies it.",
+        "properties": {
+          "challenge_token": {
+            "description": "Opaque; present it back with the farmer's code to complete onboarding.",
+            "title": "Challenge Token",
+            "type": "string"
+          },
+          "expires_in_seconds": {
+            "description": "How long the code and the handle stay usable.",
+            "title": "Expires In Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "challenge_token",
+          "expires_in_seconds"
+        ],
+        "title": "OnboardAccepted",
+        "type": "object"
+      },
+      "OnboardConfirmBody": {
+        "additionalProperties": false,
+        "description": "Complete the onboarding with the code the farmer read back.",
+        "properties": {
+          "challenge_token": {
+            "description": "The handle from the request step.",
+            "minLength": 1,
+            "title": "Challenge Token",
+            "type": "string"
+          },
+          "otp": {
+            "description": "The code the farmer received and read out.",
+            "pattern": "^\\d{6}$",
+            "title": "Otp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "challenge_token",
+          "otp"
+        ],
+        "title": "OnboardConfirmBody",
+        "type": "object"
+      },
+      "OnboardRequestBody": {
+        "additionalProperties": false,
+        "description": "Ask to onboard a farmer: their number, entered by the agent.",
+        "properties": {
+          "phone_e164": {
+            "description": "The farmer's number in full international form.",
+            "pattern": "^\\+251(9|7)\\d{8}$",
+            "title": "Phone E164",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone_e164"
+        ],
+        "title": "OnboardRequestBody",
+        "type": "object"
       },
       "OrderAcceptBody": {
         "additionalProperties": false,
@@ -1933,6 +2042,126 @@
         ]
       }
     },
+    "/v1/agent/farmers/onboard": {
+      "post": {
+        "description": "Send a code to the farmer's phone and hand back a handle to the exchange.\n\nNothing is created here. An account appears only when the farmer — not the agent — proves\nthe number, which is what the second route does.",
+        "operationId": "start_farmer_onboarding_v1_agent_farmers_onboard_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnboardAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Farmer Onboarding",
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
+    "/v1/agent/farmers/onboard/confirm": {
+      "post": {
+        "description": "Prove the farmer's number, create or recover the account, and record the relationship.\n\nThe code is checked against the number the handle carries, never one the caller names, so\nthe proof is bound to the exchange the agent started. On success the farmer exists, is\nlinked to the agent for twelve months, and is returned — and nothing else about them is\nwritten by the agent's hand.",
+        "operationId": "confirm_farmer_onboarding_v1_agent_farmers_onboard_confirm_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnboardConfirmBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FarmerSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Farmer Onboarding",
+        "tags": [
+          "Agents"
+        ]
+      }
+    },
     "/v1/auth/logout": {
       "post": {
         "description": "Close the session a refresh token belongs to.",
@@ -2234,7 +2463,7 @@
     },
     "/v1/listings": {
       "post": {
-        "description": "Post a listing, live.\n\nThe seller states what they have and what they want for it; the status it starts in, the\ncode it is quoted by and whether its price looks unusual are all decided here rather than\nasked for, because a client that could set its own status could post a listing nobody\nreviewed.",
+        "description": "Post a listing, live.\n\nThe seller states what they have and what they want for it; the status it starts in, the\ncode it is quoted by and whether its price looks unusual are all decided here rather than\nasked for, because a client that could set its own status could post a listing nobody\nreviewed.\n\nOne field changes who the seller is. When ``on_behalf_of_user_id`` is present the request\nis a delegated posting: it goes through the agent service, which checks the caller is an\nagent holding an active assignment for that farmer and writes the listing in the farmer's\nname. Without that field the caller is the seller, exactly as before.",
         "operationId": "create_listing_v1_listings_post",
         "parameters": [
           {

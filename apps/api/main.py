@@ -20,9 +20,14 @@ from apps.api.db.session import dispose_engine, init_engine
 # has to be loaded in this process, and a table with no router of its own reaches the app only
 # by being imported. The notifications table is written by the worker today and has no route,
 # so its model is loaded here beside the routers that load the rest, which is what keeps the
-# app's registry and the worker's the same set.
+# app's registry and the worker's the same set. The agent role and assignment tables are read
+# by the agent routes, but their models are loaded explicitly as well so the registry is the
+# same set whichever route is hit first.
+from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
+from apps.api.models import user_role as _user_role_model  # noqa: F401  (registers it)
 from apps.api.providers.sms import build_sms_provider, log_recording_provider_startup
+from apps.api.routers import agent as agent_routes
 from apps.api.routers import auth as auth_routes
 from apps.api.routers import health as health_routes
 from apps.api.routers import listing as listing_routes
@@ -84,6 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reference_routes.router, prefix=API_PREFIX)
     app.include_router(profile_routes.router, prefix=API_PREFIX)
     app.include_router(listing_routes.router, prefix=API_PREFIX)
+    app.include_router(agent_routes.router, prefix=API_PREFIX)
     app.include_router(offer_routes.router, prefix=API_PREFIX)
     app.include_router(order_routes.router, prefix=API_PREFIX)
     app.include_router(search_routes.router, prefix=API_PREFIX)
