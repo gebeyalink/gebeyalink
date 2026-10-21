@@ -1,0 +1,38 @@
+# Gap-scan waivers.
+#
+# A waiver is a recorded decision that a specific finding may stand until a date. It is not a
+# silence: each entry names the check and target it covers, says who decided and why, and
+# carries an expiry. Past its expiry a waiver stops covering and the finding fails again, which
+# is the entire mechanism — "we will deal with it later" cannot stay unsaid.
+#
+# The four entries below are the deferrals SPEC §6 and the gap-scan spec's §6 pre-approved.
+# Their expiry is the end of the current release cycle; before then, each surface is either
+# built or the waiver is renewed by a fresh owner decision, never left to lapse silently.
+
+- check: G1
+  target: FR-2511
+  reason: "Collection-point handshake is config-gated behind the Phase 3 collection_handshake_enabled flag; Phase 1 ships with the flag off."
+  decided_by: owner
+  date: 2026-10-20
+  expires: 2027-01-20
+
+- check: G9
+  target: FR-2506
+  reason: "M-PESA Ethiopia gateway depends on D-7 (provider contract); the pilot is COD-only and the surface is deliberately unbuilt."
+  decided_by: owner
+  date: 2026-10-20
+  expires: 2027-01-20
+
+- check: G9
+  target: FR-203
+  reason: "TIER_3 entry points (O-7) are held until the regional tier ladder is reviewed; Phase 1 exercises TIER_0 to TIER_2 only."
+  decided_by: owner
+  date: 2026-10-20
+  expires: 2027-01-20
+
+- check: G9
+  target: FR-1001
+  reason: "Notification preferences are v1.1; Phase 1 sends the mandatory SMS events with no per-user preference surface."
+  decided_by: owner
+  date: 2026-10-20
+  expires: 2027-01-20

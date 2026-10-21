@@ -59,6 +59,10 @@ coverage.xml
 # the default WORKER_BEAT_SCHEDULE_PATH. It is state a deployment owns, not source; the CI job
 # and any container write it to a path of their own.
 /beat-schedule
+# The gap scan's report, written by default wherever the scan is run from. It is output, not
+# source: a report is regenerated on demand and carries the commit it was taken against, so a
+# committed one would be stale the moment anything moved.
+/gapscan-report.json
 
 # ── Internal records — not part of the shipped codebase ─────────────────────
 # The session handoff and the baseline-folder artifacts belong on disk, not in

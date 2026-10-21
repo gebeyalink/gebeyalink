@@ -72,6 +72,8 @@ packages = [
     "apps.api.schemas",
     "apps.api.services",
     "packages",
+    "packages.gapscan",
+    "packages.gapscan.checks",
     "packages.shared",
     "packages.shared.i18n",
     "packages.shared.messaging",
