@@ -45,6 +45,13 @@ pytestmark = pytest.mark.unit
 #: The USSD per-screen budgets: the GSM 7-bit limit and the UCS-2 limit. See the module docstring
 #: for why there are two and where the numbers come from (and the O-2 follow-up that settles them).
 GSM7_SCREEN_LIMIT = 182
+
+# The 80-character figure is an unverified assumption (D-21). Africa's Talking's
+# documented per-screen limit for a UCS-2 (Ethiopic script) USSD screen is not in the
+# repository; the owner holds the AT account and will supply the exact limit at O-2.
+# Until then, this budget is conservative and the page size derived from it
+# (_NEW_LISTING_CROP_PAGE = 2) is provisional. When the AT limit lands, both are
+# confirmed or adjusted and this comment is deleted.
 UCS2_SCREEN_LIMIT = 80
 
 #: The GSM 03.38 default alphabet, plus the escape and form-feed the same table carries. A screen
