@@ -28,6 +28,8 @@ import psycopg.rows
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [pytest.mark.integration]
+
 Rows = list[dict[str, object]]
 
 #: A document address, the shape a client's own photo storage hands back.

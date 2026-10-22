@@ -34,6 +34,8 @@ from packages.gapscan.config import (
 )
 from packages.gapscan.report import build_report, dumps, exit_code
 
+pytestmark = [pytest.mark.integration]
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 #: The 17 columns the ledger carries, in the order the live file uses. A fixture row is built
@@ -254,6 +256,7 @@ _CLEAN_SCOPE = Milestone(id="clean", title="clean", in_scope=frozenset({"FR-9101
 # ------------------------------------------------------------------------- each check fires
 
 
+@pytest.mark.unit
 def test_g1_fires_on_a_requirement_with_no_implementation(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = g1.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
@@ -261,12 +264,14 @@ def test_g1_fires_on_a_requirement_with_no_implementation(planted: tuple[Path, P
     assert findings[0].severity is Severity.BLOCKING
 
 
+@pytest.mark.unit
 def test_g1_passes_on_the_clean_row(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = g1.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
     assert "FR-9002" not in [finding.requirement for finding in findings]
 
 
+@pytest.mark.unit
 def test_g2_fires_on_a_complete_row_with_an_unsatisfied_layer(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -280,6 +285,7 @@ def test_g2_fires_on_a_complete_row_with_an_unsatisfied_layer(
     assert "NOT_STARTED" in messages
 
 
+@pytest.mark.unit
 def test_g2_passes_on_a_complete_row_whose_layers_are_all_done(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -288,12 +294,14 @@ def test_g2_passes_on_a_complete_row_whose_layers_are_all_done(
     assert "FR-9004" not in [finding.requirement for finding in findings]
 
 
+@pytest.mark.unit
 def test_g3_fires_on_a_done_frontend_with_no_artifact(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = g3.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
     assert [finding.requirement for finding in findings] == ["FR-9005"]
 
 
+@pytest.mark.unit
 def test_g4_fires_on_a_test_calling_an_undefined_endpoint(tmp_path: Path) -> None:
     repo, matrix, openapi = _clean(tmp_path)
     test = repo / "apps" / "api" / "tests" / "test_FR_9101_orders.py"
@@ -309,12 +317,14 @@ def test_g4_fires_on_a_test_calling_an_undefined_endpoint(tmp_path: Path) -> Non
     ]
 
 
+@pytest.mark.unit
 def test_g4_passes_when_the_test_calls_a_defined_endpoint(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = g4.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
     assert findings == []
 
 
+@pytest.mark.unit
 def test_g4_relaxes_a_segment_that_may_be_an_f_string_variable(tmp_path: Path) -> None:
     """``f"/v1/listings/{listing_id}/{move}"`` may be any action, so it is not a miss.
 
@@ -341,6 +351,7 @@ def test_g4_relaxes_a_segment_that_may_be_an_f_string_variable(tmp_path: Path) -
     assert findings == []
 
 
+@pytest.mark.unit
 def test_g4_still_fails_when_no_contract_path_has_the_shape(tmp_path: Path) -> None:
     """The relaxation is about shape, not a blanket pass: a contradicting path still fails."""
     repo, matrix, openapi = _clean(tmp_path)
@@ -357,6 +368,7 @@ def test_g4_still_fails_when_no_contract_path_has_the_shape(tmp_path: Path) -> N
     ]
 
 
+@pytest.mark.unit
 def test_g9_fires_on_a_requirement_with_no_named_test(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -366,12 +378,14 @@ def test_g9_fires_on_a_requirement_with_no_named_test(
     assert all(finding.deferred_to_ci for finding in findings)
 
 
+@pytest.mark.unit
 def test_g9_passes_on_a_requirement_with_a_named_test(tmp_path: Path) -> None:
     repo, matrix, openapi = _clean(tmp_path)
     findings = g9.check(_context(repo, matrix, openapi, _CLEAN_SCOPE))
     assert findings == []
 
 
+@pytest.mark.unit
 def test_x1_fires_on_a_requirement_id_in_production_code(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = x1.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
@@ -382,6 +396,7 @@ def test_x1_fires_on_a_requirement_id_in_production_code(planted: tuple[Path, Pa
     assert any("§12.3" in finding.requirement for finding in findings)
 
 
+@pytest.mark.unit
 def test_x1_passes_on_a_test_file_that_carries_the_id(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = x1.check(_context(repo, matrix, openapi, _FIXTURE_MILESTONE))
@@ -389,6 +404,7 @@ def test_x1_passes_on_a_test_file_that_carries_the_id(planted: tuple[Path, Path,
     assert all("test_FR_9002" not in finding.evidence for finding in findings)
 
 
+@pytest.mark.unit
 def test_x1_exempts_only_the_scans_own_scope_config(planted: tuple[Path, Path, Path]) -> None:
     """The scope table may carry IDs; an ordinary production file may not, same tree."""
     repo, matrix, openapi = planted
@@ -404,6 +420,7 @@ def test_x1_exempts_only_the_scans_own_scope_config(planted: tuple[Path, Path, P
     assert any("listing_service.py" in finding.evidence for finding in findings)
 
 
+@pytest.mark.unit
 def test_x2_fires_on_a_phase_directory_and_a_requirement_file(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -414,6 +431,7 @@ def test_x2_fires_on_a_phase_directory_and_a_requirement_file(
     assert "fr-1901.py" in evidence
 
 
+@pytest.mark.unit
 def test_x2_passes_on_a_test_file_named_for_a_requirement(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -422,6 +440,7 @@ def test_x2_passes_on_a_test_file_named_for_a_requirement(
     assert all("test_FR_9002" not in finding.evidence for finding in findings)
 
 
+@pytest.mark.unit
 def test_every_check_passes_on_a_clean_repository(tmp_path: Path) -> None:
     repo, matrix, openapi = _clean(tmp_path)
     context = _context(repo, matrix, openapi, _CLEAN_SCOPE)
@@ -432,6 +451,7 @@ def test_every_check_passes_on_a_clean_repository(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- the scan itself
 
 
+@pytest.mark.unit
 def test_scan_collects_findings_from_every_check(planted: tuple[Path, Path, Path]) -> None:
     repo, matrix, openapi = planted
     findings = scanner.scan(milestone=_FIXTURE_MILESTONE, matrix=matrix, openapi=openapi, repo=repo)
@@ -441,6 +461,7 @@ def test_scan_collects_findings_from_every_check(planted: tuple[Path, Path, Path
     assert findings == sorted(findings, key=lambda finding: finding.sort_key)
 
 
+@pytest.mark.unit
 def test_two_scans_of_the_same_tree_serialize_identically(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -455,6 +476,7 @@ def test_two_scans_of_the_same_tree_serialize_identically(
 # ------------------------------------------------------------------------------ the waivers
 
 
+@pytest.mark.unit
 def test_a_waiver_covers_a_finding_until_it_expires() -> None:
     finding = Finding(
         check="G1",
@@ -475,6 +497,7 @@ def test_a_waiver_covers_a_finding_until_it_expires() -> None:
     assert waiver.covers(finding, today=date(2027, 1, 21)) is False
 
 
+@pytest.mark.unit
 def test_an_expired_waiver_does_not_suppress() -> None:
     finding = Finding(
         check="G9",
@@ -494,6 +517,7 @@ def test_an_expired_waiver_does_not_suppress() -> None:
     assert waiver.covers(finding, today=date(2026, 3, 1)) is False
 
 
+@pytest.mark.unit
 def test_the_shipped_waivers_file_is_well_formed() -> None:
     waivers = load_waivers(REPO_ROOT / "packages" / "gapscan" / "waivers.yaml")
     assert len(waivers) == 4
@@ -504,10 +528,12 @@ def test_the_shipped_waivers_file_is_well_formed() -> None:
 # --------------------------------------------------------------------------- exit codes
 
 
+@pytest.mark.unit
 def test_exit_code_is_zero_when_clean() -> None:
     assert exit_code([], fail_on=Severity.BLOCKING) == 0
 
 
+@pytest.mark.unit
 def test_exit_code_is_one_for_warnings_only() -> None:
     warning = Finding(
         check="G9", severity=Severity.WARNING, requirement="FR-1", message="m", evidence="e"
@@ -515,6 +541,7 @@ def test_exit_code_is_one_for_warnings_only() -> None:
     assert exit_code([warning], fail_on=Severity.BLOCKING) == 1
 
 
+@pytest.mark.unit
 def test_exit_code_is_two_for_a_blocking_finding() -> None:
     blocking = Finding(
         check="X1", severity=Severity.BLOCKING, requirement="FR-1", message="m", evidence="e"
@@ -534,6 +561,7 @@ def _run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.unit
 def test_cli_exits_two_on_a_blocking_repository(planted: tuple[Path, Path, Path]) -> None:
     repo, _, _ = planted
     # The tool is imported from the real checkout; the repository it scans is the fixture, so
@@ -558,6 +586,7 @@ def test_cli_exits_two_on_a_blocking_repository(planted: tuple[Path, Path, Path]
     assert payload["summary"]["blocking"] >= 1
 
 
+@pytest.mark.unit
 def test_cli_accepts_an_unknown_milestone_as_a_hard_error(
     planted: tuple[Path, Path, Path],
 ) -> None:
@@ -574,6 +603,7 @@ def test_cli_accepts_an_unknown_milestone_as_a_hard_error(
 # printed; the subprocess tests prove the module runner works, these prove the function does.
 
 
+@pytest.mark.unit
 def test_cli_main_returns_two_and_prints_a_report(
     planted: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -600,6 +630,7 @@ def test_cli_main_returns_two_and_prints_a_report(
     assert payload["summary"]["blocking"] >= 1
 
 
+@pytest.mark.unit
 def test_cli_main_writes_the_report_to_a_file_and_returns_zero_when_clean(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -628,6 +659,7 @@ def test_cli_main_writes_the_report_to_a_file_and_returns_zero_when_clean(
     assert isinstance(written["findings"], list)
 
 
+@pytest.mark.unit
 def test_cli_main_reports_a_waiver_count(
     planted: tuple[Path, Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -666,6 +698,7 @@ def test_cli_main_reports_a_waiver_count(
     assert payload["summary"]["waived"] == 1
 
 
+@pytest.mark.unit
 def test_cli_main_honours_fail_on_warning_and_the_now_clock(
     planted: tuple[Path, Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -906,6 +939,7 @@ KNOWN_FINDINGS: dict[str, frozenset[str]] = {
 }
 
 
+@pytest.mark.integration
 def test_the_live_repository_scan_is_well_formed_and_deterministic() -> None:
     """Run the scan against this repository at HEAD; it must be well-formed and repeatable."""
     matrix = REPO_ROOT / "traceability" / "MATRIX.csv"
@@ -930,6 +964,7 @@ def test_the_live_repository_scan_is_well_formed_and_deterministic() -> None:
             assert key in finding.__dataclass_fields__
 
 
+@pytest.mark.integration
 def test_the_live_repository_has_no_finding_outside_the_known_record() -> None:
     """Every finding against this repository is either waived or recorded in KNOWN_FINDINGS."""
     matrix = REPO_ROOT / "traceability" / "MATRIX.csv"

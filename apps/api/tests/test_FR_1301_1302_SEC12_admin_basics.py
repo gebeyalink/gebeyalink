@@ -33,6 +33,8 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+pytestmark = [pytest.mark.integration]
+
 from apps.api.core import staff_password, staff_totp
 from apps.api.routers.admin import _ip
 

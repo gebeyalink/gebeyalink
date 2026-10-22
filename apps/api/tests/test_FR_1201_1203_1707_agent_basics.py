@@ -41,6 +41,8 @@ import psycopg.rows
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = [pytest.mark.integration]
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GATEWAY_SECRET = "test-gateway-secret"
 TERMS_VERSION = "2026-01-01"
