@@ -264,6 +264,7 @@ jobs:
             { echo "SIGNING_PRIVATE_KEY<<EOF"; cat /tmp/test-private.pem; echo "EOF"; }
             { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }
             python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"
+            python -c "import os,base64; print(f'TOTP_ENCRYPTION_KEY={base64.urlsafe_b64encode(os.urandom(32)).decode()}')"
           } >> "$GITHUB_ENV"
           rm -f /tmp/test-private.pem /tmp/test-public.pem
       - name: export the persistent scheduler's file location
@@ -1121,6 +1122,7 @@ jobs:
             { echo "SIGNING_PUBLIC_KEY<<EOF"; cat /tmp/test-public.pem; echo "EOF"; }
             # Throwaway for this job, for the same reason the signing keys are.
             python -c "import secrets; print(f'GATEWAY_SECRET={secrets.token_urlsafe(32)}')"
+            python -c "import os,base64; print(f'TOTP_ENCRYPTION_KEY={base64.urlsafe_b64encode(os.urandom(32)).decode()}')"
           } >> "$GITHUB_ENV"
           rm -f /tmp/test-private.pem /tmp/test-public.pem
       # Every setting the app reads is now resolved from two sources and no others: the
