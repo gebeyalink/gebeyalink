@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
 # SPEC §20: this file drives the real app against an ephemeral Postgres through the client
 # fixture, so it is an integration-layer test.
@@ -369,10 +370,9 @@ def test_fr_302_all_channels_write_source_and_honour_constraints(
     signed_in: Callable[..., dict[str, str]],
     listing_body: Callable[..., dict[str, object]],
     stored_listings: Callable[[], list[dict[str, object]]],
-    stored_photos: Callable[[], list[dict[str, object]]],
     sql: Callable[..., list[dict[str, object]]],
     code_for: Callable[[str], str],
-    ussd_session: Callable[..., object],
+    ussd_session: Callable[..., Response],
 ) -> None:
     """FR-302's matrix: each channel produces a listing with its own source and the constraint the requirement names for it."""  # noqa: E501
 
@@ -405,8 +405,6 @@ def test_fr_302_all_channels_write_source_and_honour_constraints(
     app_rows = stored_listings()[before_app:]
     assert len(app_rows) == 1
     assert app_rows[0]["source"] == "APP"
-    app_photos = stored_photos()
-    assert any(p.get("listing_id") or True for p in app_photos) or len(app_photos) >= 0
     # photo row exists for APP
     photos_all = sql("SELECT * FROM listing_photos")
     assert len(photos_all) >= 1
