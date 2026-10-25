@@ -9,12 +9,37 @@ that could not be kept.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+
+Rows = list[dict[str, object]]
+
+
+@pytest.fixture()
+def sql(postgres_url: str):  # type: ignore[no-untyped-def]
+    from psycopg.rows import dict_row
+
+    @contextmanager
+    def _connect() -> Iterator:
+        import psycopg
+
+        with psycopg.connect(postgres_url, row_factory=dict_row) as conn:
+            yield conn
+
+    def _sql(statement: str, params: tuple[object, ...] | None = None) -> Rows:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(statement, params or ())
+            if cur.description is None:
+                return []
+            return [dict(row) for row in cur.fetchall()]
+
+    yield _sql
+
 
 # SPEC §20: this file drives the real app against an ephemeral Postgres through the client
 # fixture, so it is an integration-layer test.
