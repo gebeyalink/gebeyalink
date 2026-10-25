@@ -21,7 +21,7 @@ Rows = list[dict[str, object]]
 
 
 @pytest.fixture()
-def sql(postgres_url: str):  # type: ignore[no-untyped-def]
+def sql(postgres_url: str) -> object:  # type: ignore[no-untyped-def,type-arg]
     from psycopg.rows import dict_row
 
     @contextmanager
