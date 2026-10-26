@@ -561,7 +561,7 @@ def test_fr_505_accepting_rejects_only_the_offers_that_no_longer_fit(
     """FR-505: accepting an offer rejects all other OPEN offers on that listing if
     remaining quantity < their quantity (partial-quantity offers remain open)."""
     seller = signed_in()
-    listing_id = post_listing(client, seller, listing_body, quantity_kg=100)
+    listing_id = post_listing(client, seller, listing_body(quantity_kg=100))
 
     buyer_a = signed_in("+251911000003")
     buyer_b = signed_in("+251911000004")
