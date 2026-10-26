@@ -11,8 +11,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
+
+# SPEC §20: this file drives the real app against an ephemeral Postgres through the client
+# fixture, so it is an integration-layer test.
+pytestmark = pytest.mark.integration
 
 
 def test_fr_302_all_channels_write_source_and_honour_constraints(
