@@ -546,3 +546,58 @@ def test_neither_party_may_accept_the_terms_they_wrote_themselves(
     # Ordered by depth, so this reads as the thread did: the buyer's bid superseded by the
     # seller's counter, which the buyer then superseded with a bid of their own.
     assert [row["status"] for row in stored_offers()] == ["SUPERSEDED", "SUPERSEDED", "OPEN"]
+
+
+def test_fr_505_accepting_leaves_only_the_offers_that_no_longer_fit_unacceptable(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    listing_body: Callable[..., dict[str, object]],
+    offer_body: Callable[..., dict[str, object]],
+    order_body: Callable[..., dict[str, object]],
+    idempotency_key: Callable[[], str],
+    stored_offers: Callable[[], list[dict[str, object]]],
+    stored_orders: Callable[[], list[dict[str, object]]],
+) -> None:
+    """FR-505, with the shape AC-19.1 gives it: acceptance strands the bids that no longer fit.
+
+    FR-505 asks that offers too large for what is left be rejected, and AC-19.1 records that the
+    rejection is the availability check rather than a write: the bid stays `OPEN` and its next
+    acceptance is refused with `OFFER_CONFLICT` and the kilos that remain. Sixty kilos out of a
+    hundred leaves forty, so the thirty- and ten-kilo bids still fit and can still be answered;
+    the fifty-kilo bid cannot, and cannot be accepted.
+    """
+    seller = signed_in()
+    # The smallest order is set below the ten-kilo offer so that every bid here is placeable:
+    # this test is about what acceptance does to the others, not about the minimum order.
+    listing_id = post_listing(client, seller, listing_body, quantity_kg=100, min_order_kg=10)
+
+    buyer_a = signed_in("+251911000003")
+    buyer_b = signed_in("+251911000004")
+    buyer_c = signed_in("+251911000005")
+    buyer_d = signed_in("+251911000006")
+
+    offer_a = place_offer(client, buyer_a, listing_id, offer_body, quantity_kg=60)
+    offer_b = place_offer(client, buyer_b, listing_id, offer_body, quantity_kg=30)
+    offer_c = place_offer(client, buyer_c, listing_id, offer_body, quantity_kg=10)
+    offer_d = place_offer(client, buyer_d, listing_id, offer_body, quantity_kg=50)
+
+    response = accept(client, seller, offer_a, order_body, idempotency_key)
+    assert response.status_code == 201, response.text
+    order = response.json()
+    assert order["quantity_kg"] == 60
+
+    by_id = {str(row["id"]): row for row in stored_offers()}
+    assert by_id[offer_a]["status"] == "ACCEPTED"
+    # No refusal is written to the other bids; AC-19.1 makes the arithmetic the rejection.
+    assert by_id[offer_b]["status"] == "OPEN"  # 30 <= 40 remaining
+    assert by_id[offer_c]["status"] == "OPEN"  # 10 <= 40 remaining
+    assert by_id[offer_d]["status"] == "OPEN"  # 50 > 40 remaining, but nothing writes to it
+
+    refused = accept(client, seller, offer_d, order_body, idempotency_key)
+    assert refused.status_code == 422, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "OFFER_CONFLICT"
+    assert error["details"]["available"] == 40
+    assert error["details"]["requested_kg"] == 50
+    assert {str(row["id"]): row["status"] for row in stored_offers()}[offer_d] == "OPEN"
+    assert len(stored_orders()) == 1

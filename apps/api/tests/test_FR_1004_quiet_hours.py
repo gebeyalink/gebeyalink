@@ -9,14 +9,16 @@ and a rule that compared the UTC clock would wrongly send it.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 
 import pytest
 
 from packages.shared.messaging.queues import (
+    EAT_ZONE,
     QUIET_HOURS_END_EAT,
     QUIET_HOURS_START_EAT,
     SmsPriority,
+    eat_calendar_date,
     should_queue_until_quiet_hours,
 )
 
@@ -76,3 +78,30 @@ def test_a_naive_timestamp_is_refused() -> None:
 def test_the_window_boundaries_are_the_declared_constants() -> None:
     assert time(21, 0) == QUIET_HOURS_START_EAT
     assert time(6, 0) == QUIET_HOURS_END_EAT
+
+
+@pytest.mark.parametrize(
+    ("utc_dt", "expected_eat_date"),
+    [
+        (datetime(2026, 10, 16, 20, 59, tzinfo=UTC), date(2026, 10, 16)),  # 23:59 EAT
+        (datetime(2026, 10, 16, 21, 0, tzinfo=UTC), date(2026, 10, 17)),  # 00:00 EAT next day
+        (datetime(2026, 10, 17, 0, 0, tzinfo=UTC), date(2026, 10, 17)),  # 03:00 EAT
+        (datetime(2026, 10, 17, 20, 59, tzinfo=UTC), date(2026, 10, 17)),  # 23:59 EAT
+    ],
+)
+def test_fr_2503_the_truncation_day_is_the_eat_calendar_day(
+    utc_dt: datetime, expected_eat_date: date
+) -> None:
+    """FR-2503/NFR-11: truncation to the EAT calendar day, not the UTC day."""
+    result = eat_calendar_date(utc_dt)
+    assert isinstance(result, date)
+    assert result == expected_eat_date
+
+    # The inverted proof: for an instant whose UTC day is the previous day,
+    # the EAT truncation is not the UTC truncation.
+    crossing = datetime(2026, 10, 16, 21, 0, tzinfo=UTC)
+    assert (
+        eat_calendar_date(crossing) != crossing.date()
+    )  # EAT day is 2026-10-17, UTC day is 2026-10-16
+    assert eat_calendar_date(crossing) == date(2026, 10, 17)
+    assert crossing.astimezone(EAT_ZONE).date() == date(2026, 10, 17)

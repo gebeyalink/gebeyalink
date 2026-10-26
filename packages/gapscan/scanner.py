@@ -110,20 +110,50 @@ def _read_test_files(repo: Path) -> list[Path]:
 
 
 def _read_test_ids(repo: Path) -> dict[str, list[str]]:
-    """I5: requirement ID -> test files whose function names carry it.
+    """I5: requirement ID -> test files that carry it, from the three places, and only these.
 
-    The ID is read from test *function* names (``def test_FR_601_...``), which is where the
-    naming checklist puts it, not from the file name — a file named for three requirements
-    would otherwise credit only the first. A file that names a requirement in any function is
-    the artifact for that requirement.
+    A requirement is covered when its ID appears in (a) a test file name, (b) a test function
+    name, or (c) a test file's module docstring or a test function's docstring. The guards:
+
+    * A file-name match counts only if the file contains at least one collected test function.
+    * A file name carrying multiple IDs (``test_FR_601_602_603_...``) counts for each ID it
+      explicitly lists; IDs are read as substrings of the name and never inferred.
+    * A docstring match counts only if the docstring lives in a test file and cites the ID
+      explicitly. The check reads whole docstrings, not prose sentences, so a mention inside
+      running text ("this tests the offer flow") is not a citation.
+
+    The ID is written with a hyphen outside the name and with an underscore inside it, so both
+    separators are matched. A file that names a requirement in any of the three places is its
+    artifact.
     """
     index: dict[str, list[str]] = {}
-    pattern = re.compile(r"^\s*(?:async\s+)?def\s+test_([A-Z]+)_(\d+[A-Z]?)", re.MULTILINE)
+    name_pattern = re.compile(r"(?<![A-Za-z0-9])(FR|SEC|NFR|PRV|G)[-_](\d+[A-Z]?)(?![0-9])")
+    func_pattern = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)", re.MULTILINE)
+    doc_pattern = re.compile(r'^\s*(?:"""|\'\'\')(.*?)(?:"""|\'\'\')', re.MULTILINE | re.DOTALL)
     for path in _read_test_files(repo):
         text = _read_text(path)
         rel = _relative(path, repo)
-        for prefix, number in pattern.findall(text):
-            index.setdefault(f"{prefix}-{number}", []).append(rel)
+        funcs = func_pattern.findall(text)
+        #: requirement IDs this file credits, collected from all three places.
+        found: set[str] = set()
+
+        # (a) the file name — only if the file holds at least one collected test function.
+        if funcs:
+            for prefix, number in name_pattern.findall(path.name):
+                found.add(f"{prefix}-{number}")
+
+        # (b) the function names.
+        for name in funcs:
+            for prefix, number in name_pattern.findall(name):
+                found.add(f"{prefix}-{number}")
+
+        # (c) module docstring and per-function docstrings.
+        for body in doc_pattern.findall(text):
+            for prefix, number in name_pattern.findall(body):
+                found.add(f"{prefix}-{number}")
+
+        for requirement in found:
+            index.setdefault(requirement, []).append(rel)
     return index
 
 

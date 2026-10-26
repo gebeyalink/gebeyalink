@@ -19,7 +19,7 @@ module only decides "send now" versus "queue it".
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from enum import StrEnum
 from typing import Final
 
@@ -83,6 +83,18 @@ def priority_for(template_id: str) -> SmsPriority:
         return load_templates()[template_id].priority
     except KeyError:
         raise KeyError(f"no template with id {template_id!r} in the registry") from None
+
+
+def eat_calendar_date(dt: datetime) -> date:
+    """Truncate a timestamp to its EAT calendar day (Africa/Addis_Ababa, UTC+3).
+
+    NFR-11: all date math uses EAT-zone truncation. The rule is applied by
+    converting to EAT and taking the calendar date.
+    """
+    if dt.tzinfo is None:
+        raise ValueError("dt must carry a timezone")
+
+    return dt.astimezone(EAT_ZONE).date()
 
 
 def should_queue_until_quiet_hours(send_at_utc: datetime, priority: SmsPriority) -> bool:
