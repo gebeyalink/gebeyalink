@@ -548,7 +548,7 @@ def test_neither_party_may_accept_the_terms_they_wrote_themselves(
     assert [row["status"] for row in stored_offers()] == ["SUPERSEDED", "SUPERSEDED", "OPEN"]
 
 
-def test_fr_505_accepting_rejects_only_the_offers_that_no_longer_fit(
+def test_fr_505_accepting_leaves_only_the_offers_that_no_longer_fit_unacceptable(
     client: TestClient,
     signed_in: Callable[..., dict[str, str]],
     listing_body: Callable[..., dict[str, object]],
@@ -558,8 +558,14 @@ def test_fr_505_accepting_rejects_only_the_offers_that_no_longer_fit(
     stored_offers: Callable[[], list[dict[str, object]]],
     stored_orders: Callable[[], list[dict[str, object]]],
 ) -> None:
-    """FR-505: accepting an offer rejects all other OPEN offers on that listing if
-    remaining quantity < their quantity (partial-quantity offers remain open)."""
+    """FR-505, with the shape AC-19.1 gives it: acceptance strands the bids that no longer fit.
+
+    FR-505 asks that offers too large for what is left be rejected, and AC-19.1 records that the
+    rejection is the availability check rather than a write: the bid stays `OPEN` and its next
+    acceptance is refused with `OFFER_CONFLICT` and the kilos that remain. Sixty kilos out of a
+    hundred leaves forty, so the thirty- and ten-kilo bids still fit and can still be answered;
+    the fifty-kilo bid cannot, and cannot be accepted.
+    """
     seller = signed_in()
     # The smallest order is set below the ten-kilo offer so that every bid here is placeable:
     # this test is about what acceptance does to the others, not about the minimum order.
@@ -582,7 +588,16 @@ def test_fr_505_accepting_rejects_only_the_offers_that_no_longer_fit(
 
     by_id = {str(row["id"]): row for row in stored_offers()}
     assert by_id[offer_a]["status"] == "ACCEPTED"
+    # No refusal is written to the other bids; AC-19.1 makes the arithmetic the rejection.
     assert by_id[offer_b]["status"] == "OPEN"  # 30 <= 40 remaining
     assert by_id[offer_c]["status"] == "OPEN"  # 10 <= 40 remaining
-    assert by_id[offer_d]["status"] == "REJECTED"  # 50 > 40 remaining
+    assert by_id[offer_d]["status"] == "OPEN"  # 50 > 40 remaining, but nothing writes to it
+
+    refused = accept(client, seller, offer_d, order_body, idempotency_key)
+    assert refused.status_code == 422, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "OFFER_CONFLICT"
+    assert error["details"]["available"] == 40
+    assert error["details"]["requested_kg"] == 50
+    assert {str(row["id"]): row["status"] for row in stored_offers()}[offer_d] == "OPEN"
     assert len(stored_orders()) == 1
