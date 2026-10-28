@@ -19,7 +19,10 @@ message declares which one it is.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
@@ -30,6 +33,8 @@ from packages.shared.i18n.languages import Language
 from packages.shared.messaging.queues import SmsPriority
 
 TEMPLATES_DIR: Final[Path] = Path(__file__).parent / "templates"
+REVIEWS_FILENAME: Final[str] = "reviews.yaml"
+REVIEWS_PATH: Final[Path] = Path(__file__).parent / REVIEWS_FILENAME
 
 _REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "id",
@@ -46,6 +51,15 @@ _KNOWN_VARIANTS: Final[frozenset[str]] = frozenset({"am", "om", "en", "ti"})
 #: message by the same rules. A channel outside this set — push, email — is refused with its
 #: name in the failure, so that "we do not carry this" is never silent.
 _KNOWN_CHANNELS: Final[frozenset[str]] = frozenset({"sms", "ussd"})
+_REVIEW_FIELDS: Final[tuple[str, ...]] = (
+    "template_id",
+    "language",
+    "reviewer",
+    "reviewed_at",
+    "decision",
+    "hash",
+)
+_HASH_PATTERN: Final[re.Pattern[str]] = re.compile(r"sha256:[0-9a-fA-F]{64}")
 
 
 class TemplateReview(StrEnum):
@@ -53,6 +67,20 @@ class TemplateReview(StrEnum):
 
     SPEC_SUPPLIED = "spec_supplied"
     UNREVIEWED = "unreviewed"
+
+
+class EffectiveReviewStatus(StrEnum):
+    """What the registry knows about a variant once the reviews file is joined in.
+
+    ``review_status`` is what the template declares; this is the answer after the review
+    record is read. A declaration of ``spec_supplied`` is always trusted; otherwise the
+    variant is reviewed when a matching hash exists and stale when the words have moved.
+    """
+
+    SPEC_SUPPLIED = "spec_supplied"
+    UNREVIEWED = "unreviewed"
+    REVIEWED = "reviewed"
+    STALE = "stale"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +92,11 @@ class MessageTemplate:
     share one provenance — the specification supplies the English and the Amharic of a menu
     while the Oromo is this team's draft — the map says which variant is which, and a lone
     label would have had to lie about two of the three.
+
+    ``effective_review_status`` is the same question answered against the review record: a
+    variant is ``spec_supplied`` when the template says so, otherwise it is ``reviewed`` if a
+    matching hash exists, ``stale`` if the words changed after review, and ``unreviewed`` if
+    nobody has looked at it yet.
     """
 
     id: str
@@ -73,26 +106,57 @@ class MessageTemplate:
     variants: dict[str, str]
     review_status: TemplateReview
     variant_review_status: dict[str, TemplateReview]
+    effective_review_status: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewEntry:
+    """One reviewer's record of one variant, as stored in ``reviews.yaml``."""
+
+    template_id: str
+    language: str
+    reviewer: str
+    reviewed_at: str
+    decision: str
+    content_hash: str
+    notes: str
+
+
+def hash_variant(text: str) -> str:
+    """The hash ``reviews.yaml`` records for a raw variant, in ``sha256:...`` form.
+
+    The hash is over the words the reviewer read — the placeholder-bearing template
+    string, not the rendered copy. A fixture change therefore leaves the review standing;
+    an edit to the template text makes it stale.
+    """
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load_templates(directory: Path | None = None) -> dict[str, MessageTemplate]:
     """Parse every ``templates/*.yaml`` file and key the result by template id.
 
     The argument exists so tests can point the loader at a throwaway directory holding a
-    deliberately broken file; production always uses ``TEMPLATES_DIR``.
+    deliberately broken file; production always uses ``TEMPLATES_DIR``. A custom directory
+    keeps its ``reviews.yaml`` beside its template files, which is what the round-trip test
+    needs; production reads the package's fixed ``REVIEWS_PATH``.
 
     Raises:
         ValueError: if a YAML file is not a list of mappings, an entry is missing a
-            required field, holds a value this registry cannot use, or repeats an id.
+            required field, holds a value this registry cannot use, repeats an id, or the
+            reviews file is malformed or names a template or language this registry does not
+            carry.
     """
     root = directory or TEMPLATES_DIR
+    reviews_path = REVIEWS_PATH if directory is None else directory / REVIEWS_FILENAME
+    reviews = _load_reviews(reviews_path)
     registry: dict[str, MessageTemplate] = {}
     for path in sorted(root.glob("*.yaml")):
         for raw in _read_templates(path):
-            template = _validate_template(path, raw)
+            template = _validate_template(path, raw, reviews)
             if template.id in registry:
                 raise ValueError(f"{path}: duplicate template id {template.id!r}")
             registry[template.id] = template
+    _validate_review_entries(registry, reviews, reviews_path)
     return registry
 
 
@@ -108,7 +172,139 @@ def _read_templates(path: Path) -> list[Any]:
     return parsed
 
 
-def _validate_template(path: Path, parsed: Any) -> MessageTemplate:
+def _load_reviews(path: Path) -> dict[tuple[str, str], ReviewEntry]:
+    """Read the review record, or answer with none when the file is absent.
+
+    The record is deliberately strict: a review that lost its hash, named a decision this
+    workflow does not use, or repeated a variant is a build-time mistake, not something to
+    paper over at read time. A missing file is not a mistake — it means nobody has reviewed
+    anything yet.
+    """
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            parsed: Any = yaml.safe_load(handle)
+    except yaml.YAMLError as error:
+        raise ValueError(f"{path}: could not be read as YAML ({error})") from error
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{path}: expected a mapping with a 'reviews' list")
+    raw_reviews = parsed.get("reviews")
+    if not isinstance(raw_reviews, list):
+        raise ValueError(f"{path}: 'reviews' must be a list")
+
+    reviews: dict[tuple[str, str], ReviewEntry] = {}
+    for index, raw in enumerate(raw_reviews, start=1):
+        entry = _parse_review_entry(path, index, raw)
+        key = (entry.template_id, entry.language)
+        if key in reviews:
+            raise ValueError(
+                f"{path}: review {index} repeats {entry.template_id!r}/{entry.language!r}"
+            )
+        reviews[key] = entry
+    return reviews
+
+
+def _parse_review_entry(path: Path, index: int, raw: Any) -> ReviewEntry:
+    """One review entry, with every field this workflow needs and no guessed defaults."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: review {index} must be a mapping")
+    missing = [name for name in _REVIEW_FIELDS if name not in raw]
+    if missing:
+        raise ValueError(
+            f"{path}: review {index} is missing required field(s): {', '.join(missing)}"
+        )
+
+    template_id = raw["template_id"]
+    if not isinstance(template_id, str) or not template_id:
+        raise ValueError(f"{path}: review {index} template_id must be a non-empty string")
+    language = raw["language"]
+    if not isinstance(language, str) or not language:
+        raise ValueError(f"{path}: review {index} language must be a non-empty string")
+    reviewer = raw["reviewer"]
+    if not isinstance(reviewer, str) or not reviewer:
+        raise ValueError(f"{path}: review {index} reviewer must be a non-empty string")
+    decision = raw["decision"]
+    if decision not in {"approved", "revise"}:
+        raise ValueError(
+            f"{path}: review {index} decision must be 'approved' or 'revise', got {decision!r}"
+        )
+    content_hash = raw["hash"]
+    if not isinstance(content_hash, str) or not _HASH_PATTERN.fullmatch(content_hash):
+        raise ValueError(
+            f"{path}: review {index} hash must be 'sha256:' followed by 64 hex characters"
+        )
+    notes = raw.get("notes", "")
+    if not isinstance(notes, str):
+        raise ValueError(f"{path}: review {index} notes must be a string")
+    return ReviewEntry(
+        template_id=template_id,
+        language=language,
+        reviewer=reviewer,
+        reviewed_at=_parse_reviewed_at(path, index, raw["reviewed_at"]),
+        decision=decision,
+        content_hash=content_hash,
+        notes=notes,
+    )
+
+
+def _parse_reviewed_at(path: Path, index: int, raw: Any) -> str:
+    """A review date, accepted as YAML's date or as its ISO-8601 string form."""
+    if isinstance(raw, datetime):
+        return raw.date().isoformat()
+    if isinstance(raw, date):
+        return raw.isoformat()
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(raw).isoformat()
+        except ValueError as error:
+            raise ValueError(f"{path}: review {index} reviewed_at is not an ISO date") from error
+    raise ValueError(f"{path}: review {index} reviewed_at must be a date")
+
+
+def _validate_review_entries(
+    registry: dict[str, MessageTemplate],
+    reviews: dict[tuple[str, str], ReviewEntry],
+    path: Path,
+) -> None:
+    """Every review must name a template and language the registry actually carries."""
+    for template_id, language in reviews:
+        template = registry.get(template_id)
+        if template is None:
+            raise ValueError(f"{path}: review names unknown template {template_id!r}")
+        if language not in template.variants:
+            raise ValueError(
+                f"{path}: review names unknown language {language!r} for template {template_id!r}"
+            )
+
+
+def _effective_review_status(
+    template_id: str,
+    variants: dict[str, str],
+    variant_review_status: dict[str, TemplateReview],
+    reviews: dict[tuple[str, str], ReviewEntry],
+) -> dict[str, str]:
+    """Join the template's declared provenance with the review record, per language."""
+    effective: dict[str, str] = {}
+    for language, text in variants.items():
+        if variant_review_status[language] is TemplateReview.SPEC_SUPPLIED:
+            effective[language] = EffectiveReviewStatus.SPEC_SUPPLIED.value
+            continue
+        entry = reviews.get((template_id, language))
+        if entry is None:
+            effective[language] = EffectiveReviewStatus.UNREVIEWED.value
+        elif entry.content_hash.lower() == hash_variant(text):
+            effective[language] = EffectiveReviewStatus.REVIEWED.value
+        else:
+            effective[language] = EffectiveReviewStatus.STALE.value
+    return effective
+
+
+def _validate_template(
+    path: Path,
+    parsed: Any,
+    reviews: dict[tuple[str, str], ReviewEntry],
+) -> MessageTemplate:
     """Turn one parsed YAML entry into a template, or refuse it with the reasons why."""
     if not isinstance(parsed, dict):
         raise ValueError(f"{path}: every template must be a mapping, got {type(parsed).__name__}")
@@ -131,6 +327,9 @@ def _validate_template(path: Path, parsed: Any) -> MessageTemplate:
 
     variants = _parse_variants(template_id, path, parsed["variants"])
     review_status = _parse_review_status(template_id, path, parsed["review_status"])
+    variant_review_status = _parse_variant_review_status(
+        template_id, path, variants, review_status, parsed.get("variant_review_status")
+    )
     return MessageTemplate(
         id=template_id,
         channel=channel,
@@ -138,8 +337,9 @@ def _validate_template(path: Path, parsed: Any) -> MessageTemplate:
         placeholders=_parse_placeholders(template_id, path, parsed["placeholders"]),
         variants=variants,
         review_status=review_status,
-        variant_review_status=_parse_variant_review_status(
-            template_id, path, variants, review_status, parsed.get("variant_review_status")
+        variant_review_status=variant_review_status,
+        effective_review_status=_effective_review_status(
+            template_id, variants, variant_review_status, reviews
         ),
     )
 
