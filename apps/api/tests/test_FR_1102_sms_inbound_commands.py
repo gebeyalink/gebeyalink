@@ -19,12 +19,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, date, datetime, tzinfo
-from typing import Any
+from typing import Any, Self
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from typing_extensions import Self
 
 from apps.api.providers.sms import RecordingSmsProvider
 
