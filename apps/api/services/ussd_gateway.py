@@ -65,7 +65,7 @@ from apps.api.services.order_service import effective_status as effective_order_
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.languages import DEFAULT_LANGUAGE, Language
 from packages.shared.messaging.dispatcher import format_etb, parse_etb_to_santim
-from packages.shared.messaging.queues import EAT_ZONE
+from packages.shared.messaging.queues import EAT_ZONE, eat_calendar_date
 from packages.ussd.engine import UssdRefusalError
 from packages.ussd.render import render
 from packages.ussd.session import SessionState
@@ -502,7 +502,7 @@ class UssdGateway:
             raise UssdRefusalError("ussd_price_unavailable")
         region = await self._regions.find(region_code)
         region_name = _region_name(region) if region is not None else region_code
-        today = datetime.now(UTC).date()
+        today = eat_calendar_date(datetime.now(UTC))
         parts: list[str] = []
         crops = await self._crops.list_active_kg_crops()
         for crop in crops:

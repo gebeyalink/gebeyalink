@@ -1,6 +1,6 @@
-"""FR-1102, the nine SMS verbs over the inbound endpoint, end to end.
+﻿"""FR-1102, the nine SMS verbs over the inbound endpoint, end to end.
 
-Every command in §14.4 is sent as a signed text message and the reply is read back from the
+Every command in Â§14.4 is sent as a signed text message and the reply is read back from the
 messaging backend. Where a verb changes something, the change is read from PostgreSQL rather
 than from the service that made it, because a test that asks the API whether the API wrote a
 row proves very little.
@@ -18,6 +18,7 @@ already refused for a reason retrying cannot change; the refusal reaches the tra
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -389,3 +390,34 @@ def test_an_unknown_word_answers_with_help(
         sms_recorder.messages_to(SELLER)[-1].body
         == "Help: PRICE POST OFFER STATUS CANCEL PAYOUTS. USSD *851#"
     )
+
+
+def test_fr_2503_the_sms_default_harvest_date_is_the_eat_day(
+    client: TestClient,
+    signed_in: Callable[..., dict[str, str]],
+    sms_inbound: Callable[..., httpx.Response],
+    sms_recorder: RecordingSmsProvider,
+    stored_listings: Callable[[], list[dict[str, object]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _as_seller(client, signed_in)
+    frozen = datetime(2026, 10, 16, 22, 0, tzinfo=UTC)
+    import apps.api.services.listing_service as listing_service
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is UTC:
+                return frozen
+            if tz is None:
+                return frozen.replace(tzinfo=None)
+            return frozen.astimezone(tz)
+
+    monkeypatch.setattr(listing_service, "datetime", FrozenDateTime)
+    response = sms_inbound(client, "POST teff 1500 30", from_phone=SELLER)
+    assert response.status_code == 200
+    rows = stored_listings()
+    assert len(rows) == 1
+    assert rows[0]["harvest_date"] == date(2026, 10, 17)
+    assert rows[0]["harvest_date"] != date(2026, 10, 16)
+
