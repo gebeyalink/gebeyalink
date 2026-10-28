@@ -419,4 +419,3 @@ def test_fr_2503_the_sms_default_harvest_date_is_the_eat_day(
     assert len(rows) == 1
     assert rows[0]["harvest_date"] == date(2026, 10, 17)
     assert rows[0]["harvest_date"] != date(2026, 10, 16)
-
