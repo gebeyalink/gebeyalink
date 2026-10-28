@@ -151,6 +151,8 @@ def load_templates(directory: Path | None = None) -> dict[str, MessageTemplate]:
     reviews = _load_reviews(reviews_path)
     registry: dict[str, MessageTemplate] = {}
     for path in sorted(root.glob("*.yaml")):
+        if path.name == REVIEWS_FILENAME:
+            continue
         for raw in _read_templates(path):
             template = _validate_template(path, raw, reviews)
             if template.id in registry:
