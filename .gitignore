@@ -63,6 +63,9 @@ coverage.xml
 # source: a report is regenerated on demand and carries the commit it was taken against, so a
 # committed one would be stale the moment anything moved.
 /gapscan-report.json
+# The translation review worksheet. It is a transient hand-out to reviewers, regenerated from
+# the registry and the review record; the tracked record is packages/shared/i18n/reviews.yaml.
+/exports/
 
 # ── Internal records — not part of the shipped codebase ─────────────────────
 # The session handoff and the baseline-folder artifacts belong on disk, not in
