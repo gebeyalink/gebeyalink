@@ -64,7 +64,7 @@ from apps.api.schemas.listing import ListingResponse, PhotoResponse
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.languages import Language
 from packages.shared.i18n.templates import load_templates
-from packages.shared.messaging.queues import SmsPriority, priority_rank
+from packages.shared.messaging.queues import SmsPriority, eat_calendar_date, priority_rank
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -658,7 +658,9 @@ class ListingService:
 
     async def _judge_price(self, values: ListingValues, now: datetime) -> bool:
         """Flag this price against the last published average, if there is one to judge."""
-        index = await self._price_indices.latest_for(values.crop_id, values.region_code, now.date())
+        index = await self._price_indices.latest_for(
+            values.crop_id, values.region_code, eat_calendar_date(now)
+        )
         return is_price_outlier(values.unit_price_santim, _usable_average(index))
 
     def _values_from(self, body: dict[str, Any], expires_at_default: datetime) -> ListingValues:
@@ -734,7 +736,7 @@ def validate_listing_values(values: ListingValues, now: datetime) -> None:
     if values.unit_price_santim <= 0:
         problems["unit_price_santim"] = "must_be_positive"
 
-    today = now.date()
+    today = eat_calendar_date(now)
     if values.harvest_date < today:
         problems["harvest_date"] = "must_not_be_in_the_past"
     elif values.harvest_date > today + MAX_HARVEST_WINDOW:
@@ -852,7 +854,7 @@ def _with_sms_defaults(body: dict[str, Any], now: datetime) -> dict[str, Any]:
     """
     filled = {**body}
     filled.setdefault("min_order_kg", 1)
-    filled.setdefault("harvest_date", now.date())
+    filled.setdefault("harvest_date", eat_calendar_date(now))
     filled.setdefault("available_from", now)
     filled.setdefault("delivery_options", [DeliveryOption.PICKUP.value])
     return filled
