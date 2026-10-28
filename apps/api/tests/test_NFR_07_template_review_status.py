@@ -313,9 +313,10 @@ def test_the_export_writes_one_row_per_template_and_language(
     assert len(rows) == expected
     assert len({(row["template_id"], row["language"]) for row in rows}) == expected
     spec_expected = sum(
-        len(template.variants)
+        1
         for template in registry.values()
-        if template.review_status is TemplateReview.SPEC_SUPPLIED
+        for language in template.variants
+        if template.effective_review_status[language] == "spec_supplied"
     )
     spec_rows = [row for row in rows if row["review_status_current"] == "spec_supplied"]
     assert len(spec_rows) == spec_expected
