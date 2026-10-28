@@ -1,0 +1,11 @@
+# O-3 review record. One entry per (template_id, language) a native speaker has read.
+#
+# The hash is `sha256:` plus the SHA-256 of the raw variant text — the placeholder-bearing
+# template string, not the rendered copy. A change to the words makes the review stale; a
+# change to a placeholder fixture does not. Use the export command's --hash helper to fill it:
+#
+#   python -m apps.api.management.export_translations --hash listing_created en
+#
+# The registry ships with no reviews yet: 65 templates are unreviewed and 7 are supplied by
+# the specification. This file is the record the first review batch writes into.
+reviews: []
