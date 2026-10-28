@@ -18,12 +18,13 @@ already refused for a reason retrying cannot change; the refusal reaches the tra
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from typing_extensions import Self
 
 from apps.api.providers.sms import RecordingSmsProvider
 
@@ -406,12 +407,11 @@ def test_fr_2503_the_sms_default_harvest_date_is_the_eat_day(
 
     class FrozenDateTime(datetime):
         @classmethod
-        def now(cls, tz=None):
-            if tz is UTC:
-                return frozen
-            if tz is None:
-                return frozen.replace(tzinfo=None)
-            return frozen.astimezone(tz)
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            moment = frozen
+            if tz is not None:
+                return moment.astimezone(tz)  # type: ignore[return-value]
+            return moment.replace(tzinfo=None)  # type: ignore[return-value]
 
     monkeypatch.setattr(listing_service, "datetime", FrozenDateTime)
     response = sms_inbound(client, "POST teff 1500 30", from_phone=SELLER)
