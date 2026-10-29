@@ -51,13 +51,14 @@ SPEC_SKELETON_DIRS: tuple[str, ...] = (
     ".github/workflows",
 )
 
-# SPEC §22 names exactly these five runbooks. No others are permitted.
+# SPEC §22 names exactly these five runbooks. PRV-03 requires data-breach.md in addition.
 SPEC_RUNBOOKS: tuple[str, ...] = (
     "escrow-mismatch.md",
     "payment-outage-failover.md",
     "sms-backlog.md",
     "ussd-timeout-spike.md",
     "restore-drill.md",
+    "data-breach.md",
 )
 
 
@@ -69,7 +70,7 @@ def test_skeleton_directory_exists(relative_path: str) -> None:
 
 @pytest.mark.parametrize("runbook", SPEC_RUNBOOKS)
 def test_runbook_present(runbook: str) -> None:
-    """Each of the five SPEC §22 runbooks exists and is a non-empty file."""
+    """Each SPEC §22 runbook (plus PRV-03 data-breach.md) exists and is a non-empty file."""
     path: Path = REPO_ROOT / "infra" / "runbooks" / runbook
     assert path.is_file(), f"missing runbook: {runbook}"
     assert path.read_text(encoding="utf-8").strip(), f"empty runbook: {runbook}"
