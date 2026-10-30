@@ -756,7 +756,10 @@ KNOWN_FINDINGS: dict[str, frozenset[str]] = {
     "G3": frozenset(
         {
             "SEC-12",
+            "FR-1101",
+            "FR-1102",
             "FR-1103",
+            "FR-2501",
         }
     ),
     # G4 findings are keyed by requirement and the exact path the test drives, so a *different*
