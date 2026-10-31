@@ -984,9 +984,10 @@ def test_the_live_repository_has_no_finding_outside_the_known_record() -> None:
     from packages.gapscan.scanner import _build_context
 
     ctx = _build_context(milestone=milestone, matrix=matrix, openapi=openapi, repo=REPO_ROOT)
-    assert ctx.openapi_source in ("docs/openapi.yaml", "apps/api/openapi.snapshot.json"), (
-        f"gapscan read unexpected contract source: {ctx.openapi_source}"
-    )
+    assert ctx.openapi_source in (
+        "docs/openapi.yaml",
+        "apps/api/openapi.snapshot.json",
+    ), f"gapscan read unexpected contract source: {ctx.openapi_source}"
 
     unexpected: list[str] = []
     for finding in findings:
@@ -1027,7 +1028,10 @@ def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent
 
     # Build a tmp tree with only the snapshot, no docs/
     (tmp_path / "apps" / "api").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "apps" / "api" / "openapi.snapshot.json", tmp_path / "apps" / "api" / "openapi.snapshot.json")
+    shutil.copy(
+        REPO_ROOT / "apps" / "api" / "openapi.snapshot.json",
+        tmp_path / "apps" / "api" / "openapi.snapshot.json",
+    )
     (tmp_path / "traceability").mkdir(parents=True)
     shutil.copy(REPO_ROOT / "traceability" / "MATRIX.csv", tmp_path / "traceability" / "MATRIX.csv")
 
