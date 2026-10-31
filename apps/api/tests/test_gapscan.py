@@ -1023,8 +1023,8 @@ def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent
     """In CI, docs/ is not present; the scan must fall back to the committed snapshot."""
     import shutil
 
-    from packages.gapscan.scanner import _build_context
     from packages.gapscan.config import Milestone
+    from packages.gapscan.scanner import _build_context
 
     # Build a tmp tree with only the snapshot, no docs/
     (tmp_path / "apps" / "api").mkdir(parents=True)
@@ -1049,7 +1049,7 @@ def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent
     assert ctx.openapi_source == "apps/api/openapi.snapshot.json"
     # Snapshot should carry FR-1101/FR-2501 in x-requirements
     reqs_with_ops = set()
-    for method, path, ids in ctx.operations:
+    for _method, _path, ids in ctx.operations:
         for rid in ids:
             if rid in ("FR-1101", "FR-2501"):
                 reqs_with_ops.add(rid)
