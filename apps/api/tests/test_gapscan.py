@@ -1028,10 +1028,10 @@ def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent
 
     # Build a tmp tree with only the snapshot, no docs/
     (tmp_path / "apps" / "api").mkdir(parents=True)
-    shutil.copy(
-        REPO_ROOT / "apps" / "api" / "openapi.snapshot.json",
-        tmp_path / "apps" / "api" / "openapi.snapshot.json",
-    )
+    snapshot_src = REPO_ROOT / "apps" / "api" / "openapi.snapshot.json"
+    if not snapshot_src.exists():
+        pytest.skip("snapshot not available")
+    shutil.copy(snapshot_src, tmp_path / "apps" / "api" / "openapi.snapshot.json")
     (tmp_path / "traceability").mkdir(parents=True)
     matrix_path = tmp_path / "traceability" / "MATRIX.csv"
     matrix_path.write_text(
