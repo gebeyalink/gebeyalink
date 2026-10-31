@@ -230,7 +230,7 @@ def _context(repo: Path, matrix: Path, openapi: Path, milestone: Milestone) -> C
     return Context(
         milestone=milestone,
         matrix_rows=scanner._read_matrix(matrix),
-        operations=scanner._read_openapi(openapi),
+        operations=scanner._read_openapi_file(openapi),
         test_ids=scanner._read_test_ids(repo),
         test_files=scanner._read_test_files(repo),
         production_files=scanner._read_production_files(repo),
