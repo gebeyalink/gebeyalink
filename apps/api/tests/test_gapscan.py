@@ -1033,7 +1033,13 @@ def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent
         tmp_path / "apps" / "api" / "openapi.snapshot.json",
     )
     (tmp_path / "traceability").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "traceability" / "MATRIX.csv", tmp_path / "traceability" / "MATRIX.csv")
+    matrix_path = tmp_path / "traceability" / "MATRIX.csv"
+    matrix_path.write_text(
+        "requirement_id,description,category,applicable_layers,db_status,backend_status,api_status,frontend_status,integration_status,authorization_status,test_status,e2e_status,overall_status,blocking_issue,evidence_reference,notes,validation_status\n"
+        "FR-1101,test,FUNCTIONAL,L1,L1,DONE,NOT_STARTED,DONE,NOT_STARTED,NOT_STARTED,DONE,NOT_STARTED,IN_PROGRESS,-,,test,NOT_STARTED\n"
+        "FR-2501,test,FUNCTIONAL,L1,L1,DONE,NOT_STARTED,DONE,NOT_STARTED,NOT_STARTED,DONE,NOT_STARTED,IN_PROGRESS,-,,test,NOT_STARTED\n",
+        encoding="utf-8",
+    )
 
     milestone = Milestone(id="phase-1", title="Phase 1", in_scope=frozenset())
     matrix = tmp_path / "traceability" / "MATRIX.csv"
