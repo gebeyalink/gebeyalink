@@ -978,6 +978,16 @@ def test_the_live_repository_has_no_finding_outside_the_known_record() -> None:
     waivers = load_waivers(REPO_ROOT / "packages" / "gapscan" / "waivers.yaml")
     today = min(waiver.expires for waiver in waivers)
 
+    # The scan should have resolved and named the contract it read
+    # We need to get the context - but easier to just verify by checking findings don't have issues
+    # Actually check: scan reads via _build_context which sets openapi_source
+    from packages.gapscan.scanner import _build_context
+
+    ctx = _build_context(milestone=milestone, matrix=matrix, openapi=openapi, repo=REPO_ROOT)
+    assert ctx.openapi_source in ("docs/openapi.yaml", "apps/api/openapi.snapshot.json"), (
+        f"gapscan read unexpected contract source: {ctx.openapi_source}"
+    )
+
     unexpected: list[str] = []
     for finding in findings:
         if any(waiver.covers(finding, today=today) for waiver in waivers):
@@ -1004,3 +1014,33 @@ def _known_key(finding: Finding) -> str:
         if match:
             return f"{finding.requirement}|{match.group(1)}"
     return finding.requirement
+
+
+def test_the_scan_reads_the_committed_snapshot_when_the_local_contract_is_absent(
+    tmp_path: Path,
+) -> None:
+    """In CI, docs/ is not present; the scan must fall back to the committed snapshot."""
+    import shutil
+
+    from packages.gapscan.scanner import _build_context
+    from packages.gapscan.config import Milestone
+
+    # Build a tmp tree with only the snapshot, no docs/
+    (tmp_path / "apps" / "api").mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "apps" / "api" / "openapi.snapshot.json", tmp_path / "apps" / "api" / "openapi.snapshot.json")
+    (tmp_path / "traceability").mkdir(parents=True)
+    shutil.copy(REPO_ROOT / "traceability" / "MATRIX.csv", tmp_path / "traceability" / "MATRIX.csv")
+
+    milestone = Milestone(id="phase-1", title="Phase 1", in_scope=frozenset())
+    matrix = tmp_path / "traceability" / "MATRIX.csv"
+    openapi = tmp_path / "docs" / "openapi.yaml"  # doesn't exist
+
+    ctx = _build_context(milestone=milestone, matrix=matrix, openapi=openapi, repo=tmp_path)
+    assert ctx.openapi_source == "apps/api/openapi.snapshot.json"
+    # Snapshot should carry FR-1101/FR-2501 in x-requirements
+    reqs_with_ops = set()
+    for method, path, ids in ctx.operations:
+        for rid in ids:
+            if rid in ("FR-1101", "FR-2501"):
+                reqs_with_ops.add(rid)
+    assert reqs_with_ops  # snapshot documents these requirements
