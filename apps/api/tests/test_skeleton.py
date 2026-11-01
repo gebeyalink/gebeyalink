@@ -58,6 +58,7 @@ SPEC_RUNBOOKS: tuple[str, ...] = (
     "sms-backlog.md",
     "ussd-timeout-spike.md",
     "restore-drill.md",
+    "data-breach.md",
 )
 
 
