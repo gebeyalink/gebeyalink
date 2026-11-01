@@ -56,15 +56,17 @@ def scan(
 
 
 def _build_context(*, milestone: Milestone, matrix: Path, openapi: Path, repo: Path) -> Context:
+    operations, openapi_source = _read_openapi_resolved(openapi, repo)
     return Context(
         milestone=milestone,
         matrix_rows=_read_matrix(matrix),
-        operations=_read_openapi(openapi),
+        operations=operations,
         test_ids=_read_test_ids(repo),
         test_files=_read_test_files(repo),
         production_files=_read_production_files(repo),
         frontend_files=_read_frontend_files(repo),
         tree_names=_read_tree_names(repo),
+        openapi_source=openapi_source,
     )
 
 
@@ -76,7 +78,36 @@ def _read_matrix(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
-def _read_openapi(path: Path) -> list[tuple[str, str, list[str]]]:
+def _read_openapi_resolved(path: Path, repo: Path) -> tuple[list[tuple[str, str, list[str]]], str]:
+    """Resolve the API contract with fallback for CI.
+
+    In CI, docs/ is not in the checkout; the committed snapshot is the served schema,
+    and the scan reads it so the test actually exercises the contract in CI.
+    """
+    # If the explicitly provided path exists, use it (owner's local contract)
+    if path.exists():
+        ops = _read_openapi_file(path)
+        return ops, str(path)
+
+    # Try docs/openapi.yaml relative to repo
+    docs_path = repo / "docs" / "openapi.yaml"
+    if docs_path.exists():
+        ops = _read_openapi_file(docs_path)
+        return ops, "docs/openapi.yaml"
+
+    # Fallback to committed snapshot
+    snapshot_path = repo / "apps" / "api" / "openapi.snapshot.json"
+    if snapshot_path.exists():
+        ops = _read_openapi_file(snapshot_path)
+        return ops, "apps/api/openapi.snapshot.json"
+
+    raise FileNotFoundError(
+        "the gap scan found no API contract (docs/openapi.yaml or apps/api/openapi.snapshot.json); "
+        "the scan cannot check frontend coverage without one."
+    )
+
+
+def _read_openapi_file(path: Path) -> list[tuple[str, str, list[str]]]:
     """I2: every operation as ``(method, path, x-requirements)``.
 
     Parameters are not operations and are skipped by the method filter. A path with no

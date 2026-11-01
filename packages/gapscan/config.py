@@ -123,6 +123,8 @@ class Context:
     frontend_files: list[Path] = field(default_factory=list)
     #: Every file and directory name in the repository walk, relative POSIX paths, for X2.
     tree_names: list[str] = field(default_factory=list)
+    #: Path of the openapi contract actually read, or "absent" if none was found.
+    openapi_source: str = "absent"
 
     @property
     def matrix_by_id(self) -> dict[str, dict[str, str]]:
