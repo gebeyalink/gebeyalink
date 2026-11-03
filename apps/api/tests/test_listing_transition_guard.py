@@ -25,7 +25,7 @@ from apps.api.services.listing_service import (  # noqa: E402
 )
 from packages.shared.errors import ApiError, ErrorCode  # noqa: E402
 
-NOW = datetime(2026, 10, 4, 9, 0, tzinfo=UTC)
+NOW = datetime.now(UTC)
 
 #: Nobody in particular. The guard reads only the status and the expiry, so whose listing it
 #: is makes no difference and is not worth inventing an account for.
