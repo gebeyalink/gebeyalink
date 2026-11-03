@@ -69,6 +69,10 @@ RETRY_BACKOFFS: Final[tuple[timedelta, ...]] = (
 #: Attempts a message gets before it is given up on: the first send plus one per backoff.
 MAX_ATTEMPTS: Final[int] = len(RETRY_BACKOFFS) + 1
 
+#: FR-1003: at most this many non-transactional messages per user per EAT day. The number is
+#: fixed by the specification rather than a deployment knob, so it lives here as a constant.
+NON_TRANSACTIONAL_CAP: Final[int] = 10
+
 
 class Outcome(StrEnum):
     """What happened to one row, in the words the run's log line counts by."""
@@ -103,6 +107,25 @@ def next_quiet_hours_end(now: datetime) -> datetime:
     )
     if candidate <= eat:
         candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
+def sent_at_window_start(now: datetime) -> datetime:
+    """The start of the current EAT calendar day, returned in UTC.
+
+    FR-1003 counts a user's non-transactional messages per EAT day (NFR-11). The window rolls
+    at 00:00 EAT rather than at each message's own send time, because that is also the moment
+    the capped row is given to try again: a message that would otherwise sit in the past keeps
+    the two clocks agreeing.
+    """
+    eat = now.astimezone(EAT_ZONE)
+    return eat.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+
+
+def next_eat_midnight(now: datetime) -> datetime:
+    """The first 00:00 EAT strictly after ``now``, returned in UTC."""
+    eat = now.astimezone(EAT_ZONE)
+    candidate = eat.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     return candidate.astimezone(UTC)
 
 
@@ -185,6 +208,25 @@ class NotificationService:
                     mask_phone(phone_e164),
                 )
                 return Outcome.QUEUED
+
+            if lane is not SmsPriority.Q1:
+                window_start = sent_at_window_start(moment)
+                already_sent = await self._notifications.count_non_transactional_sent_since(
+                    notification.user_id, window_start
+                )
+                if already_sent >= NON_TRANSACTIONAL_CAP:
+                    # FR-1003: the eleventh non-transactional message waits for the EAT day
+                    # to turn. It is failed rather than sent, and the provider is not called.
+                    notification.status = NotificationStatus.FAILED
+                    notification.failure_reason = NotificationFailureReason.CAP_EXCEEDED.value
+                    notification.next_attempt_at = next_eat_midnight(moment)
+                    await self._notifications.commit()
+                    logger.info(
+                        "notification failed reason=CAP_EXCEEDED sent=%s user_id=%s",
+                        already_sent,
+                        notification.user_id,
+                    )
+                    return Outcome.FAILED
 
             result = await self._send(notification, phone_e164, lane)
             if result is not None and result.accepted:

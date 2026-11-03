@@ -18,11 +18,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.notification import Notification, NotificationStatus
 from apps.api.models.user import AccountStatus, User
+from packages.shared.messaging.queues import SmsPriority, priority_rank
 
 
 class NotificationRepository:
@@ -72,6 +73,27 @@ class NotificationRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def count_non_transactional_sent_since(self, user_id: uuid.UUID, since: datetime) -> int:
+        """How many non-transactional messages this user has actually received since ``since``.
+
+        Only rows that reached ``SENT`` count: a message still queued, held for the quiet
+        window, or failed for any reason has not spent one of the user's texts. Q1 is the
+        transactional lane - an authentication or pickup message - and is never counted
+        against the cap, which is why the stored rank is compared rather than the template id.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(Notification)
+            .where(
+                Notification.user_id == user_id,
+                Notification.status == NotificationStatus.SENT,
+                Notification.sent_at >= since,
+                Notification.priority != priority_rank(SmsPriority.Q1),
+            )
+        )
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
 
     async def find_by_id_for_update_skip_locked(
         self, notification_id: uuid.UUID
