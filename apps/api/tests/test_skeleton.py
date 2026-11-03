@@ -51,8 +51,9 @@ SPEC_SKELETON_DIRS: tuple[str, ...] = (
     ".github/workflows",
 )
 
-# SPEC §22 names exactly these five runbooks. No others are permitted.
+# SPEC §22 and PRV-03 name exactly these six runbooks. No others are permitted.
 SPEC_RUNBOOKS: tuple[str, ...] = (
+    "data-breach.md",
     "escrow-mismatch.md",
     "payment-outage-failover.md",
     "sms-backlog.md",
