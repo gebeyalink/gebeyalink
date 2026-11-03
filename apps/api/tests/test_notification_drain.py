@@ -241,10 +241,13 @@ async def test_the_drain_reaches_the_highest_lane_before_an_older_lower_one(
     The batch is exactly full, so if the queue were ordered by age the Q1 row would be the one
     left behind. It goes first instead, and one Q3 row is the row that waits.
     """
-    user_id = _insert_user(postgres_url, ACTIVE_PHONE)
-    for _ in range(100):
+    # One Q3 per user, so FR-1003's per-user cap cannot turn this lane-order test into a cap
+    # test: what is being proven is which row the batch reaches first, not how many texts one
+    # trader may receive.
+    user_ids = [_insert_user(postgres_url, f"+2519110{index:05d}") for index in range(100)]
+    for user_id in user_ids:
         _insert_notification(postgres_url, user_id, priority=priority_rank(SmsPriority.Q3))
-    urgent = _insert_notification(postgres_url, user_id, priority=priority_rank(SmsPriority.Q1))
+    urgent = _insert_notification(postgres_url, user_ids[0], priority=priority_rank(SmsPriority.Q1))
 
     report = await _drain(settings, sms_recorder, now=NOON_EAT_UTC)
 
@@ -260,8 +263,10 @@ async def test_one_drain_sends_a_bounded_batch(
     sms_recorder: RecordingSmsProvider,
 ) -> None:
     """A backlog larger than one batch settles across runs, not in one long transaction."""
-    user_id = _insert_user(postgres_url, ACTIVE_PHONE)
-    for _ in range(105):
+    # One row per user for the same reason as the lane-order test above: the batch bound is
+    # what is under test, and the per-user cap would otherwise stop the batch at ten.
+    user_ids = [_insert_user(postgres_url, f"+2519110{index:05d}") for index in range(105)]
+    for user_id in user_ids:
         _insert_notification(postgres_url, user_id, priority=priority_rank(SmsPriority.Q3))
 
     report = await _drain(settings, sms_recorder, now=NOON_EAT_UTC)
