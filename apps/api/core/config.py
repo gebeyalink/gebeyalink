@@ -244,6 +244,28 @@ class Settings(BaseSettings):
             "of a database nobody is waiting on."
         ),
     )
+    expiry_reminder_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the worker reminds sellers that a listing without open offers is about "
+            "to expire. On by default because the reminder is part of the listing lifecycle."
+        ),
+    )
+    expiry_reminder_lead_hours: list[int] = Field(
+        default=[48, 24],
+        description=(
+            "The lead times, in hours before expiry, at which a seller with no open offers "
+            "is reminded. The specification names forty-eight and twenty-four."
+        ),
+    )
+    worker_expiry_reminder_interval_seconds: int = Field(
+        default=300,
+        description=(
+            "How often the worker sweeps listings whose expiry reminder is due. Five minutes: "
+            "the same cadence as the shipment and pickup sweeps, because the window is "
+            "measured in hours and a coarse cadence is honest."
+        ),
+    )
 
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -

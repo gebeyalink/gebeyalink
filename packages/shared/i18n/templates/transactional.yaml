@@ -42,3 +42,17 @@
     am: "ማስታወቂያዎ በቀጥታ ተለጥፏል። ገዢዎች አሁን ያገኙታሉ። ኮድ {code}"
     om: "Beeksisni kee tasgazeera. Miisyyooni amma argatu. Koodii {code}"
     en: "Your listing is live. Buyers can find it now. Code {code}"
+
+# FR-307's reminder to a seller whose listing is nearing expiry without an open offer. The
+# specification names the message but supplies no words, so this copy is ours, unreviewed, and
+# O-3 reads it. The code names which listing, the crop names itself, and the lead time is the
+# number of whole days the reminder is counting down.
+- id: listing_expiring
+  channel: sms
+  priority: Q3
+  review_status: unreviewed
+  placeholders: [crop, days, listing_code]
+  variants:
+    am: "ማስታወቂያዎ {listing_code} ለ{crop} በ{days} ቀን ውስጥ ያበቃል። እስካሁን ቅናሽ የለም።"
+    om: "Beeksisni kee {listing_code} {crop} {days} guyyaa keessatti xumurama. Hanga ammaatti beezniituun hin jiru."
+    en: "Your listing {listing_code} for {crop} expires in {days} day(s). No offers yet."

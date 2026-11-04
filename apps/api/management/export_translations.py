@@ -57,6 +57,8 @@ DEFAULT_OUT: Final[Path] = Path("exports") / "translations.csv"
 #: so ``rendered_length`` and ``within_budget`` measure the same string CI measures.
 PLACEHOLDER_FIXTURES: Final[dict[str, str]] = {
     "code": "123456",
+    "listing_code": "123456",
+    "days": "2",
     "order_code": "GL-123456",
     "quantity_kg": "1000",
     "crop": "Teff",
