@@ -3,11 +3,12 @@
 The API is request-shaped: it does work only while somebody is waiting for an answer. Some work
 has no request behind it — a heartbeat that says the machinery is alive, and the deadline
 evaluations that used to run lazily on the read path. That work needs a process of its own, and
-this is it. Today there are five such jobs: the heartbeat, the shipment sweep that settles
+this is it. Today there are six such jobs: the heartbeat, the shipment sweep that settles
 orders whose crop's holding window has closed without anybody asking, the pickup sweep that
 settles a pickup whose day at the counter has passed, the notification drain that sends the
-messages the queue's own clock has made due, and the price board, computed while the pilot
-sleeps so the morning reads a finished figure.
+messages the queue's own clock has made due, the expiry reminder that warns a seller whose
+listing is nearly over, and the price board, computed while the pilot sleeps so the morning
+reads a finished figure.
 
 Celery is the scheduler and the executor. The broker is the Redis the API already declares and
 points at, so a deployment adds no datastore to run a worker: the same instance that holds
@@ -39,11 +40,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
 from redis import Redis
+from sqlalchemy.exc import IntegrityError
 
 from apps.api.core.config import Settings, get_settings
 from apps.api.core.idempotency import IdempotencyStore
@@ -84,6 +86,8 @@ from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (regi
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
 from apps.api.models import user_role as _user_role_model  # noqa: F401
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
+from apps.api.models.crop import Crop
+from apps.api.models.notification import Notification, NotificationChannel, NotificationStatus
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
@@ -96,7 +100,10 @@ from apps.api.repositories.user_repository import UserRepository
 from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
 from apps.api.services.pricing_service import PricingService
+from packages.shared.i18n.languages import Language
+from packages.shared.i18n.templates import render_template
 from packages.shared.messaging.provider import MessagingProvider
+from packages.shared.messaging.queues import SmsPriority, priority_rank
 
 logger = logging.getLogger("gebeyalink.worker")
 
@@ -133,6 +140,38 @@ NOTIFICATION_DRAIN_TASK_NAME = "gebeyalink.worker.notification_drain"
 #: an interval: the board is due once a day at two in the morning on the operator's clock, so
 #: it is a crontab below and not every N seconds.
 PRICE_INDEX_TASK_NAME = "gebeyalink.worker.price_index"
+
+#: The expiry reminder's name, shared by the beat entry, the worker that runs it and whoever
+#: looks for its effect. Its clock is each listing's own expiry, read at the lead times the
+#: settings name.
+EXPIRY_REMINDER_TASK_NAME = "gebeyalink.worker.expiry_reminder"
+
+#: The crop column to read for each language, so a reminder names the crop in the words its
+#: reader uses. Oromo is nullable, which is why the lookup below falls back to English.
+_NAME_COLUMNS: dict[Language, str] = {
+    Language.AM: "name_am",
+    Language.OM: "name_om",
+    Language.EN: "name_en",
+}
+
+
+def _crop_name(crop: Crop, language: Language) -> str:
+    """The crop's name in the seller's language, or the English one it does not carry."""
+    column = _NAME_COLUMNS.get(language, "name_en")
+    return getattr(crop, column, None) or crop.name_en
+
+
+def _render_listing_expiring(
+    language: Language, *, crop: str, days: int, listing_code: str
+) -> tuple[str, str]:
+    """FR-307's reminder, and the language its words were actually written in."""
+    return render_template(
+        "listing_expiring",
+        language,
+        crop=crop,
+        days=str(days),
+        listing_code=listing_code,
+    )
 
 
 async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None) -> int:
@@ -201,6 +240,97 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
             tolerance_pct=settings.transit_shrinkage_tolerance_pct,
         )
         return await service.settle_lapsed_pickups(now)
+
+
+async def run_expiry_reminder(settings: Settings, *, now: datetime | None = None) -> int:
+    """Queue the reminders a listing nearing expiry owes its seller, and say how many.
+
+    One run, one session. For each lead time in the settings the query names the active
+    listings whose expiry falls inside that lead time's window and that carry no open offer;
+    each of those is written into the notification queue, not sent directly, so the drain
+    remains the one road a message takes to a handset.
+
+    The dedup key is the listing and the lead time, so a second sweep during the same window
+    is refused by the unique constraint rather than writing a second reminder. The insert is
+    wrapped in a savepoint so that refusal costs one row rather than the whole sweep, and a
+    listing with no seller or crop is logged and passed over rather than aborting the rest.
+
+    ``expiry_reminder_enabled`` is read before the engine is touched: a deployment that has
+    switched the reminder off asks for no work and gets none.
+    """
+    if not settings.expiry_reminder_enabled:
+        return 0
+
+    init_engine(settings)
+    moment = now or datetime.now(UTC)
+    sweep = timedelta(seconds=settings.worker_expiry_reminder_interval_seconds)
+    session_factory = get_session_factory()
+    written = 0
+
+    async with session_factory() as session:
+        listings = ListingRepository(session)
+        users = UserRepository(session)
+        crops = CropRepository(session)
+        notifications = NotificationRepository(session)
+
+        for lead_hour in settings.expiry_reminder_lead_hours:
+            target = moment + timedelta(hours=lead_hour)
+            listing_ids = await listings.list_expiring_within_hours(
+                lead_hour,
+                target - sweep,
+                target + sweep,
+            )
+            for listing_id in listing_ids:
+                loaded = await listings.find_by_id(listing_id)
+                if loaded is None:
+                    continue
+                listing = loaded.listing
+                seller = await users.find_by_id(listing.seller_id)
+                if seller is None:
+                    logger.error("expiry reminder seller missing listing_id=%s", listing_id)
+                    continue
+                crop = await crops.find_by_id(listing.crop_id)
+                if crop is None:
+                    logger.error("expiry reminder crop missing listing_id=%s", listing_id)
+                    continue
+
+                rendered_text, rendered_language = _render_listing_expiring(
+                    seller.language,
+                    crop=_crop_name(crop, seller.language),
+                    days=lead_hour // 24,
+                    listing_code=listing.short_code,
+                )
+                notification = Notification(
+                    user_id=listing.seller_id,
+                    channel=NotificationChannel.SMS,
+                    template_id="listing_expiring",
+                    priority=priority_rank(SmsPriority.Q3),
+                    language=rendered_language,
+                    rendered_text=rendered_text,
+                    status=NotificationStatus.QUEUED,
+                    dedup_key=f"listing_expiring:{listing_id}:{lead_hour}",
+                )
+                try:
+                    async with session.begin_nested():
+                        await notifications.add(notification)
+                    written += 1
+                except IntegrityError:
+                    logger.info(
+                        "expiry reminder already queued listing_id=%s lead_hour=%s",
+                        listing_id,
+                        lead_hour,
+                    )
+                except Exception:
+                    logger.exception(
+                        "expiry reminder failed listing_id=%s lead_hour=%s",
+                        listing_id,
+                        lead_hour,
+                    )
+
+        await session.commit()
+
+    logger.info("expiry reminder wrote=%s", written)
+    return written
 
 
 async def run_notification_drain(
@@ -310,6 +440,10 @@ def build_celery(settings: Settings) -> Celery:
                 "task": NOTIFICATION_DRAIN_TASK_NAME,
                 "schedule": settings.worker_notification_drain_interval_seconds,
             },
+            EXPIRY_REMINDER_TASK_NAME: {
+                "task": EXPIRY_REMINDER_TASK_NAME,
+                "schedule": settings.worker_expiry_reminder_interval_seconds,
+            },
             PRICE_INDEX_TASK_NAME: {
                 "task": PRICE_INDEX_TASK_NAME,
                 # A crontab rather than an interval, because the board is due on the
@@ -369,6 +503,17 @@ def build_celery(settings: Settings) -> Celery:
             report.failed,
         )
 
+    def worker_expiry_reminder() -> None:
+        """Queue the reminders a listing nearing expiry owes its seller.
+
+        The work is asynchronous and this is a Celery task, so it opens a loop of its own for
+        the length of the sweep, and registered `shared=False` below for the same reason the
+        other sweeps are: this app's settings decide what the loop reads. The count is logged
+        whole, so a sweep that wrote nothing and one that never ran look different.
+        """
+        written = asyncio.run(run_expiry_reminder(settings))
+        logger.info("%s wrote=%s", EXPIRY_REMINDER_TASK_NAME, written)
+
     def worker_price_index() -> None:
         """Publish today's price board. The body of the task the schedule runs.
 
@@ -390,6 +535,7 @@ def build_celery(settings: Settings) -> Celery:
     app.task(name=SHIPMENT_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_shipment_sweep)
     app.task(name=PICKUP_SWEEP_TASK_NAME, shared=False, lazy=False)(worker_pickup_sweep)
     app.task(name=NOTIFICATION_DRAIN_TASK_NAME, shared=False, lazy=False)(worker_notification_drain)
+    app.task(name=EXPIRY_REMINDER_TASK_NAME, shared=False, lazy=False)(worker_expiry_reminder)
     app.task(name=PRICE_INDEX_TASK_NAME, shared=False, lazy=False)(worker_price_index)
     return app
 
@@ -408,13 +554,14 @@ def main() -> None:
     log_recording_provider_startup(settings.sms_provider, settings.environment)
     logger.info(
         "worker starting: heartbeat every %ss, TTL %ss, shipment sweep every %ss, "
-        "pickup sweep every %ss, notification drain every %ss, price board daily at 02:00, "
-        "beat schedule at %s",
+        "pickup sweep every %ss, notification drain every %ss, expiry reminder every %ss, "
+        "price board daily at 02:00, beat schedule at %s",
         settings.worker_heartbeat_interval_seconds,
         settings.worker_heartbeat_ttl_seconds,
         settings.worker_shipment_sweep_interval_seconds,
         settings.worker_pickup_sweep_interval_seconds,
         settings.worker_notification_drain_interval_seconds,
+        settings.worker_expiry_reminder_interval_seconds,
         settings.worker_beat_schedule_path,
     )
     app.Worker(pool_cls="solo", loglevel="INFO", beat=True).start()

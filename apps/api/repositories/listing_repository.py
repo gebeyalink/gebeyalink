@@ -13,10 +13,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import Date, func, select, tuple_
+from sqlalchemy import Date, exists, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.listing import Listing, ListingPhoto, ListingStatus
+from apps.api.models.offer import Offer, OfferStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +157,41 @@ class ListingRepository:
         stmt = select(Listing).where(Listing.short_code == short_code.strip().upper())
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_expiring_within_hours(
+        self,
+        lead_hour: int,
+        since: datetime,
+        until: datetime,
+        limit: int = 100,
+    ) -> list[uuid.UUID]:
+        """The active listings that lapse in a lead-time window and have no open offer.
+
+        ``since`` and ``until`` are the window the worker computes around the moment it is
+        sweeping for, and ``lead_hour`` names which reminder that window belongs to. The
+        window is passed in rather than derived here because the caller owns the sweep's
+        cadence: the same method serves forty-eight and twenty-four hours, and a repository
+        that guessed the interval would be the second place the schedule lived.
+
+        Only an ``OPEN`` offer counts. A rejected or withdrawn bid is a negotiation that
+        ended, not a reason to leave the seller unwarned, so the subquery asks for the one
+        status a buyer could still act on.
+        """
+        stmt = (
+            select(Listing.id)
+            .where(
+                Listing.status == ListingStatus.ACTIVE,
+                Listing.expires_at >= since,
+                Listing.expires_at <= until,
+                ~exists().where(
+                    (Offer.listing_id == Listing.id) & (Offer.status == OfferStatus.OPEN)
+                ),
+            )
+            .order_by(Listing.expires_at.asc(), Listing.id.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def priced_observations(
         self, first_day: date, last_day: date
