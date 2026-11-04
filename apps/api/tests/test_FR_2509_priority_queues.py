@@ -220,7 +220,13 @@ def test_the_classified_lanes_match_the_product_rules() -> None:
     """
     registry = load_templates()
     q1_ids = frozenset({"auth_otp", "action_token_invalid"})
-    q3_ids = frozenset({"price_digest_daily", "saved_search_digest"})
+    q3_ids = frozenset(
+        {
+            "listing_expiring",
+            "price_digest_daily",
+            "saved_search_digest",
+        }
+    )
     q2_ids = frozenset(
         {
             # USSD menu strings are declared Q2 even though no USSD reply is ever queued: the

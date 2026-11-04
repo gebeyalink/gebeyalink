@@ -28,6 +28,8 @@ pytestmark = pytest.mark.unit
 #: USSD menus add the counts and the pre-rendered row blob a listing or order screen shows.
 PLACEHOLDER_FIXTURES: Final[dict[str, str]] = {
     "code": "123456",
+    "listing_code": "123456",
+    "days": "2",
     "order_code": "GL-123456",
     "quantity_kg": "1000",
     "crop": "Teff",
