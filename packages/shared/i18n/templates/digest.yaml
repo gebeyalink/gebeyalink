@@ -14,8 +14,8 @@
   channel: sms
   priority: Q3
   review_status: unreviewed
-  placeholders: [crop, price]
+  placeholders: [count, rows]
   variants:
-    am: "የተቀመጠ ፍለጋ: {crop} {price} ብር ነው"
-    om: "Barbaadni kee: {crop} {price} qarshii dha"
-    en: "Your saved search: {crop} is now {price} birr/kg"
+    am: "{count} አዲስ ዕቃ ከፍለጋዎችዎ:\n{rows}"
+    om: "{count} meeshaalee haaraa barbaadota keessan:\n{rows}"
+    en: "{count} new listings from your searches:\n{rows}"

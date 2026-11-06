@@ -31,6 +31,7 @@ from apps.api.models import offer as _offer_model  # noqa: F401  (registers the 
 from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
 from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)
 from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
+from apps.api.models import saved_search as _saved_search_model  # noqa: F401  (registers it)
 from apps.api.models import staff_session as _staff_session_model  # noqa: F401  (registers it)
 from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (registers it)
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
