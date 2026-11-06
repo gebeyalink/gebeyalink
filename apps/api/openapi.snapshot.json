@@ -243,6 +243,15 @@
         "title": "DeliveryOption",
         "type": "string"
       },
+      "DigestChannel": {
+        "description": "The two channels a saved-search digest may name in the published contract.",
+        "enum": [
+          "PUSH",
+          "SMS"
+        ],
+        "title": "DigestChannel",
+        "type": "string"
+      },
       "FarmerSummaryResponse": {
         "additionalProperties": false,
         "description": "The farmer, as far as the agent who onboarded them may see.",
@@ -2114,6 +2123,308 @@
           "refresh_expires_at"
         ],
         "title": "RefreshTokenResponse",
+        "type": "object"
+      },
+      "SavedSearchBody": {
+        "additionalProperties": false,
+        "description": "One saved search as a client writes it.",
+        "properties": {
+          "crop_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop Id"
+          },
+          "delivery_option": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryOption"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "digest": {
+            "default": true,
+            "title": "Digest",
+            "type": "boolean"
+          },
+          "digest_channel": {
+            "$ref": "#/components/schemas/DigestChannel",
+            "default": "SMS"
+          },
+          "harvest_date_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harvest Date From"
+          },
+          "harvest_date_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harvest Date To"
+          },
+          "organic": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organic"
+          },
+          "price_max": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Max"
+          },
+          "price_min": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Min"
+          },
+          "radius_km": {
+            "anyOf": [
+              {
+                "maximum": 500.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radius Km"
+          },
+          "region_code": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Code"
+          },
+          "seller_tier_min": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "woreda_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Woreda Id"
+          }
+        },
+        "title": "SavedSearchBody",
+        "type": "object"
+      },
+      "SavedSearchResponse": {
+        "description": "One saved search as the published contract describes it.",
+        "properties": {
+          "crop_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop Id"
+          },
+          "delivery_option": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryOption"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "boolean"
+          },
+          "digest_channel": {
+            "$ref": "#/components/schemas/DigestChannel"
+          },
+          "harvest_date_from": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harvest Date From"
+          },
+          "harvest_date_to": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harvest Date To"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "organic": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organic"
+          },
+          "price_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Max"
+          },
+          "price_min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Min"
+          },
+          "radius_km": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radius Km"
+          },
+          "region_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Code"
+          },
+          "seller_tier_min": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "woreda_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Woreda Id"
+          }
+        },
+        "required": [
+          "id",
+          "crop_id",
+          "region_code",
+          "woreda_id",
+          "radius_km",
+          "price_min",
+          "price_max",
+          "harvest_date_from",
+          "harvest_date_to",
+          "organic",
+          "delivery_option",
+          "seller_tier_min",
+          "digest",
+          "digest_channel"
+        ],
+        "title": "SavedSearchResponse",
         "type": "object"
       },
       "SearchSort": {
@@ -4617,6 +4928,171 @@
         "summary": "Submit Kyc Case",
         "tags": [
           "Profile"
+        ]
+      }
+    },
+    "/v1/me/searches": {
+      "get": {
+        "description": "Every saved search this account holds, newest first.",
+        "operationId": "read_my_searches_v1_me_searches_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SavedSearchResponse"
+                  },
+                  "title": "Response Read My Searches V1 Me Searches Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read My Searches",
+        "tags": [
+          "Search"
+        ]
+      },
+      "post": {
+        "description": "Save the search filter set under this account.\n\nThe eleventh save is refused by the service with the contract's limit error; the route\ndoes not count anything itself, because a rule checked here would apply only to the HTTP\ndoor into a service the other channels are meant to share.",
+        "operationId": "save_search_v1_me_searches_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedSearchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Search",
+        "tags": [
+          "Search"
+        ]
+      }
+    },
+    "/v1/me/searches/{search_id}": {
+      "delete": {
+        "description": "Delete one saved search. A search that is already gone is still a success.",
+        "operationId": "delete_search_v1_me_searches__search_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "search_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Search Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Search",
+        "tags": [
+          "Search"
         ]
       }
     },

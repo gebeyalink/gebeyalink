@@ -27,6 +27,7 @@ from apps.api.models import agent_assignment as _agent_assignment_model  # noqa:
 from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
+from apps.api.models import saved_search as _saved_search_model  # noqa: F401  (registers it)
 from apps.api.models import staff_session as _staff_session_model  # noqa: F401  (registers it)
 from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (registers it)
 from apps.api.models import user_role as _user_role_model  # noqa: F401  (registers it)
@@ -40,6 +41,7 @@ from apps.api.routers import offer as offer_routes
 from apps.api.routers import order as order_routes
 from apps.api.routers import profile as profile_routes
 from apps.api.routers import reference as reference_routes
+from apps.api.routers import saved_search as saved_search_routes
 from apps.api.routers import search as search_routes
 from apps.api.routers import sms as sms_routes
 from apps.api.routers import ussd as ussd_routes
@@ -99,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(offer_routes.router, prefix=API_PREFIX)
     app.include_router(order_routes.router, prefix=API_PREFIX)
     app.include_router(search_routes.router, prefix=API_PREFIX)
+    app.include_router(saved_search_routes.router, prefix=API_PREFIX)
     # Also under the version prefix: the gateway is told exactly one URL, and it is
     # /v1/sms/inbound per docs/openapi.yaml, so the version lives in the path the gateway
     # already holds rather than being inferred from a header it does not send.

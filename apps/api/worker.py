@@ -3,12 +3,13 @@
 The API is request-shaped: it does work only while somebody is waiting for an answer. Some work
 has no request behind it — a heartbeat that says the machinery is alive, and the deadline
 evaluations that used to run lazily on the read path. That work needs a process of its own, and
-this is it. Today there are six such jobs: the heartbeat, the shipment sweep that settles
+this is it. Today there are seven such jobs: the heartbeat, the shipment sweep that settles
 orders whose crop's holding window has closed without anybody asking, the pickup sweep that
 settles a pickup whose day at the counter has passed, the notification drain that sends the
 messages the queue's own clock has made due, the expiry reminder that warns a seller whose
-listing is nearly over, and the price board, computed while the pilot sleeps so the morning
-reads a finished figure.
+listing is nearly over, the price board, computed while the pilot sleeps so the morning
+reads a finished figure, and the saved-search digest, which tells a trader once a day what
+arrived that matches a search they kept.
 
 Celery is the scheduler and the executor. The broker is the Redis the API already declares and
 points at, so a deployment adds no datastore to run a worker: the same instance that holds
@@ -40,7 +41,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
@@ -81,6 +84,7 @@ from apps.api.models import price_index as _price_index_model  # noqa: F401  (re
 from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)
 from apps.api.models import quantity_reservation as _reservation_model  # noqa: F401
 from apps.api.models import region as _region_model  # noqa: F401  (registers the table)
+from apps.api.models import saved_search as _saved_search_model  # noqa: F401  (registers it)
 from apps.api.models import staff_session as _staff_session_model  # noqa: F401  (registers it)
 from apps.api.models import staff_user as _staff_user_model  # noqa: F401  (registers it)
 from apps.api.models import user as _user_model  # noqa: F401  (registers the table)
@@ -88,6 +92,7 @@ from apps.api.models import user_role as _user_role_model  # noqa: F401
 from apps.api.models import woreda as _woreda_model  # noqa: F401  (registers the table)
 from apps.api.models.crop import Crop
 from apps.api.models.notification import Notification, NotificationChannel, NotificationStatus
+from apps.api.models.region import Region
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.crop_repository import CropRepository
 from apps.api.repositories.listing_repository import ListingRepository
@@ -96,6 +101,10 @@ from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.saved_search_repository import (
+    SavedSearchDigest,
+    SavedSearchRepository,
+)
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
@@ -146,19 +155,128 @@ PRICE_INDEX_TASK_NAME = "gebeyalink.worker.price_index"
 #: settings name.
 EXPIRY_REMINDER_TASK_NAME = "gebeyalink.worker.expiry_reminder"
 
-#: The crop column to read for each language, so a reminder names the crop in the words its
-#: reader uses. Oromo is nullable, which is why the lookup below falls back to English.
+#: The saved-search digest's name, shared by the beat entry, the task and whoever looks for
+#: its effect. Its clock is the calendar: one note per trader per day, at 18:00 EAT.
+SAVED_SEARCH_DIGEST_TASK_NAME = "gebeyalink.worker.saved_search_digest"
+
+#: The crop and region columns to read for each language, so a digest line names what the
+#: trader asked about in the words they read. Oromo is nullable, which is why the lookups
+#: below fall back to English.
 _NAME_COLUMNS: dict[Language, str] = {
     Language.AM: "name_am",
     Language.OM: "name_om",
     Language.EN: "name_en",
 }
 
+_REGION_NAME_COLUMNS: dict[Language, str] = {
+    Language.AM: "name_am",
+    Language.OM: "name_om",
+    Language.EN: "name_en",
+}
+
+#: The fixed offset EAT has kept since 1942. A fixed offset rather than ``zoneinfo``: the
+#: Windows development environment does not carry the tz database, and the digest's day
+#: boundary is a date, not a historical transition.
+EAT_OFFSET = timedelta(hours=3)
+
+#: The closing line when more searches matched than the five a digest names. It lives here,
+#: not in the registry, because the registry's single ``saved_search_digest`` template has
+#: exactly two placeholders (``count`` and ``rows``) and cannot conditionally add a sixth
+#: line without a placeholder the SMS budget fixtures do not measure. This is authored
+#: copy pending native-speaker review under O-3, exactly like the template's own variants.
+_MORE_SEARCHES: dict[Language, str] = {
+    Language.AM: "እና ተጨማሪ {count} ፍለጋዎች አዲስ ዕቃዎች አላቸው።",
+    Language.OM: "fi {count} barbaadota biroo meeshaalee haaraa qabu.",
+    Language.EN: "and {count} more searches with new listings.",
+}
+
+#: How many search lines one digest names. The note names five and summarises the rest, so a
+#: trader with ten matches gets a message that fits a handset rather than ten paragraphs.
+MAX_SEARCH_LINES = 5
+
 
 def _crop_name(crop: Crop, language: Language) -> str:
     """The crop's name in the seller's language, or the English one it does not carry."""
     column = _NAME_COLUMNS.get(language, "name_en")
     return getattr(crop, column, None) or crop.name_en
+
+
+def _region_name(region: Region, language: Language) -> str:
+    """The region's name in the trader's language, falling back to the English one."""
+    column = _REGION_NAME_COLUMNS.get(language, "name_en")
+    return getattr(region, column, None) or region.name_en
+
+
+def _eat_day(moment: datetime) -> str:
+    """The EAT calendar day a moment falls on, as ``YYYY-MM-DD``.
+
+    The dedup key is one digest per trader per EAT day, so the day is computed in EAT
+    rather than in the server's timezone or UTC. A run at 23:30 UTC is already tomorrow in
+    Addis, and the key must say so or two runs on either side of local midnight could both
+    write.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return (moment.astimezone(UTC) + EAT_OFFSET).date().isoformat()
+
+
+def _saved_search_label(digest: SavedSearchDigest, language: Language) -> str:
+    """One search's line, named as the trader asked for it.
+
+    The line is a crop and a region, not a rendered sentence: the template's header already
+    says these are new listings, and putting the count beside the thing it counts keeps the
+    line short enough for a handset. A search with neither filter falls back to a short
+    identity, because two unfiltered searches must still be two distinguishable lines.
+    """
+    crop = _crop_name(digest.crop, language) if digest.crop is not None else None
+    region: str | None
+    if digest.region is not None:
+        region = _region_name(digest.region, language)
+    else:
+        region = digest.search.region_code
+    if crop is not None and region is not None:
+        label = f"{crop} ({region})"
+    elif crop is not None:
+        label = crop
+    elif region is not None:
+        label = region
+    else:
+        label = str(digest.search.id)[:8]
+    return f"{label}: {digest.new_listing_count}"
+
+
+def _more_searches_line(language: Language, count: int) -> str:
+    """The closing line for searches the five-line cap left out."""
+    template = _MORE_SEARCHES.get(language, _MORE_SEARCHES[Language.EN])
+    return template.format(count=count)
+
+
+def _render_saved_search_digest(
+    language: Language, digest_lines: list[str], total_count: int
+) -> tuple[str, str]:
+    """The saved-search digest, and the language its words were actually written in."""
+    return render_template(
+        "saved_search_digest",
+        language,
+        count=str(total_count),
+        rows="\n".join(digest_lines),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderedDigest:
+    """One trader's finished digest, detached from the rows that produced it.
+
+    The worker commits (or rolls a collision back) once per trader. Plain values here mean a
+    rollback cannot leave the next group's ORM objects expired and waiting for a lazy load
+    that an async session cannot perform.
+    """
+
+    user_id: UUID
+    rendered_text: str
+    rendered_language: str
+    search_ids: tuple[UUID, ...]
+    push_fell_back: bool
 
 
 def _render_listing_expiring(
@@ -358,6 +476,109 @@ async def run_notification_drain(
         return await service.drain(now)
 
 
+async def run_saved_search_digest(settings: Settings, *, now: datetime | None = None) -> int:
+    """Queue one saved-search digest per trader with new matches, and say how many.
+
+    The run is one session and a sequence of per-trader transactions. For each active
+    account whose digest-enabled searches have new listings since their own window, the
+    worker renders one message, writes one notification row, and advances only the searches
+    that message names. A trader with no matches gets no row at all.
+
+    The dedup key is ``saved_search_digest:{user_id}:{YYYY-MM-DD EAT}``. A second run on the
+    same EAT day loses the unique-constraint race and rolls back only that trader's insert,
+    so a retried beat or two overlapping workers cannot send the same daily note twice. The
+    insert and the window advance share a savepoint and a commit: either the trader has both
+    a queued message and an advanced window, or neither.
+
+    ``saved_search_digest_enabled`` is read before the engine is touched. A deployment that
+    has switched the digest off asks for no work and gets none.
+    """
+    if not settings.saved_search_digest_enabled:
+        return 0
+
+    init_engine(settings)
+    moment = now or datetime.now(UTC)
+    session_factory = get_session_factory()
+    written = 0
+
+    async with session_factory() as session:
+        searches = SavedSearchRepository(session)
+        notifications = NotificationRepository(session)
+
+        since_map = await searches.list_digest_since_map()
+        if not since_map:
+            logger.info("saved search digest candidates=0 written=0")
+            return 0
+
+        matches = await searches.list_saved_searches_with_new_matches(since_map)
+        grouped: dict[UUID, list[SavedSearchDigest]] = {}
+        for digest in matches:
+            grouped.setdefault(digest.user.id, []).append(digest)
+
+        # Render first, without touching the session again. A collision later rolls a
+        # transaction back, and plain values survive that where expired ORM rows would not.
+        rendered: list[_RenderedDigest] = []
+        for user_id, entries in grouped.items():
+            language = entries[0].user.language
+            total_count = sum(entry.new_listing_count for entry in entries)
+            shown = entries[:MAX_SEARCH_LINES]
+            lines = [_saved_search_label(entry, language) for entry in shown]
+            remaining = len(entries) - len(shown)
+            if remaining > 0:
+                lines.append(_more_searches_line(language, remaining))
+            text, rendered_language = _render_saved_search_digest(language, lines, total_count)
+            rendered.append(
+                _RenderedDigest(
+                    user_id=user_id,
+                    rendered_text=text,
+                    rendered_language=rendered_language,
+                    search_ids=tuple(entry.search.id for entry in entries),
+                    push_fell_back=any(
+                        entry.search.digest_channel is NotificationChannel.PUSH for entry in entries
+                    ),
+                )
+            )
+
+        for message in rendered:
+            notification = Notification(
+                user_id=message.user_id,
+                # The platform has no push rail in this slice. A search that asked for PUSH
+                # is still sent on SMS, and the row says what actually travelled rather
+                # than what was requested.
+                channel=NotificationChannel.SMS,
+                template_id="saved_search_digest",
+                priority=priority_rank(SmsPriority.Q3),
+                language=message.rendered_language,
+                rendered_text=message.rendered_text,
+                status=NotificationStatus.QUEUED,
+                dedup_key=(f"saved_search_digest:{message.user_id}:{_eat_day(moment)}"),
+            )
+            try:
+                async with session.begin_nested():
+                    await notifications.add(notification)
+                    await searches.mark_digested(list(message.search_ids), moment)
+                await session.commit()
+                written += 1
+                if message.push_fell_back:
+                    logger.info(
+                        "saved search digest push fallback to SMS user_id=%s",
+                        message.user_id,
+                    )
+            except IntegrityError:
+                await session.rollback()
+                logger.info(
+                    "saved search digest already queued user_id=%s day=%s",
+                    message.user_id,
+                    _eat_day(moment),
+                )
+            except Exception:
+                await session.rollback()
+                logger.exception("saved search digest failed user_id=%s", message.user_id)
+
+    logger.info("saved search digest written=%s", written)
+    return written
+
+
 async def run_price_index(settings: Settings, *, now: datetime | None = None) -> int:
     """Compute and publish today's price board, and say how many pairs it wrote.
 
@@ -454,6 +675,13 @@ def build_celery(settings: Settings) -> Celery:
                 # so the run has the database to itself.
                 "schedule": crontab(hour=2, minute=0),
             },
+            SAVED_SEARCH_DIGEST_TASK_NAME: {
+                "task": SAVED_SEARCH_DIGEST_TASK_NAME,
+                # The one daily note a trader asked for. The schedule is already expressed
+                # in Africa/Addis_Ababa above, so 18 here is 18:00 EAT; the setting moves
+                # the hour without moving the zone.
+                "schedule": crontab(hour=settings.saved_search_digest_hour_eat, minute=0),
+            },
         },
     )
 
@@ -526,6 +754,17 @@ def build_celery(settings: Settings) -> Celery:
         pairs = asyncio.run(run_price_index(settings))
         logger.info("%s pairs=%s", PRICE_INDEX_TASK_NAME, pairs)
 
+    def worker_saved_search_digest() -> None:
+        """Queue the day's saved-search digests. The body of the task the schedule runs.
+
+        Asynchronous work in a synchronous task, so it opens a loop of its own, and registered
+        `shared=False` below for the same reason the other tasks are: this app's settings
+        decide what the loop reads. The number of notes written is logged whole, so an
+        evening that sent nothing and an evening that never ran look different.
+        """
+        written = asyncio.run(run_saved_search_digest(settings))
+        logger.info("%s written=%s", SAVED_SEARCH_DIGEST_TASK_NAME, written)
+
     # `shared=False` and `lazy=False` are load-bearing. Celery's defaults defer the registration
     # through a process-global finalize hook, so a second app built in the same process can end
     # up executing the first app's task object — the heartbeat would write to the first app's
@@ -537,6 +776,9 @@ def build_celery(settings: Settings) -> Celery:
     app.task(name=NOTIFICATION_DRAIN_TASK_NAME, shared=False, lazy=False)(worker_notification_drain)
     app.task(name=EXPIRY_REMINDER_TASK_NAME, shared=False, lazy=False)(worker_expiry_reminder)
     app.task(name=PRICE_INDEX_TASK_NAME, shared=False, lazy=False)(worker_price_index)
+    app.task(name=SAVED_SEARCH_DIGEST_TASK_NAME, shared=False, lazy=False)(
+        worker_saved_search_digest
+    )
     return app
 
 
@@ -555,13 +797,15 @@ def main() -> None:
     logger.info(
         "worker starting: heartbeat every %ss, TTL %ss, shipment sweep every %ss, "
         "pickup sweep every %ss, notification drain every %ss, expiry reminder every %ss, "
-        "price board daily at 02:00, beat schedule at %s",
+        "price board daily at 02:00, saved-search digest daily at %02d:00 EAT, "
+        "beat schedule at %s",
         settings.worker_heartbeat_interval_seconds,
         settings.worker_heartbeat_ttl_seconds,
         settings.worker_shipment_sweep_interval_seconds,
         settings.worker_pickup_sweep_interval_seconds,
         settings.worker_notification_drain_interval_seconds,
         settings.worker_expiry_reminder_interval_seconds,
+        settings.saved_search_digest_hour_eat,
         settings.worker_beat_schedule_path,
     )
     app.Worker(pool_cls="solo", loglevel="INFO", beat=True).start()

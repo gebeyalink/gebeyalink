@@ -267,6 +267,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    saved_search_digest_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the worker queues the daily saved-search digest. On by default because "
+            "the digest is part of the saved-search feature; a deployment that turns it off "
+            "still lets traders save searches and read them back."
+        ),
+    )
+    saved_search_digest_hour_eat: int = Field(
+        default=18,
+        ge=0,
+        le=23,
+        description=(
+            "The hour, on the Ethiopian clock, at which the saved-search digest is due. "
+            "The saved-search digest is due at 18:00 EAT; the field is configurable so a "
+            "deployment can move the run without editing the schedule code."
+        ),
+    )
+
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -
     # all three mounted unconditionally, all three reachable by anyone who can reach the

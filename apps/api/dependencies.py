@@ -41,6 +41,7 @@ from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
+from apps.api.repositories.saved_search_repository import SavedSearchRepository
 from apps.api.repositories.search_repository import SearchRepository
 from apps.api.repositories.session_repository import SessionRepository
 from apps.api.repositories.staff_session_repository import StaffSessionRepository
@@ -64,6 +65,7 @@ from apps.api.services.otp_service import OtpService
 from apps.api.services.profile_service import ProfileService
 from apps.api.services.rate_limit_service import RateLimitService
 from apps.api.services.redis_challenge_store import AgentChallengeRepository
+from apps.api.services.saved_search_service import SavedSearchService
 from apps.api.services.search_service import SearchService
 from apps.api.services.sms_command_gateway import SmsCommandGateway
 from apps.api.services.ussd_gateway import UssdGateway
@@ -273,6 +275,25 @@ def get_search_service(db_session: db_session_dep) -> SearchService:
 
 
 SearchServiceDep = Annotated[SearchService, Depends(get_search_service)]
+
+
+def get_saved_search_service(db_session: db_session_dep) -> SavedSearchService:
+    """The caller's own saved searches, and the rules that bound how many they may keep.
+
+    The profile repository is beside the search repository because the radius rule asks
+    whether the owner has a point; sharing the session makes that answer and the count the
+    same moment's.
+    """
+    return SavedSearchService(
+        searches=SavedSearchRepository(db_session),
+        profiles=ProfileRepository(db_session),
+        crops=CropRepository(db_session),
+        regions=RegionRepository(db_session),
+        woredas=WoredaRepository(db_session),
+    )
+
+
+SavedSearchServiceDep = Annotated[SavedSearchService, Depends(get_saved_search_service)]
 
 
 def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> OfferService:
