@@ -36,6 +36,10 @@ from packages.shared.errors import ApiError, ErrorCode
 #: account, and the SMS and USSD doors are meant to save searches through the same rule.
 MAX_SAVED_SEARCHES = 10
 
+#: The widest crop id the table can hold. Checking the bound before the lookup keeps a body
+#: naming an id the column cannot store from reaching PostgreSQL as a type error.
+_SMALLINT_MAX = 2**15 - 1
+
 
 @dataclass(frozen=True, slots=True)
 class SavedSearchDraft:
@@ -132,7 +136,10 @@ class SavedSearchService:
         holding an account's row while it fails, and names every bad field at once.
         """
         problems: dict[str, str] = {}
-        if draft.crop_id is not None and await self._crops.find_by_id(draft.crop_id) is None:
+        if draft.crop_id is not None and (
+            not 1 <= draft.crop_id <= _SMALLINT_MAX
+            or await self._crops.find_by_id(draft.crop_id) is None
+        ):
             problems["crop_id"] = "not_a_seeded_crop"
         if draft.region_code is not None and not await self._regions.exists(draft.region_code):
             problems["region_code"] = "not_a_seeded_region"

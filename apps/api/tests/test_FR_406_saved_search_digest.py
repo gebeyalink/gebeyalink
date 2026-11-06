@@ -163,6 +163,18 @@ async def test_a_search_can_be_saved_listed_and_deleted(
     assert unknown.status_code == 422, unknown.text
     assert unknown.json()["error"]["details"] == {"fields": {"crop_id": "not_a_seeded_crop"}}
 
+    unknown_region = await http.post("/v1/me/searches", headers=buyer, json={"region_code": "ZZ"})
+    assert unknown_region.status_code == 422, unknown_region.text
+    assert unknown_region.json()["error"]["details"] == {
+        "fields": {"region_code": "not_a_seeded_region"}
+    }
+
+    unknown_woreda = await http.post("/v1/me/searches", headers=buyer, json={"woreda_id": 99_999})
+    assert unknown_woreda.status_code == 422, unknown_woreda.text
+    assert unknown_woreda.json()["error"]["details"] == {
+        "fields": {"woreda_id": "not_a_seeded_woreda"}
+    }
+
     saved = await _save(
         http,
         buyer,

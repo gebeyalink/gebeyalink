@@ -233,15 +233,6 @@ class SavedSearchRepository:
                         SavedSearch.delivery_option.is_(None),
                         Listing.delivery_options.any(cast(Any, SavedSearch.delivery_option)),
                     ),
-                    or_(
-                        SavedSearch.seller_tier_min.is_(None),
-                        seller_tier_rank >= _MINIMUM_TIER_RANK,
-                    ),
-                    or_(
-                        SavedSearch.radius_km.is_(None),
-                        ~owner_has_point,
-                        distance <= SavedSearch.radius_km * 1_000,
-                    ),
                 ),
             )
             .join(Woreda, Woreda.id == Listing.woreda_id)
@@ -253,6 +244,19 @@ class SavedSearchRepository:
                 owner.status == AccountStatus.ACTIVE,
                 _on_the_market(now),
                 Listing.created_at > since,
+                # These two conditions name tables joined after ``Listing``, so they belong
+                # in the WHERE clause rather than in the ON clause that introduced the
+                # listing. A client can only read the statement in the order PostgreSQL
+                # evaluates it.
+                or_(
+                    SavedSearch.seller_tier_min.is_(None),
+                    seller_tier_rank >= _MINIMUM_TIER_RANK,
+                ),
+                or_(
+                    SavedSearch.radius_km.is_(None),
+                    ~owner_has_point,
+                    distance <= SavedSearch.radius_km * 1_000,
+                ),
             )
         )
 
