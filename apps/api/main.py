@@ -37,6 +37,7 @@ from apps.api.routers import agent as agent_routes
 from apps.api.routers import auth as auth_routes
 from apps.api.routers import health as health_routes
 from apps.api.routers import listing as listing_routes
+from apps.api.routers import meta as meta_routes
 from apps.api.routers import offer as offer_routes
 from apps.api.routers import order as order_routes
 from apps.api.routers import profile as profile_routes
@@ -92,6 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # address /health by a fixed path, and neither should have to know how this API is
     # versioned to ask whether the process is up.
     app.include_router(health_routes.router)
+    app.include_router(meta_routes.router, prefix=API_PREFIX)
     app.include_router(auth_routes.router, prefix=API_PREFIX)
     app.include_router(admin_routes.router, prefix=API_PREFIX)
     app.include_router(reference_routes.router, prefix=API_PREFIX)

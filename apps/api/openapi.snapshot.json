@@ -56,6 +56,30 @@
         "title": "AgentDecisionResponse",
         "type": "object"
       },
+      "ClientSupportResponse": {
+        "description": "The three versions the app checks at launch. No other field belongs here.",
+        "properties": {
+          "force_update_below": {
+            "title": "Force Update Below",
+            "type": "string"
+          },
+          "latest_app_version": {
+            "title": "Latest App Version",
+            "type": "string"
+          },
+          "min_supported_app_version": {
+            "title": "Min Supported App Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "min_supported_app_version",
+          "latest_app_version",
+          "force_update_below"
+        ],
+        "title": "ClientSupportResponse",
+        "type": "object"
+      },
       "CropBaseUnit": {
         "description": "The unit a price for this crop is quoted in.",
         "enum": [
@@ -5093,6 +5117,28 @@
         "summary": "Delete Search",
         "tags": [
           "Search"
+        ]
+      }
+    },
+    "/v1/meta/client-support": {
+      "get": {
+        "description": "Report the versions this deployment accepts and publishes.\n\nThe endpoint does not enforce the values: it is the data feed the app and the release\npolicy read. A deployment changes them through Settings without changing this route.",
+        "operationId": "client_support_v1_meta_client_support_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSupportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Client Support",
+        "tags": [
+          "Meta"
         ]
       }
     },
