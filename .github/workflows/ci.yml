@@ -1344,6 +1344,44 @@ jobs:
       - name: lint every workflow file
         run: ./actionlint -color
 
+  guard-rails:
+    name: guard rails
+    runs-on: ubuntu-latest
+    # D-63 — a tracked file must not be covered by .gitignore. The PR #6 incident
+    # force-added the ledger and other ignored files. `--cached` is the tracked-file
+    # form of --ignored on current Git; without it, Git refuses the query.
+    #
+    # D-52 — the collected test count is a floor, not a suggestion. The 76482dc
+    # incident merged a green build that had deleted 15 tests. The floor lives in a
+    # tracked file so lowering it is a commit that can be reviewed and named.
+    steps:
+      - uses: actions/checkout@v4
+      - name: no tracked file is also gitignored
+        run: |
+          offenders=$(git ls-files --cached --ignored --exclude-standard)
+          if [ -n "$offenders" ]; then
+            echo "::error::tracked files are ignored by .gitignore — the ignore rules are not honoured"
+            printf '%s\n' "$offenders"
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e '.[dev]' -c constraints.txt
+      - name: the collected test count has not fallen below the floor
+        run: |
+          floor=$(cat tests/.test-count-floor)
+          current=$(python -m pytest apps/api/tests --collect-only -q 2>/dev/null | tail -1 | awk '{print $1}')
+          if [ -z "$current" ]; then
+            echo "::error::could not read the collected test count"
+            exit 1
+          fi
+          if [ "$current" -lt "$floor" ]; then
+            echo "::error::test count fell from $floor to $current — if a test was legitimately removed, update tests/.test-count-floor in the same commit and name why"
+            exit 1
+          fi
+          echo "test count: $current (floor $floor)"
+
   ci-green:
     name: ci green (merge gate)
     runs-on: ubuntu-latest
@@ -1364,6 +1402,7 @@ jobs:
       - zap-baseline
       - openapi-snapshot
       - actionlint
+      - guard-rails
     # The gate is this condition, and nothing else.
     #
     # It was a shell loop over `${{ needs.*.result }}`, which does not expand to one word per
