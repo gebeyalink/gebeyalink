@@ -415,6 +415,51 @@ async def test_the_next_day_reports_only_what_arrived_after_the_last_digest(
     assert "1 new listings from your searches:" in str(rows[-1]["rendered_text"])
 
 
+async def test_a_search_with_no_new_matches_keeps_its_own_last_digest_at(
+    saved_search_app: tuple[FastAPI, httpx.AsyncClient, Settings],
+    code_for: Callable[[str], str],
+    postgres_url: str,
+    listing_body: Callable[..., dict[str, object]],
+) -> None:
+    """A quiet search keeps its window, so the listing that arrives later is not lost.
+
+    Yesterday only the teff search matched. Its window moved; the wheat search's did not.
+    Today a wheat listing arrives, and the wheat search is the one that contributes a line
+    while the teff search stays quiet.
+    """
+    _, http, settings = saved_search_app
+    buyer = await _sign_in(http, code_for, settings, BUYER)
+    seller = await _sign_in(http, code_for, settings, SELLER)
+
+    teff = await _save(http, buyer, crop_id=1, region_code="OR", digest=True)
+    wheat = await _save(http, buyer, crop_id=2, region_code="AM", digest=True)
+    teff_id = str(teff["id"])
+    wheat_id = str(wheat["id"])
+
+    await _listing(
+        http, seller, listing_body, crop_id=1, region_code="OR", unit_price_santim=3_250_000
+    )
+    yesterday = _database_now(postgres_url)
+    assert await worker.run_saved_search_digest(settings, now=yesterday) == 1
+
+    assert _saved_search_row(postgres_url, teff_id)["last_digest_at"] == yesterday
+    assert _saved_search_row(postgres_url, wheat_id)["last_digest_at"] is None
+
+    await _listing(
+        http, seller, listing_body, crop_id=2, region_code="AM", unit_price_santim=3_250_000
+    )
+    today = yesterday + timedelta(days=1)
+    assert await worker.run_saved_search_digest(settings, now=today) == 1
+
+    rows = _rows_for(postgres_url, BUYER)
+    assert len(rows) == 2
+    assert "Teff (Oromia): 1" in str(rows[0]["rendered_text"])
+    assert "Wheat (Amhara): 1" in str(rows[-1]["rendered_text"])
+    assert "Teff (Oromia): 1" not in str(rows[-1]["rendered_text"])
+    assert _saved_search_row(postgres_url, teff_id)["last_digest_at"] == yesterday
+    assert _saved_search_row(postgres_url, wheat_id)["last_digest_at"] == today
+
+
 async def test_the_digest_names_five_searches_and_summarises_the_rest(
     saved_search_app: tuple[FastAPI, httpx.AsyncClient, Settings],
     code_for: Callable[[str], str],
@@ -428,9 +473,22 @@ async def test_the_digest_names_five_searches_and_summarises_the_rest(
 
     search_ids: list[str] = []
     for price_min in range(1, 7):
-        saved = await _save(http, buyer, crop_id=1, price_min=price_min, digest=True)
+        crop_id, region_code = (1, "OR") if price_min <= 3 else (2, "AM")
+        saved = await _save(
+            http,
+            buyer,
+            crop_id=crop_id,
+            region_code=region_code,
+            price_min=price_min,
+            digest=True,
+        )
         search_ids.append(str(saved["id"]))
-    await _listing(http, seller, listing_body, crop_id=1, unit_price_santim=3_250_000)
+    await _listing(
+        http, seller, listing_body, crop_id=1, region_code="OR", unit_price_santim=3_250_000
+    )
+    await _listing(
+        http, seller, listing_body, crop_id=2, region_code="AM", unit_price_santim=3_250_000
+    )
 
     now = _database_now(postgres_url)
     assert await worker.run_saved_search_digest(settings, now=now) == 1
@@ -441,6 +499,8 @@ async def test_the_digest_names_five_searches_and_summarises_the_rest(
     lines = text.splitlines()
     assert "6 new listings from your searches:" in lines[0]
     assert sum(line.endswith(": 1") for line in lines[1:]) == 5
+    assert any("Teff (Oromia): 1" in line for line in lines[1:])
+    assert any("Wheat (Amhara): 1" in line for line in lines[1:])
     assert lines[-1] == "and 1 more searches with new listings."
 
     for search_id in search_ids:
