@@ -286,6 +286,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # FR-2301 — the client-support endpoint reads these three values and returns them. They
+    # are deployment data, not product policy: the twelve-month compatibility window and the
+    # ninety-day deprecation notice are rules a deployment applies to the values, while this
+    # process only reports them. The pilot returns placeholders until the app exists; a real
+    # deployment sets these to the versions it actually accepts and publishes.
+    client_min_supported_version: str = Field(
+        default="0.0.0",
+        description=(
+            "FR-2301: the oldest app version this deployment accepts. A deployment sets this "
+            "to the real minimum when the app ships."
+        ),
+    )
+    client_latest_version: str = Field(
+        default="0.0.0",
+        description=(
+            "FR-2301: the newest app version this deployment has published. A deployment sets "
+            "this to the real latest version when the app ships."
+        ),
+    )
+    client_force_update_below: str = Field(
+        default="0.0.0",
+        description=(
+            "FR-2301: the app version below which the app must force an update. A deployment "
+            "sets this to the real threshold when the app ships."
+        ),
+    )
+
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
     # second at /redoc, and a machine-readable description of every route at /openapi.json -
     # all three mounted unconditionally, all three reachable by anyone who can reach the
