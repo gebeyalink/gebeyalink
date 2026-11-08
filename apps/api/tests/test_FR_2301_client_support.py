@@ -7,11 +7,14 @@ and assert only the three contract fields, their Settings source, and the JSON e
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from apps.api.core.config import Settings
 from apps.api.main import create_app
+
+pytestmark = pytest.mark.unit
 
 PATH = "/v1/meta/client-support"
 CLIENT_VERSION_FIELDS = {
