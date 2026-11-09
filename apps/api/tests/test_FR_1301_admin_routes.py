@@ -571,14 +571,16 @@ def test_audit_search_filters_and_paginates(
     since = quote((datetime.now(UTC) - timedelta(minutes=1)).isoformat(), safe="")
     until = quote((datetime.now(UTC) + timedelta(minutes=1)).isoformat(), safe="")
     in_window = cod_client.get(
-        f"/v1/admin/audit-log?actor_id={actor_id}&since={since}&until={until}",
+        f"/v1/admin/audit-log?actor_id={actor_id}&target_type=user&target_id={user_id}"
+        f"&since={since}&until={until}",
         headers=admin_headers,
     )
     assert in_window.status_code == 200, in_window.text
     assert len(in_window.json()["data"]) == 2
 
     first_page = cod_client.get(
-        f"/v1/admin/audit-log?actor_id={actor_id}&limit=1", headers=admin_headers
+        f"/v1/admin/audit-log?actor_id={actor_id}&target_type=user&target_id={user_id}&limit=1",
+        headers=admin_headers,
     )
     assert first_page.status_code == 200, first_page.text
     first_body = first_page.json()
@@ -587,7 +589,8 @@ def test_audit_search_filters_and_paginates(
     assert first_body["next_cursor"]
 
     second_page = cod_client.get(
-        f"/v1/admin/audit-log?actor_id={actor_id}&limit=1&cursor={first_body['next_cursor']}",
+        f"/v1/admin/audit-log?actor_id={actor_id}&target_type=user&target_id={user_id}"
+        f"&limit=1&cursor={first_body['next_cursor']}",
         headers=admin_headers,
     )
     assert second_page.status_code == 200, second_page.text
