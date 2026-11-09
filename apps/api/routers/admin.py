@@ -22,16 +22,25 @@ from fastapi import APIRouter, Query, Request, status
 from apps.api.dependencies import (
     AdminOnlyDep,
     AdminServiceDep,
+    AuditReaderDep,
     CurrentStaffDep,
     KycReviewerDep,
+    ModeratorDep,
     StaffAuthServiceDep,
+    UserSearchDep,
 )
 from apps.api.models.kyc_case import KycRejectionReason, KycStatus, KycTier
+from apps.api.models.user import AccountStatus
 from apps.api.schemas.admin import (
+    AdminUserPatchBody,
+    AdminUserResponse,
     AgentApproveBody,
     AgentDecisionResponse,
+    AuditLogResponse,
     KycCaseAdminResponse,
     KycRejectionBody,
+    ListingModerationBody,
+    ListingModerationResponse,
     StaffCreateBody,
     StaffCreatedResponse,
     StaffDisableBody,
@@ -42,6 +51,7 @@ from apps.api.schemas.admin import (
     StaffTokenResponse,
 )
 from apps.api.schemas.pagination import CursorPage
+from apps.api.services.admin_service import AdminUserRow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -67,6 +77,22 @@ def _ip(request: Request) -> str | None:
     except ValueError:
         return None
     return candidate
+
+
+def _admin_user_response(row: AdminUserRow) -> AdminUserResponse:
+    """Turn a service row into the console's account view."""
+    user = row.user
+    return AdminUserResponse(
+        id=user.id,
+        phone_e164=user.phone_e164,
+        role=user.role,
+        language=user.language,
+        kyc_tier=user.kyc_tier,
+        status=user.status,
+        additional_roles=row.additional_roles,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
 
 
 # -- the sign-in handshake ----------------------------------------------------
@@ -172,6 +198,128 @@ async def change_staff_role(
     return StaffResponse.model_validate(row)
 
 
+# -- trader account administration ---------------------------------------------
+
+
+@router.get("/users", status_code=status.HTTP_200_OK)
+async def list_users(
+    staff: UserSearchDep,
+    service: AdminServiceDep,
+    phone_e164: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            max_length=16,
+            description="An E.164 number, or the prefix of one; a full number is exact.",
+        ),
+    ] = None,
+    account_status: Annotated[AccountStatus | None, Query(alias="status")] = None,
+    cursor: Annotated[str | None, Query(description="Opaque; echo the last one given.")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> CursorPage[AdminUserResponse]:
+    """One page of trader accounts, filtered by phone prefix and status."""
+    after = _decode_cursor(cursor) if cursor else None
+    rows, has_more = await service.list_users(
+        phone_e164=phone_e164, status=account_status, after=after, limit=limit
+    )
+    return CursorPage[AdminUserResponse](
+        data=[_admin_user_response(row) for row in rows],
+        next_cursor=(
+            _encode_cursor(rows[-1].user.created_at, rows[-1].user.id)
+            if has_more and rows
+            else None
+        ),
+        has_more=has_more,
+    )
+
+
+@router.patch("/users/{id}", status_code=status.HTTP_200_OK)
+async def update_user(
+    id: UUID,
+    body: AdminUserPatchBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: AdminServiceDep,
+) -> AdminUserResponse:
+    """Change a trader's status, primary role, or additional roles; every change is audited."""
+    row = await service.update_user(
+        actor=actor.staff,
+        user_id=id,
+        status=body.status,
+        role=body.role,
+        additional_roles_add=body.additional_roles_add,
+        additional_roles_remove=body.additional_roles_remove,
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return _admin_user_response(row)
+
+
+# -- listing moderation --------------------------------------------------------
+
+
+@router.post("/listings/{id}/suspend", status_code=status.HTTP_200_OK)
+async def suspend_listing(
+    id: UUID,
+    body: ListingModerationBody,
+    request: Request,
+    actor: ModeratorDep,
+    service: AdminServiceDep,
+) -> ListingModerationResponse:
+    """Take an ACTIVE listing off the board, with the moderator's reason in the audit row."""
+    listing = await service.suspend_listing(
+        actor=actor.staff, listing_id=id, reason=body.reason, ip=_ip(request)
+    )
+    return ListingModerationResponse(id=listing.id, status=listing.status)
+
+
+@router.post("/listings/{id}/restore", status_code=status.HTTP_200_OK)
+async def restore_listing(
+    id: UUID,
+    request: Request,
+    actor: ModeratorDep,
+    service: AdminServiceDep,
+) -> ListingModerationResponse:
+    """Put a SUSPENDED listing back in front of buyers, audited."""
+    listing = await service.restore_listing(actor=actor.staff, listing_id=id, ip=_ip(request))
+    return ListingModerationResponse(id=listing.id, status=listing.status)
+
+
+# -- the audit trail -----------------------------------------------------------
+
+
+@router.get("/audit-log", status_code=status.HTTP_200_OK)
+async def read_audit_log(
+    staff: AuditReaderDep,
+    service: AdminServiceDep,
+    actor_id: Annotated[UUID | None, Query()] = None,
+    action: Annotated[str | None, Query(max_length=64)] = None,
+    target_type: Annotated[str | None, Query(max_length=32)] = None,
+    target_id: Annotated[UUID | None, Query()] = None,
+    since: Annotated[datetime | None, Query()] = None,
+    until: Annotated[datetime | None, Query()] = None,
+    cursor: Annotated[str | None, Query(description="Opaque; echo the last one given.")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> CursorPage[AuditLogResponse]:
+    """One page of the append-only trail, filtered by actor, action, target and time."""
+    after = _decode_cursor(cursor) if cursor else None
+    rows, has_more = await service.list_audit_log(
+        actor_id=actor_id,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        since=since,
+        until=until,
+        after=after,
+        limit=limit,
+    )
+    return CursorPage[AuditLogResponse](
+        data=[AuditLogResponse.model_validate(row) for row in rows],
+        next_cursor=(_encode_cursor(rows[-1].at, rows[-1].id) if has_more and rows else None),
+        has_more=has_more,
+    )
+
+
 # -- the KYC queue -------------------------------------------------------------
 
 
@@ -185,14 +333,16 @@ async def list_kyc_cases(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> CursorPage[KycCaseAdminResponse]:
     """One page of the reviewer's queue. Defaults to the waiting cases."""
-    after = _decode_case_cursor(cursor) if cursor else None
+    after = _decode_cursor(cursor) if cursor else None
     effective_status = case_status if case_status is not None else KycStatus.PENDING
     rows, has_more = await service.list_kyc_cases(
         status=effective_status, tier_requested=tier_requested, after=after, limit=limit
     )
     return CursorPage[KycCaseAdminResponse](
         data=[KycCaseAdminResponse.model_validate(row) for row in rows],
-        next_cursor=_encode_case_cursor(rows[-1]) if has_more and rows else None,
+        next_cursor=(
+            _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        ),
         has_more=has_more,
     )
 
@@ -270,15 +420,15 @@ async def revoke_agent(
 # -- cursor helpers ------------------------------------------------------------
 
 
-def _encode_case_cursor(case: object) -> str:
-    """Where a page ended: the (created_at, id) pair the next page seeks past."""
+def _encode_cursor(moment: datetime, identity: UUID) -> str:
+    """Where a page ended: the (timestamp, id) pair the next page seeks past."""
     import base64
 
-    raw = f"{case.created_at.isoformat()}|{case.id}".encode()  # type: ignore[attr-defined]
+    raw = f"{moment.isoformat()}|{identity}".encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_case_cursor(cursor: str) -> tuple[datetime, UUID]:
+def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     """Read a boundary back, refusing one we did not write."""
     import base64
     from datetime import datetime as _dt

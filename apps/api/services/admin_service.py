@@ -39,18 +39,23 @@ from apps.api.core import staff_password, staff_totp
 from apps.api.core.config import Settings
 from apps.api.core.security import TokenService
 from apps.api.core.staff_secrets import StaffSecretCipher
+from apps.api.models.audit_log import AuditLog
 from apps.api.models.kyc_case import KycCase, KycRejectionReason, KycStatus, KycTier
+from apps.api.models.listing import Listing, ListingStatus
 from apps.api.models.staff_user import StaffRole, StaffUser
-from apps.api.models.user import AccountStatus, User, VerificationTier
+from apps.api.models.user import AccountStatus, PrimaryRole, User, VerificationTier
+from apps.api.models.user_role import Role
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
+from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.staff_session_repository import StaffSessionRepository
 from apps.api.repositories.staff_user_repository import StaffUserRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.user_role_repository import UserRoleRepository
 from apps.api.services.agent_service import ACTOR_SYSTEM as _ACTOR_SYSTEM
 from apps.api.services.agent_service import AgentRoleAdmin
+from apps.api.services.listing_service import transition_listing_status
 from packages.shared.errors import ApiError, ErrorCode
 
 #: The scope a token carries when the account must change its password before anything else.
@@ -74,6 +79,19 @@ ACTION_KYC_APPROVED = "KYC_APPROVED"
 ACTION_KYC_REJECTED = "KYC_REJECTED"
 ACTION_AGENT_APPROVED = "AGENT_APPROVED"
 ACTION_AGENT_REVOKED = "AGENT_REVOKED"
+ACTION_USER_STATUS_CHANGED = "USER_STATUS_CHANGED"
+ACTION_USER_ROLE_CHANGED = "USER_ROLE_CHANGED"
+ACTION_USER_ADDITIONAL_ROLE_ADDED = "USER_ADDITIONAL_ROLE_ADDED"
+ACTION_USER_ADDITIONAL_ROLE_REMOVED = "USER_ADDITIONAL_ROLE_REMOVED"
+ACTION_LISTING_SUSPENDED = "LISTING_SUSPENDED"
+ACTION_LISTING_RESTORED = "LISTING_RESTORED"
+
+#: The only account statuses the staff console may set. The other members of the account
+#: lifecycle are reached by the trader's own recovery or by a KYC decision, not by an operator
+#: choosing them from a menu.
+ADMIN_SETTABLE_STATUSES = frozenset(
+    {AccountStatus.ACTIVE, AccountStatus.FROZEN, AccountStatus.SUSPENDED}
+)
 
 #: The actor role a system action carries when there is no human staff actor — the seed
 #: command, or any action taken by the platform itself. Imported from the agent service rather
@@ -99,6 +117,14 @@ class IssuedStaffToken:
     access_token: str
     expires_at: datetime
     scope: str
+
+
+@dataclass(frozen=True, slots=True)
+class AdminUserRow:
+    """A trader account and the additional roles held right now."""
+
+    user: User
+    additional_roles: list[Role]
 
 
 class StaffAuthService:
@@ -300,6 +326,7 @@ class AdminService:
         sessions: StaffSessionRepository,
         users: UserRepository,
         cases: KycCaseRepository,
+        listings: ListingRepository,
         user_roles: UserRoleRepository,
         assignments: AgentAssignmentRepository,
         agent_admin: AgentRoleAdmin,
@@ -311,6 +338,7 @@ class AdminService:
         self._sessions = sessions
         self._users = users
         self._cases = cases
+        self._listings = listings
         self._user_roles = user_roles
         self._assignments = assignments
         self._agent_admin = agent_admin
@@ -437,6 +465,222 @@ class AdminService:
             )
             await self._staff.commit()
         return target
+
+    # -- trader account administration -----------------------------------------
+
+    async def list_users(
+        self,
+        *,
+        phone_e164: str | None,
+        status: AccountStatus | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> tuple[list[AdminUserRow], bool]:
+        """One page of the staff console's account search, newest first.
+
+        The role read is one query for the page rather than one per row. ``has_more`` comes
+        from the repository's extra row, exactly as the KYC queue's does.
+        """
+        rows = await self._users.page_for_admin(
+            phone_prefix=phone_e164, status=status, after=after, limit=limit
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        roles = await self._user_roles.active_for([row.id for row in page])
+        return (
+            [AdminUserRow(user=row, additional_roles=roles.get(row.id, [])) for row in page],
+            has_more,
+        )
+
+    async def update_user(
+        self,
+        *,
+        actor: StaffUser,
+        user_id: uuid.UUID,
+        status: AccountStatus | None = None,
+        role: PrimaryRole | None = None,
+        additional_roles_add: list[Role] | None = None,
+        additional_roles_remove: list[Role] | None = None,
+        reason: str | None = None,
+        ip: str | None = None,
+    ) -> AdminUserRow:
+        """Apply the requested account mutations, one audit row per actual change.
+
+        A request that names two fields produces two rows, not one row that hides one of them.
+        The log's value is that it names what changed; a merged row would leave the reader to
+        diff two hashes to discover that a role moved as well as a status.
+        """
+        user = await self._users.find_by_id(user_id)
+        if user is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "user"})
+
+        add = list(dict.fromkeys(additional_roles_add or []))
+        remove = list(dict.fromkeys(additional_roles_remove or []))
+        overlap = set(add) & set(remove)
+        if overlap:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                details={
+                    "fields": {
+                        "additional_roles": "cannot_add_and_remove_the_same_role",
+                    }
+                },
+            )
+
+        if status is not None:
+            if status not in ADMIN_SETTABLE_STATUSES:
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR,
+                    details={"fields": {"status": "must_be_ACTIVE_FROZEN_or_SUSPENDED"}},
+                )
+            clean_reason = (reason or "").strip()
+            if status is AccountStatus.FROZEN and not clean_reason:
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR,
+                    details={"fields": {"reason": "required_when_freezing_an_account"}},
+                )
+            before_status = user.status.value
+            if user.status != status:
+                user.status = status
+                after: dict[str, object] = {"status": status.value}
+                if clean_reason:
+                    after["reason"] = clean_reason
+                await self._audit.record(
+                    actor_id=actor.id,
+                    actor_role=actor.role.value,
+                    action=ACTION_USER_STATUS_CHANGED,
+                    target_type="user",
+                    target_id=user.id,
+                    before={"status": before_status},
+                    after=after,
+                    ip=ip,
+                )
+
+        if role is not None:
+            before_role = user.role.value
+            if user.role != role:
+                user.role = role
+                await self._audit.record(
+                    actor_id=actor.id,
+                    actor_role=actor.role.value,
+                    action=ACTION_USER_ROLE_CHANGED,
+                    target_type="user",
+                    target_id=user.id,
+                    before={"role": before_role},
+                    after={"role": role.value},
+                    ip=ip,
+                )
+
+        for additional in add:
+            if await self._user_roles.grant(user.id, additional, commit=False):
+                await self._audit.record(
+                    actor_id=actor.id,
+                    actor_role=actor.role.value,
+                    action=ACTION_USER_ADDITIONAL_ROLE_ADDED,
+                    target_type="user",
+                    target_id=user.id,
+                    before={"role": additional.value, "held": False},
+                    after={"role": additional.value, "held": True},
+                    ip=ip,
+                )
+
+        for additional in remove:
+            if await self._user_roles.revoke(user.id, additional, commit=False):
+                await self._audit.record(
+                    actor_id=actor.id,
+                    actor_role=actor.role.value,
+                    action=ACTION_USER_ADDITIONAL_ROLE_REMOVED,
+                    target_type="user",
+                    target_id=user.id,
+                    before={"role": additional.value, "held": True},
+                    after={"role": additional.value, "held": False},
+                    ip=ip,
+                )
+
+        await self._users.save(user)
+        await self._users.refresh(user)
+        roles = await self._user_roles.active_for([user.id])
+        return AdminUserRow(user=user, additional_roles=roles.get(user.id, []))
+
+    # -- moderation ------------------------------------------------------------
+
+    async def suspend_listing(
+        self,
+        *,
+        actor: StaffUser,
+        listing_id: uuid.UUID,
+        reason: str,
+        ip: str | None = None,
+    ) -> Listing:
+        """Take an ACTIVE listing off the board, with the moderator's reason in the audit row.
+
+        The state table is the only authority on whether the move is legal. A paused, expired,
+        sold-out or closed listing is refused by the same guard every seller transition uses, so
+        moderation cannot invent a second set of edges.
+        """
+        listing = await self._require_listing_for_moderation(listing_id)
+        before = listing.status.value
+        transition_listing_status(listing, ListingStatus.SUSPENDED)
+        await self._audit.record(
+            actor_id=actor.id,
+            actor_role=actor.role.value,
+            action=ACTION_LISTING_SUSPENDED,
+            target_type="listing",
+            target_id=listing.id,
+            before={"status": before},
+            after={"status": ListingStatus.SUSPENDED.value, "reason": reason.strip()},
+            ip=ip,
+        )
+        await self._listings.commit()
+        return listing
+
+    async def restore_listing(
+        self, *, actor: StaffUser, listing_id: uuid.UUID, ip: str | None = None
+    ) -> Listing:
+        """Put a SUSPENDED listing back in front of buyers, audited."""
+        listing = await self._require_listing_for_moderation(listing_id)
+        before = listing.status.value
+        transition_listing_status(listing, ListingStatus.ACTIVE)
+        await self._audit.record(
+            actor_id=actor.id,
+            actor_role=actor.role.value,
+            action=ACTION_LISTING_RESTORED,
+            target_type="listing",
+            target_id=listing.id,
+            before={"status": before},
+            after={"status": ListingStatus.ACTIVE.value},
+            ip=ip,
+        )
+        await self._listings.commit()
+        return listing
+
+    # -- the audit trail -------------------------------------------------------
+
+    async def list_audit_log(
+        self,
+        *,
+        actor_id: uuid.UUID | None,
+        action: str | None,
+        target_type: str | None,
+        target_id: uuid.UUID | None,
+        since: datetime | None,
+        until: datetime | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> tuple[list[AuditLog], bool]:
+        """One page of the append-only trail, filtered as the console asks."""
+        rows = await self._audit.page(
+            actor_id=actor_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            since=since,
+            until=until,
+            after=after,
+            limit=limit,
+        )
+        has_more = len(rows) > limit
+        return rows[:limit], has_more
 
     # -- the KYC queue ---------------------------------------------------------
 
@@ -583,6 +827,12 @@ class AdminService:
         if target is None:
             raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "staff_user"})
         return target
+
+    async def _require_listing_for_moderation(self, listing_id: uuid.UUID) -> Listing:
+        loaded = await self._listings.find_by_id_for_update(listing_id)
+        if loaded is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "listing"})
+        return loaded.listing
 
     async def _require_pending_case(self, case_id: uuid.UUID) -> KycCase:
         case = await self._cases.find_by_id(case_id)

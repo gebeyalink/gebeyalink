@@ -480,6 +480,7 @@ def get_admin_service(db_session: db_session_dep, settings: settings_dep) -> Adm
         sessions=StaffSessionRepository(db_session),
         users=UserRepository(db_session),
         cases=KycCaseRepository(db_session),
+        listings=ListingRepository(db_session),
         user_roles=UserRoleRepository(db_session),
         assignments=AgentAssignmentRepository(db_session),
         agent_admin=agent_admin,
@@ -577,3 +578,46 @@ def require_admin_staff(context: FullStaffDep) -> _StaffContext:
 
 
 AdminOnlyDep = Annotated[_StaffContext, Depends(require_admin_staff)]
+
+
+def require_user_search(context: FullStaffDep) -> _StaffContext:
+    """A full-scoped staff caller who may search trader accounts.
+
+    ADMIN, SUPPORT and MODERATOR may look an account up: §5.3 gives SUPPORT the support
+    journey and MODERATOR the listing moderation journey, and both start by finding the
+    account behind a phone number. The role gate stops at reading; changing an account is a
+    separate, ADMIN-only dependency.
+    """
+    allowed = (StaffRole.ADMIN, StaffRole.SUPPORT, StaffRole.MODERATOR)
+    if context.staff.role not in allowed:
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "role_required"})
+    return context
+
+
+UserSearchDep = Annotated[_StaffContext, Depends(require_user_search)]
+
+
+def require_moderator(context: FullStaffDep) -> _StaffContext:
+    """A full-scoped staff caller who may suspend and restore listings."""
+    if context.staff.role not in (StaffRole.MODERATOR, StaffRole.ADMIN):
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "role_required"})
+    return context
+
+
+ModeratorDep = Annotated[_StaffContext, Depends(require_moderator)]
+
+
+def require_audit_reader(context: FullStaffDep) -> _StaffContext:
+    """A full-scoped staff caller who may search the audit trail.
+
+    §5.3's matrix does not name the audit log as a capability. The honest default is the two
+    roles whose work the trail answers for: ADMIN, who owns the platform, and SUPPORT, who
+    answers a trader asking what happened to their account. MODERATOR and VERIFIER act through
+    the same audited services but do not read the whole trail.
+    """
+    if context.staff.role not in (StaffRole.ADMIN, StaffRole.SUPPORT):
+        raise ApiError(ErrorCode.FORBIDDEN, details={"reason": "role_required"})
+    return context
+
+
+AuditReaderDep = Annotated[_StaffContext, Depends(require_audit_reader)]

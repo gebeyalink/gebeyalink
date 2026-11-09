@@ -10,10 +10,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.models.user import User
+from apps.api.models.user import AccountStatus, User
 from packages.shared.i18n.languages import Language
 
 
@@ -35,6 +35,40 @@ class UserRepository:
         """The account with this identifier, if it still exists."""
         result = await self._session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
+
+    async def page_for_admin(
+        self,
+        *,
+        phone_prefix: str | None,
+        status: AccountStatus | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> list[User]:
+        """One page of the staff console's account search, newest first.
+
+        The phone filter is a prefix match. A full E.164 number is therefore an exact search,
+        and a partial number is the "I only caught the first digits" search support actually
+        makes. ``autoescape`` keeps a caller's ``%`` or ``_`` from turning into a wildcard.
+        """
+        stmt = select(User)
+        if phone_prefix is not None:
+            stmt = stmt.where(User.phone_e164.startswith(phone_prefix, autoescape=True))
+        if status is not None:
+            stmt = stmt.where(User.status == status)
+        if after is not None:
+            stmt = stmt.where(tuple_(User.created_at, User.id) < after)
+        stmt = stmt.order_by(User.created_at.desc(), User.id.desc()).limit(limit + 1)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def refresh(self, user: User) -> None:
+        """Re-read a row after a commit expired its server-generated columns.
+
+        A response is built synchronously after the route's final await, so an expired
+        ``updated_at`` cannot be lazy-loaded there. The explicit refresh moves that read back
+        under an await.
+        """
+        await self._session.refresh(user)
 
     async def save_language(self, user: User, language: Language) -> User:
         """Record the language this trader reads in.
