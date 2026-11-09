@@ -14,6 +14,117 @@
         "title": "AccountStatus",
         "type": "string"
       },
+      "AdminUserPatchBody": {
+        "additionalProperties": false,
+        "description": "The three mutations the staff console may perform on a trader account.\n\n``reason`` is required when the status becomes ``FROZEN``. A ban without a stated reason is\nindistinguishable from an accident, and §11.1 asks for the reason to be part of the audited\nrecord. The field is accepted on every status change so an operator may explain a suspension\nas well; it is only mandatory for a freeze.",
+        "properties": {
+          "additional_roles_add": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "title": "Additional Roles Add",
+            "type": "array"
+          },
+          "additional_roles_remove": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "title": "Additional Roles Remove",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrimaryRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "AdminUserPatchBody",
+        "type": "object"
+      },
+      "AdminUserResponse": {
+        "additionalProperties": false,
+        "description": "A trader account as the staff console reads it.\n\nThe primary role and the additional roles are shown separately because they answer\ndifferent questions: the first is the label a journey is offered under, and the second is\nwhat else the account may do. Flattening them into one list would make an agent look like a\nprimary label nobody chose.",
+        "properties": {
+          "additional_roles": {
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "title": "Additional Roles",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kyc_tier": {
+            "$ref": "#/components/schemas/VerificationTier"
+          },
+          "language": {
+            "$ref": "#/components/schemas/Language"
+          },
+          "phone_e164": {
+            "title": "Phone E164",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/PrimaryRole"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AccountStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "phone_e164",
+          "role",
+          "language",
+          "kyc_tier",
+          "status",
+          "additional_roles",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AdminUserResponse",
+        "type": "object"
+      },
       "AgentApproveBody": {
         "additionalProperties": false,
         "description": "The account an admin is approving as an agent, identified by its user id.",
@@ -54,6 +165,105 @@
           "agent"
         ],
         "title": "AgentDecisionResponse",
+        "type": "object"
+      },
+      "AuditLogResponse": {
+        "additionalProperties": false,
+        "description": "One row of the append-only staff-action trail, as search reads it back.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_role": {
+            "title": "Actor Role",
+            "type": "string"
+          },
+          "after_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Hash"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "before_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Hash"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ip"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Id"
+          },
+          "target_type": {
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "actor_id",
+          "actor_role",
+          "action",
+          "target_type",
+          "target_id",
+          "before_hash",
+          "after_hash",
+          "ip",
+          "at"
+        ],
+        "title": "AuditLogResponse",
         "type": "object"
       },
       "ClientSupportResponse": {
@@ -156,6 +366,72 @@
           "escrow_hold_hours"
         ],
         "title": "CropSummary",
+        "type": "object"
+      },
+      "CursorPage_AdminUserResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[AdminUserResponse]",
+        "type": "object"
+      },
+      "CursorPage_AuditLogResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLogResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[AuditLogResponse]",
         "type": "object"
       },
       "CursorPage_KycCaseAdminResponse_": {
@@ -731,6 +1007,43 @@
           "delivery_options"
         ],
         "title": "ListingCreateBody",
+        "type": "object"
+      },
+      "ListingModerationBody": {
+        "additionalProperties": false,
+        "description": "Why a moderator is taking a listing off the board.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "ListingModerationBody",
+        "type": "object"
+      },
+      "ListingModerationResponse": {
+        "additionalProperties": false,
+        "description": "The listing's identity and the state the moderation move left it in.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ListingStatus"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "ListingModerationResponse",
         "type": "object"
       },
       "ListingResponse": {
@@ -2149,6 +2462,15 @@
         "title": "RefreshTokenResponse",
         "type": "object"
       },
+      "Role": {
+        "description": "The additional roles §11.1 names.\n\nOnly ``AGENT`` has a producer today. ``COLLECTION_AGENT`` is the other member of the\nvocabulary and sits here so the database check and the model cannot disagree.",
+        "enum": [
+          "AGENT",
+          "COLLECTION_AGENT"
+        ],
+        "title": "Role",
+        "type": "string"
+      },
       "SavedSearchBody": {
         "additionalProperties": false,
         "description": "One saved search as a client writes it.",
@@ -3050,6 +3372,188 @@
         ]
       }
     },
+    "/v1/admin/audit-log": {
+      "get": {
+        "description": "One page of the append-only trail, filtered by actor, action, target and time.",
+        "operationId": "read_audit_log_v1_admin_audit_log_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_AuditLogResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Audit Log",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/change-password": {
       "post": {
         "description": "Replace the caller's own password. Reachable with either scope.",
@@ -3405,6 +3909,136 @@
         ]
       }
     },
+    "/v1/admin/listings/{id}/restore": {
+      "post": {
+        "description": "Put a SUSPENDED listing back in front of buyers, audited.",
+        "operationId": "restore_listing_v1_admin_listings__id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingModerationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Listing",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/listings/{id}/suspend": {
+      "post": {
+        "description": "Take an ACTIVE listing off the board, with the moderator's reason in the audit row.",
+        "operationId": "suspend_listing_v1_admin_listings__id__suspend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingModerationBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingModerationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suspend Listing",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/login": {
       "post": {
         "description": "Prove a password and a one-time code, and open a session.",
@@ -3685,6 +4319,192 @@
           }
         },
         "summary": "Change Staff Role",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "description": "One page of trader accounts, filtered by phone prefix and status.",
+        "operationId": "list_users_v1_admin_users_get",
+        "parameters": [
+          {
+            "description": "An E.164 number, or the prefix of one; a full number is exact.",
+            "in": "query",
+            "name": "phone_e164",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An E.164 number, or the prefix of one; a full number is exact.",
+              "title": "Phone E164"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AccountStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_AdminUserResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/users/{id}": {
+      "patch": {
+        "description": "Change a trader's status, primary role, or additional roles; every change is audited.",
+        "operationId": "update_user_v1_admin_users__id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUserPatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update User",
         "tags": [
           "admin"
         ]

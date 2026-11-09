@@ -43,7 +43,27 @@ class UserRoleRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
-    async def grant(self, user_id: uuid.UUID, role: Role) -> bool:
+    async def active_for(self, user_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[Role]]:
+        """The active additional roles held by each of these accounts, grouped by account.
+
+        One statement for a page, for the same reason the listing page asks for its photographs
+        once: a staff search that queried once per row would put a number of round trips behind
+        a page size the caller chose.
+        """
+        if not user_ids:
+            return {}
+        stmt = (
+            select(UserRole.user_id, UserRole.role)
+            .where(UserRole.user_id.in_(user_ids), UserRole.revoked_at.is_(None))
+            .order_by(UserRole.user_id, UserRole.role)
+        )
+        result = await self._session.execute(stmt)
+        grouped: dict[uuid.UUID, list[Role]] = {}
+        for user_id, role in result.all():
+            grouped.setdefault(user_id, []).append(role)
+        return grouped
+
+    async def grant(self, user_id: uuid.UUID, role: Role, *, commit: bool = True) -> bool:
         """Give this account this role, once. Returns whether a change was made.
 
         Idempotent by construction. When the active row already exists the insert does
@@ -51,6 +71,9 @@ class UserRoleRepository:
         insert lands (or re-grants the revoked row) and ``True`` comes back. The single
         statement is the whole guarantee, so two concurrent approvals cannot both believe
         they were the one that granted it.
+
+        ``commit=False`` leaves the transaction open for a caller that must write an audit row
+        in the same transaction. The default keeps the older callers' one-call behaviour.
         """
         stmt = (
             insert(UserRole)
@@ -66,20 +89,24 @@ class UserRoleRepository:
         )
         result = await self._session.execute(stmt)
         granted = result.scalar_one_or_none() is not None
-        if granted:
+        if granted and commit:
             await self._session.commit()
         return granted
 
-    async def revoke(self, user_id: uuid.UUID, role: Role) -> bool:
+    async def revoke(self, user_id: uuid.UUID, role: Role, *, commit: bool = True) -> bool:
         """Take this role away, once. Returns whether a change was made.
 
         The update is conditional on the row being active, so revoking an account that does
         not hold the role, or holds it already revoked, is a no-op rather than a second
         revocation date.
+
+        As with ``grant``, ``commit=False`` lets a caller keep the mutation and its audit row
+        in one transaction.
         """
         row = await self._session.get(UserRole, (user_id, role))
         if row is None or row.revoked_at is not None:
             return False
         row.revoked_at = datetime.now(UTC)
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
         return True

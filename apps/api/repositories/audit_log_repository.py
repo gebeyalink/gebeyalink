@@ -17,8 +17,10 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.models.audit_log import AuditLog
@@ -61,6 +63,43 @@ class AuditLogRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+    async def page(
+        self,
+        *,
+        actor_id: uuid.UUID | None = None,
+        action: str | None = None,
+        target_type: str | None = None,
+        target_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        after: tuple[datetime, uuid.UUID] | None = None,
+        limit: int = 20,
+    ) -> list[AuditLog]:
+        """One page of the trail, newest first, with the filters support actually asks for.
+
+        Keyset-paginated on ``(at, id)``. ``at`` alone is not unique enough to order a log by:
+        rows written in one transaction share the database clock, and a boundary that named only
+        the timestamp could skip or repeat one of them.
+        """
+        stmt = select(AuditLog)
+        if actor_id is not None:
+            stmt = stmt.where(AuditLog.actor_id == actor_id)
+        if action is not None:
+            stmt = stmt.where(AuditLog.action == action)
+        if target_type is not None:
+            stmt = stmt.where(AuditLog.target_type == target_type)
+        if target_id is not None:
+            stmt = stmt.where(AuditLog.target_id == target_id)
+        if since is not None:
+            stmt = stmt.where(AuditLog.at >= since)
+        if until is not None:
+            stmt = stmt.where(AuditLog.at <= until)
+        if after is not None:
+            stmt = stmt.where(tuple_(AuditLog.at, AuditLog.id) < after)
+        stmt = stmt.order_by(AuditLog.at.desc(), AuditLog.id.desc()).limit(limit + 1)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def commit(self) -> None:
         """Make the appended rows permanent.

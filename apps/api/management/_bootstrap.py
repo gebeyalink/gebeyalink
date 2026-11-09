@@ -32,6 +32,7 @@ from apps.api.models import user as _user_model  # noqa: F401
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
+from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.staff_session_repository import StaffSessionRepository
 from apps.api.repositories.staff_user_repository import StaffUserRepository
 from apps.api.repositories.user_repository import UserRepository
@@ -97,6 +98,7 @@ def build_admin_service(session: AsyncSession) -> AdminService:
         sessions=StaffSessionRepository(session),
         users=UserRepository(session),
         cases=KycCaseRepository(session),
+        listings=ListingRepository(session),
         user_roles=UserRoleRepository(session),
         assignments=AgentAssignmentRepository(session),
         agent_admin=build_role_admin(session),

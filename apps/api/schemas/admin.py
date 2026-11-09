@@ -1,6 +1,6 @@
 """Request and response bodies for the staff routes.
 
-The staff surface is deliberately small and its bodies are too. Three kinds live here.
+The staff surface is deliberately small and its bodies are too. Four kinds live here.
 
     The *sign-in* bodies: what a staff member sends to get in, to change their password, and
     nothing else. The response is a token and its lifetime — no staff profile, because the
@@ -13,6 +13,11 @@ The staff surface is deliberately small and its bodies are too. Three kinds live
     The *queue* bodies: the KYC case as a reviewer reads it and the rejection reason they send
     back. The reviewer's view of a case is wider than the submitter's: it includes the document
     addresses, because reading them is the reviewer's whole job.
+
+    The *operator* bodies: a trader account and the few things staff may change about one, a
+    listing's moderation reason, and a row of the append-only trail. They are separate from the
+    queue shapes because the console reads an account, not a case, and because an audit row is
+    evidence rather than a request.
 """
 
 from __future__ import annotations
@@ -23,7 +28,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from apps.api.models.kyc_case import KycDocType, KycRejectionReason, KycStatus, KycTier
+from apps.api.models.listing import ListingStatus
 from apps.api.models.staff_user import StaffRole
+from apps.api.models.user import AccountStatus, PrimaryRole, VerificationTier
+from apps.api.models.user_role import Role
+from packages.shared.i18n.languages import Language
 
 #: The ceiling on an email address, per RFC 5321. Also the column's width, stated once here so
 #: the shape and the schema agree.
@@ -197,3 +206,93 @@ class AgentDecisionResponse(BaseModel):
     user_id: UUID
     agent: bool
     assignments_ended: int = 0
+
+
+class AdminUserResponse(BaseModel):
+    """A trader account as the staff console reads it.
+
+    The primary role and the additional roles are shown separately because they answer
+    different questions: the first is the label a journey is offered under, and the second is
+    what else the account may do. Flattening them into one list would make an agent look like a
+    primary label nobody chose.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    phone_e164: str
+    role: PrimaryRole
+    language: Language
+    kyc_tier: VerificationTier
+    status: AccountStatus
+    additional_roles: list[Role]
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminUserPatchBody(BaseModel):
+    """The three mutations the staff console may perform on a trader account.
+
+    ``reason`` is required when the status becomes ``FROZEN``. A ban without a stated reason is
+    indistinguishable from an accident, and §11.1 asks for the reason to be part of the audited
+    record. The field is accepted on every status change so an operator may explain a suspension
+    as well; it is only mandatory for a freeze.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: AccountStatus | None = None
+    role: PrimaryRole | None = None
+    additional_roles_add: list[Role] = Field(default_factory=list)
+    additional_roles_remove: list[Role] = Field(default_factory=list)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("status")
+    @classmethod
+    def _status_is_admin_settable(cls, value: AccountStatus | None) -> AccountStatus | None:
+        allowed = {AccountStatus.ACTIVE, AccountStatus.FROZEN, AccountStatus.SUSPENDED}
+        if value is not None and value not in allowed:
+            raise ValueError("must_be_ACTIVE_FROZEN_or_SUSPENDED")
+        return value
+
+
+class ListingModerationBody(BaseModel):
+    """Why a moderator is taking a listing off the board."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("reason_must_not_be_blank")
+        return cleaned
+
+
+class ListingModerationResponse(BaseModel):
+    """The listing's identity and the state the moderation move left it in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    status: ListingStatus
+
+
+class AuditLogResponse(BaseModel):
+    """One row of the append-only staff-action trail, as search reads it back."""
+
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: UUID
+    actor_id: UUID | None
+    actor_role: str
+    action: str
+    target_type: str
+    target_id: UUID | None
+    before_hash: str | None
+    after_hash: str | None
+    ip: str | None
+    at: datetime
