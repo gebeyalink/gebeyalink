@@ -30,6 +30,7 @@ from apps.api.dependencies import (
     UserSearchDep,
 )
 from apps.api.models.kyc_case import KycRejectionReason, KycStatus, KycTier
+from apps.api.models.listing import Listing, ListingStatus
 from apps.api.models.user import AccountStatus
 from apps.api.schemas.admin import (
     AdminUserPatchBody,
@@ -39,6 +40,7 @@ from apps.api.schemas.admin import (
     AuditLogResponse,
     KycCaseAdminResponse,
     KycRejectionBody,
+    ListingAdminResponse,
     ListingModerationBody,
     ListingModerationResponse,
     StaffCreateBody,
@@ -51,6 +53,7 @@ from apps.api.schemas.admin import (
     StaffTokenResponse,
 )
 from apps.api.schemas.pagination import CursorPage
+from apps.api.schemas.search import RegionCode
 from apps.api.services.admin_service import AdminUserRow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -92,6 +95,27 @@ def _admin_user_response(row: AdminUserRow) -> AdminUserResponse:
         additional_roles=row.additional_roles,
         created_at=user.created_at,
         updated_at=user.updated_at,
+    )
+
+
+def _listing_admin_response(listing: Listing) -> ListingAdminResponse:
+    """Turn a listing into the moderation screen's row.
+
+    ``available_kg`` is the listing's own quantity less the weight already consumed against
+    it. Live reservations are not counted on this screen; that count belongs to the
+    buyer-facing listing read.
+    """
+    return ListingAdminResponse(
+        id=listing.id,
+        seller_id=listing.seller_id,
+        crop_id=listing.crop_id,
+        quantity_kg=listing.quantity_kg,
+        available_kg=listing.quantity_kg - listing.sold_kg,
+        unit_price_santim=listing.unit_price_santim,
+        status=listing.status,
+        region_code=listing.region_code,
+        short_code=listing.short_code,
+        created_at=listing.created_at,
     )
 
 
@@ -256,6 +280,47 @@ async def update_user(
 
 
 # -- listing moderation --------------------------------------------------------
+
+
+@router.get("/listings", status_code=status.HTTP_200_OK)
+async def list_listings(
+    staff: ModeratorDep,
+    service: AdminServiceDep,
+    seller_id: Annotated[UUID | None, Query()] = None,
+    listing_status: Annotated[ListingStatus | None, Query(alias="status")] = None,
+    crop_id: Annotated[int | None, Query(ge=1)] = None,
+    region_code: Annotated[RegionCode | None, Query()] = None,
+    q: Annotated[
+        str | None,
+        Query(max_length=200, description="Case-insensitive substring of the description."),
+    ] = None,
+    cursor: Annotated[str | None, Query(description="Opaque; echo the last one given.")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> CursorPage[ListingAdminResponse]:
+    """One page of listings in every state, narrowed by seller, status, crop, region or text.
+
+    This is the moderator's way to find the listing behind a report before suspending or
+    restoring it. The buyer search is deliberately a different question: it shows only what
+    can be bought, while moderation has to be able to reach a listing that is already
+    suspended.
+    """
+    after = _decode_cursor(cursor) if cursor else None
+    rows, has_more = await service.list_listings(
+        seller_id=seller_id,
+        status=listing_status,
+        crop_id=crop_id,
+        region_code=region_code,
+        q=q,
+        after=after,
+        limit=limit,
+    )
+    return CursorPage[ListingAdminResponse](
+        data=[_listing_admin_response(row) for row in rows],
+        next_cursor=(
+            _encode_cursor(rows[-1].created_at, rows[-1].id) if has_more and rows else None
+        ),
+        has_more=has_more,
+    )
 
 
 @router.post("/listings/{id}/suspend", status_code=status.HTTP_200_OK)

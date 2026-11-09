@@ -604,6 +604,34 @@ class AdminService:
 
     # -- moderation ------------------------------------------------------------
 
+    async def list_listings(
+        self,
+        *,
+        seller_id: uuid.UUID | None,
+        status: ListingStatus | None,
+        crop_id: int | None,
+        region_code: str | None,
+        q: str | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> tuple[list[Listing], bool]:
+        """One page of the moderation screen's listing search, in every state.
+
+        The route is read-only, so it writes no audit row. The description term is trimmed
+        here because whitespace around a search phrase is typing, not part of what the
+        moderator meant to match; a term that is only whitespace is no filter at all.
+        """
+        term = q.strip() if q is not None else None
+        return await self._listings.list_for_admin(
+            seller_id=seller_id,
+            status=status,
+            crop_id=crop_id,
+            region_code=region_code,
+            q=term or None,
+            after=after,
+            limit=limit,
+        )
+
     async def suspend_listing(
         self,
         *,

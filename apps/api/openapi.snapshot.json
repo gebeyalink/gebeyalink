@@ -467,6 +467,39 @@
         "title": "CursorPage[KycCaseAdminResponse]",
         "type": "object"
       },
+      "CursorPage_ListingAdminResponse_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ListingAdminResponse"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "CursorPage[ListingAdminResponse]",
+        "type": "object"
+      },
       "CursorPage_ListingResponse_": {
         "additionalProperties": false,
         "properties": {
@@ -865,6 +898,68 @@
         ],
         "title": "Language",
         "type": "string"
+      },
+      "ListingAdminResponse": {
+        "additionalProperties": false,
+        "description": "A listing as the moderation screen reads it.\n\nThis is the row a moderator picks from before suspending or restoring, so it carries the\nseller's identity as a UUID and no phone number: support finds the seller through the\naccount search, and the listing row only needs to point at the account it came from.\n``available_kg`` is what is left after the weight already consumed against the listing;\nthe moderation screen does not count live reservations, which belong to the buyer-facing\nlisting read.",
+        "properties": {
+          "available_kg": {
+            "title": "Available Kg",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "crop_id": {
+            "title": "Crop Id",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "quantity_kg": {
+            "title": "Quantity Kg",
+            "type": "integer"
+          },
+          "region_code": {
+            "title": "Region Code",
+            "type": "string"
+          },
+          "seller_id": {
+            "format": "uuid",
+            "title": "Seller Id",
+            "type": "string"
+          },
+          "short_code": {
+            "title": "Short Code",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ListingStatus"
+          },
+          "unit_price_santim": {
+            "title": "Unit Price Santim",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seller_id",
+          "crop_id",
+          "quantity_kg",
+          "available_kg",
+          "unit_price_santim",
+          "status",
+          "region_code",
+          "short_code",
+          "created_at"
+        ],
+        "title": "ListingAdminResponse",
+        "type": "object"
       },
       "ListingCreateBody": {
         "additionalProperties": false,
@@ -3904,6 +3999,186 @@
           }
         },
         "summary": "Reject Kyc Case",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/listings": {
+      "get": {
+        "description": "One page of listings in every state, narrowed by seller, status, crop, region or text.\n\nThis is the moderator's way to find the listing behind a report before suspending or\nrestoring it. The buyer search is deliberately a different question: it shows only what\ncan be bought, while moderation has to be able to reach a listing that is already\nsuspended.",
+        "operationId": "list_listings_v1_admin_listings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "seller_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Seller Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ListingStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "crop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Crop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "region_code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "AA",
+                    "AF",
+                    "AM",
+                    "BE",
+                    "DD",
+                    "GA",
+                    "HA",
+                    "OR",
+                    "SI",
+                    "SO",
+                    "SW",
+                    "SN",
+                    "TI"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Region Code"
+            }
+          },
+          {
+            "description": "Case-insensitive substring of the description.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive substring of the description.",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "Opaque; echo the last one given.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque; echo the last one given.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorPage_ListingAdminResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Listings",
         "tags": [
           "admin"
         ]

@@ -103,6 +103,45 @@ class ListingRepository:
             LoadedListing(listing=row, photos=photographs.get(row.id, [])) for row in rows[:limit]
         ], len(rows) > limit
 
+    async def list_for_admin(
+        self,
+        seller_id: uuid.UUID | None,
+        status: ListingStatus | None,
+        crop_id: int | None,
+        region_code: str | None,
+        q: str | None,
+        after: tuple[datetime, uuid.UUID] | None,
+        limit: int,
+    ) -> tuple[list[Listing], bool]:
+        """One page of the moderation screen's listing search, newest first.
+
+        Every filter is optional and they combine with AND: the console starts from everything
+        and narrows only as far as the staff member has said. ``q`` is a substring of the
+        description, case-insensitive, and ``autoescape`` keeps ``%`` and ``_`` in a caller's
+        description from turning into SQL wildcards.
+
+        The page is cut at ``limit + 1`` rows so that "is there another" is answered by the
+        rows themselves rather than by a second count query; the extra row is not returned.
+        """
+        stmt = select(Listing)
+        if seller_id is not None:
+            stmt = stmt.where(Listing.seller_id == seller_id)
+        if status is not None:
+            stmt = stmt.where(Listing.status == status)
+        if crop_id is not None:
+            stmt = stmt.where(Listing.crop_id == crop_id)
+        if region_code is not None:
+            stmt = stmt.where(Listing.region_code == region_code)
+        if q is not None:
+            stmt = stmt.where(Listing.description.icontains(q, autoescape=True))
+        if after is not None:
+            after_created_at, after_id = after
+            stmt = stmt.where(tuple_(Listing.created_at, Listing.id) < (after_created_at, after_id))
+        stmt = stmt.order_by(Listing.created_at.desc(), Listing.id.desc()).limit(limit + 1)
+        result = await self._session.execute(stmt)
+        rows = list(result.scalars().all())
+        return rows[:limit], len(rows) > limit
+
     async def replace_photos(
         self, listing_id: uuid.UUID, photos: list[tuple[str, int, int]]
     ) -> list[ListingPhoto]:
