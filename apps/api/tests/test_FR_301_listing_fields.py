@@ -33,6 +33,7 @@ from apps.api.tests.test_FR_1201_1203_1707_agent_basics import (
 from apps.api.tests.test_FR_1201_1203_1707_agent_basics import (
     sql as sql,
 )
+from packages.shared.messaging.queues import eat_calendar_date
 
 # SPEC §20: this file drives the real app against an ephemeral Postgres through the client
 # fixture, so it is an integration-layer test.
@@ -209,25 +210,34 @@ def test_the_smallest_order_cannot_exceed_the_whole_listing(
     assert "min_order_kg" in response.json()["error"]["details"]["fields"]
 
 
-@pytest.mark.parametrize("days_from_today", [-1, -30, 366, 800])
-def test_a_harvest_date_outside_the_next_year_is_refused(
+@pytest.mark.parametrize(
+    ("days_from_today", "expected_status"),
+    [(-1, 422), (-30, 422), (365, 201), (366, 422), (800, 422)],
+)
+def test_a_harvest_date_is_checked_against_the_next_year(
     client: TestClient,
     signed_in: Callable[..., dict[str, str]],
     listing_body: Callable[..., dict[str, object]],
     days_from_today: int,
+    expected_status: int,
 ) -> None:
-    """A harvest cannot be in the past, and a year out is as far as a schedule can reach.
+    """A harvest cannot be in the past, and the next year is a closed boundary.
 
     Yesterday is somebody's typo. Three years out is not a planting schedule, and a listing
-    claiming one is a date we would be publishing as though we believed it.
+    claiming one is a date we would be publishing as though we believed it. The boundary
+    itself is a promise the seller can keep, so one year out is accepted and one day past
+    it is refused.
     """
     headers = signed_in()
-    harvest = (datetime.now(UTC) + timedelta(days=days_from_today)).date().isoformat()
+    harvest = (eat_calendar_date(datetime.now(UTC)) + timedelta(days=days_from_today)).isoformat()
 
     response = client.post("/v1/listings", headers=headers, json=listing_body(harvest_date=harvest))
 
-    assert response.status_code == 422, response.text
-    assert "harvest_date" in response.json()["error"]["details"]["fields"]
+    assert response.status_code == expected_status, response.text
+    if expected_status == 422:
+        assert "harvest_date" in response.json()["error"]["details"]["fields"]
+    else:
+        assert response.json()["harvest_date"] == harvest
 
 
 def test_a_listing_cannot_be_posted_to_outlive_three_months(

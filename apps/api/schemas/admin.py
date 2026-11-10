@@ -281,6 +281,31 @@ class ListingModerationResponse(BaseModel):
     status: ListingStatus
 
 
+class ListingAdminResponse(BaseModel):
+    """A listing as the moderation screen reads it.
+
+    This is the row a moderator picks from before suspending or restoring, so it carries the
+    seller's identity as a UUID and no phone number: support finds the seller through the
+    account search, and the listing row only needs to point at the account it came from.
+    ``available_kg`` is what is left after the weight already consumed against the listing;
+    the moderation screen does not count live reservations, which belong to the buyer-facing
+    listing read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    seller_id: UUID
+    crop_id: int
+    quantity_kg: int
+    available_kg: int
+    unit_price_santim: int
+    status: ListingStatus
+    region_code: str
+    short_code: str
+    created_at: datetime
+
+
 class AuditLogResponse(BaseModel):
     """One row of the append-only staff-action trail, as search reads it back."""
 
