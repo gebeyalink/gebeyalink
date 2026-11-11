@@ -3,12 +3,14 @@ import { useMutation } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, clearSession, errorMessage } from "../../api/client";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 export function ChangePasswordPage() {
   const navigate = useNavigate();
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [totpCode, setTotpCode] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const change = useMutation({
     mutationFn: api.changePassword,
@@ -21,10 +23,17 @@ export function ChangePasswordPage() {
         },
       });
     },
+    onError: () => {
+      setConfirmOpen(false);
+    },
   });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    setConfirmOpen(true);
+  };
+
+  const handleConfirm = () => {
     change.mutate({
       old_password: oldPassword,
       new_password: newPassword,
@@ -109,6 +118,16 @@ export function ChangePasswordPage() {
           </Stack>
         </Box>
       </Paper>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Change password"
+        description="Replace your current password now? This ends the current session."
+        confirmLabel="Change password"
+        loading={change.isPending}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={handleConfirm}
+      />
     </Box>
   );
 }
