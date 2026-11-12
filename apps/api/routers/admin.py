@@ -13,7 +13,7 @@ token with ``scope=change_password_only`` may reach. Everything else requires a 
 from __future__ import annotations
 
 import ipaddress
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -33,6 +33,7 @@ from apps.api.models.kyc_case import KycRejectionReason, KycStatus, KycTier
 from apps.api.models.listing import Listing, ListingStatus
 from apps.api.models.user import AccountStatus
 from apps.api.schemas.admin import (
+    AdminDashboardResponse,
     AdminUserPatchBody,
     AdminUserResponse,
     AgentApproveBody,
@@ -43,6 +44,9 @@ from apps.api.schemas.admin import (
     ListingAdminResponse,
     ListingModerationBody,
     ListingModerationResponse,
+    OrderLedgerResponse,
+    PriceOverrideBody,
+    PriceOverrideResponse,
     StaffCreateBody,
     StaffCreatedResponse,
     StaffDisableBody,
@@ -382,6 +386,85 @@ async def read_audit_log(
         data=[AuditLogResponse.model_validate(row) for row in rows],
         next_cursor=(_encode_cursor(rows[-1].at, rows[-1].id) if has_more and rows else None),
         has_more=has_more,
+    )
+
+
+# -- the dashboard and the order ledger ---------------------------------------
+
+
+@router.get("/dashboard", status_code=status.HTTP_200_OK)
+async def read_dashboard(
+    staff: AuditReaderDep,
+    service: AdminServiceDep,
+) -> AdminDashboardResponse:
+    """Read §3.3's metrics, including the nulls the COD pilot cannot compute.
+
+    The role gate is the audit reader's because both surfaces answer the same question —
+    ADMIN and SUPPORT are the two staff roles responsible for the platform's numbers and for
+    explaining them to a trader.
+    """
+    metrics = await service.dashboard()
+    return AdminDashboardResponse(
+        gmv_santim=metrics.gmv_santim,
+        cod_gmv_santim=metrics.cod_gmv_santim,
+        completed_orders=metrics.completed_orders,
+        active_farmers=metrics.active_farmers,
+        offer_to_order_conversion=metrics.offer_to_order_conversion,
+        offer_to_order_conversion_note=metrics.offer_to_order_conversion_note,
+        cod_offer_to_order_conversion=metrics.cod_offer_to_order_conversion,
+        dispute_rate=metrics.dispute_rate,
+        dispute_rate_note=metrics.dispute_rate_note,
+        nps=metrics.nps,
+        nps_surveyed_at=metrics.nps_surveyed_at,
+        nps_note=metrics.nps_note,
+        ussd_share=metrics.ussd_share,
+        as_of=metrics.as_of,
+    )
+
+
+@router.get("/orders/{id}/ledger", status_code=status.HTTP_200_OK)
+async def read_order_ledger(
+    id: UUID,
+    staff: AuditReaderDep,
+    service: AdminServiceDep,
+) -> OrderLedgerResponse:
+    """Read any order's balanced journals; a COD order honestly has none.
+
+    Staff may read an order that is not theirs. The route is read-only and deliberately does
+    not audit: looking at the ledger is not an action the trail needs to answer for.
+    """
+    ledger = await service.order_ledger(order_id=id)
+    return OrderLedgerResponse(order_id=ledger.order_id, entries=[], note=ledger.note)
+
+
+# -- the price board ----------------------------------------------------------
+
+
+@router.put("/prices/{crop_id}/{region_code}/{day}", status_code=status.HTTP_200_OK)
+async def override_price_board(
+    crop_id: int,
+    region_code: RegionCode,
+    day: date,
+    body: PriceOverrideBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: AdminServiceDep,
+) -> PriceOverrideResponse:
+    """Replace one day's computed board price, with the reason in the audit hash."""
+    row = await service.override_price(
+        actor=actor.staff,
+        crop_id=crop_id,
+        region_code=region_code,
+        day=day,
+        price_santim=body.price_santim,
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return PriceOverrideResponse(
+        crop_id=row.crop_id,
+        region_code=row.region_code,
+        day=row.day,
+        price_santim=row.price_santim,
     )
 
 

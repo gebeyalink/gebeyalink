@@ -11,6 +11,7 @@ variable reads the same as the setting it feeds.
 
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
 from functools import lru_cache
 
@@ -311,6 +312,21 @@ class Settings(BaseSettings):
             "FR-2301: the app version below which the app must force an update. A deployment "
             "sets this to the real threshold when the app ships."
         ),
+    )
+
+    # The NPS the dashboard reports. Net promoter score is surveyed outside the platform, so
+    # it is deployment data rather than a query: a value and the date it was measured. Both
+    # are null until someone has actually run the survey, and the dashboard says so rather
+    # than presenting a zero as if it were a score.
+    nps_latest_score: float | None = Field(
+        default=None,
+        ge=-100,
+        le=100,
+        description="R11: the latest externally surveyed net promoter score, or null if none.",
+    )
+    nps_surveyed_at: date | None = Field(
+        default=None,
+        description="R11: the day the latest NPS was measured, or null if it has not been.",
     )
 
     # Off unless something asks for it. FastAPI serves an interactive browser at /docs, a
