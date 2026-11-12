@@ -14,6 +14,129 @@
         "title": "AccountStatus",
         "type": "string"
       },
+      "AdminDashboardResponse": {
+        "additionalProperties": false,
+        "description": "The seven §3.3 metrics, including the ones the COD pilot cannot compute.\n\nA metric this dashboard cannot see is returned as null with a note rather than as zero:\nzero is a measurement, and \"the pilot has no funded orders to measure\" is not the same\nfact. The fields that are genuinely zero — GMV during a COD-only pilot — are returned as\nzero and explained by the client, because their arithmetic is real.",
+        "properties": {
+          "active_farmers": {
+            "title": "Active Farmers",
+            "type": "integer"
+          },
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "cod_gmv_santim": {
+            "title": "Cod Gmv Santim",
+            "type": "integer"
+          },
+          "cod_offer_to_order_conversion": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cod Offer To Order Conversion"
+          },
+          "completed_orders": {
+            "title": "Completed Orders",
+            "type": "integer"
+          },
+          "dispute_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispute Rate"
+          },
+          "dispute_rate_note": {
+            "title": "Dispute Rate Note",
+            "type": "string"
+          },
+          "gmv_santim": {
+            "title": "Gmv Santim",
+            "type": "integer"
+          },
+          "nps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nps"
+          },
+          "nps_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nps Note"
+          },
+          "nps_surveyed_at": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nps Surveyed At"
+          },
+          "offer_to_order_conversion": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offer To Order Conversion"
+          },
+          "offer_to_order_conversion_note": {
+            "title": "Offer To Order Conversion Note",
+            "type": "string"
+          },
+          "ussd_share": {
+            "title": "Ussd Share",
+            "type": "number"
+          }
+        },
+        "required": [
+          "gmv_santim",
+          "cod_gmv_santim",
+          "completed_orders",
+          "active_farmers",
+          "offer_to_order_conversion",
+          "offer_to_order_conversion_note",
+          "cod_offer_to_order_conversion",
+          "dispute_rate",
+          "dispute_rate_note",
+          "nps",
+          "nps_surveyed_at",
+          "ussd_share",
+          "as_of"
+        ],
+        "title": "AdminDashboardResponse",
+        "type": "object"
+      },
       "AdminUserPatchBody": {
         "additionalProperties": false,
         "description": "The three mutations the staff console may perform on a trader account.\n\n``reason`` is required when the status becomes ``FROZEN``. A ban without a stated reason is\nindistinguishable from an accident, and §11.1 asks for the reason to be part of the audited\nrecord. The field is accepted on every status change so an operator may explain a suspension\nas well; it is only mandatory for a freeze.",
@@ -1768,6 +1891,87 @@
         "title": "OrderBuyNowBody",
         "type": "object"
       },
+      "OrderLedgerEntryResponse": {
+        "additionalProperties": false,
+        "description": "One side of a balanced journal, as the order-ledger browser reads it.\n\nThe ledger tables are not part of the COD pilot, so this shape is what a funded order's\nrow will look like when one exists. An empty ``entries`` list is the honest answer today.",
+        "properties": {
+          "account_code": {
+            "title": "Account Code",
+            "type": "string"
+          },
+          "amount_santim": {
+            "title": "Amount Santim",
+            "type": "integer"
+          },
+          "entry_type": {
+            "title": "Entry Type",
+            "type": "string"
+          },
+          "journal_id": {
+            "format": "uuid",
+            "title": "Journal Id",
+            "type": "string"
+          },
+          "journal_kind": {
+            "title": "Journal Kind",
+            "type": "string"
+          },
+          "memo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memo"
+          }
+        },
+        "required": [
+          "journal_id",
+          "journal_kind",
+          "account_code",
+          "entry_type",
+          "amount_santim"
+        ],
+        "title": "OrderLedgerEntryResponse",
+        "type": "object"
+      },
+      "OrderLedgerResponse": {
+        "additionalProperties": false,
+        "description": "An order's ledger, or an empty ledger with the reason it is empty.",
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/OrderLedgerEntryResponse"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "order_id": {
+            "format": "uuid",
+            "title": "Order Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "title": "OrderLedgerResponse",
+        "type": "object"
+      },
       "OrderResponse": {
         "additionalProperties": false,
         "description": "An order as it is read back.\n\nThe money figures are the frozen ones, so a client showing \"what I pay\" shows what will\nactually be taken. `pickup_code` is here because it is the buyer's to keep and the seller's\nto ask for — but only to the buyer: the seller's copy of the order does not carry the code\nthey are supposed to be asking it for, because a code visible to the party being verified is\na code the verification proves nothing about. `cancel_reason` is here because \"it expired\"\nand \"I cancelled it\" are different things to the buyer looking at a list, and one word for\nboth would lose that.",
@@ -2254,6 +2458,61 @@
           "insufficient_data"
         ],
         "title": "PriceBoardResponse",
+        "type": "object"
+      },
+      "PriceOverrideBody": {
+        "additionalProperties": false,
+        "description": "An admin replacing the board's computed price for one crop, region and day.",
+        "properties": {
+          "price_santim": {
+            "description": "The override price in santim; the board's price is never negative or zero.",
+            "exclusiveMinimum": 0.0,
+            "title": "Price Santim",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "price_santim",
+          "reason"
+        ],
+        "title": "PriceOverrideBody",
+        "type": "object"
+      },
+      "PriceOverrideResponse": {
+        "additionalProperties": false,
+        "description": "The board row the override wrote.",
+        "properties": {
+          "crop_id": {
+            "title": "Crop Id",
+            "type": "integer"
+          },
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "price_santim": {
+            "title": "Price Santim",
+            "type": "integer"
+          },
+          "region_code": {
+            "title": "Region Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "crop_id",
+          "region_code",
+          "day",
+          "price_santim"
+        ],
+        "title": "PriceOverrideResponse",
         "type": "object"
       },
       "PrimaryRole": {
@@ -3702,6 +3961,56 @@
         ]
       }
     },
+    "/v1/admin/dashboard": {
+      "get": {
+        "description": "Read §3.3's metrics, including the nulls the COD pilot cannot compute.\n\nThe role gate is the audit reader's because both surfaces answer the same question —\nADMIN and SUPPORT are the two staff roles responsible for the platform's numbers and for\nexplaining them to a trader.",
+        "operationId": "read_dashboard_v1_admin_dashboard_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDashboardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Dashboard",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc-cases": {
       "get": {
         "description": "One page of the reviewer's queue. Defaults to the waiting cases.",
@@ -4394,6 +4703,169 @@
           }
         },
         "summary": "Logout",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/orders/{id}/ledger": {
+      "get": {
+        "description": "Read any order's balanced journals; a COD order honestly has none.\n\nStaff may read an order that is not theirs. The route is read-only and deliberately does\nnot audit: looking at the ledger is not an action the trail needs to answer for.",
+        "operationId": "read_order_ledger_v1_admin_orders__id__ledger_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderLedgerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Order Ledger",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/prices/{crop_id}/{region_code}/{day}": {
+      "put": {
+        "description": "Replace one day's computed board price, with the reason in the audit hash.",
+        "operationId": "override_price_board_v1_admin_prices__crop_id___region_code___day__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "crop_id",
+            "required": true,
+            "schema": {
+              "title": "Crop Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "region_code",
+            "required": true,
+            "schema": {
+              "enum": [
+                "AA",
+                "AF",
+                "AM",
+                "BE",
+                "DD",
+                "GA",
+                "HA",
+                "OR",
+                "SI",
+                "SO",
+                "SW",
+                "SN",
+                "TI"
+              ],
+              "title": "Region Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Day",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriceOverrideBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceOverrideResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Override Price Board",
         "tags": [
           "admin"
         ]

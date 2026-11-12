@@ -33,15 +33,22 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+
+from sqlalchemy import distinct, func, select
 
 from apps.api.core import staff_password, staff_totp
 from apps.api.core.config import Settings
 from apps.api.core.security import TokenService
 from apps.api.core.staff_secrets import StaffSecretCipher
 from apps.api.models.audit_log import AuditLog
+from apps.api.models.crop import Crop
 from apps.api.models.kyc_case import KycCase, KycRejectionReason, KycStatus, KycTier
-from apps.api.models.listing import Listing, ListingStatus
+from apps.api.models.listing import Listing, ListingSource, ListingStatus
+from apps.api.models.offer import Offer, OfferStatus
+from apps.api.models.order import Order, OrderStatus, PaymentMode
+from apps.api.models.price_index import PriceIndex
+from apps.api.models.region import Region
 from apps.api.models.staff_user import StaffRole, StaffUser
 from apps.api.models.user import AccountStatus, PrimaryRole, User, VerificationTier
 from apps.api.models.user_role import Role
@@ -49,6 +56,8 @@ from apps.api.repositories.agent_assignment_repository import AgentAssignmentRep
 from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
 from apps.api.repositories.listing_repository import ListingRepository
+from apps.api.repositories.order_repository import OrderRepository
+from apps.api.repositories.price_index_repository import DailyIndex, PriceIndexRepository
 from apps.api.repositories.staff_session_repository import StaffSessionRepository
 from apps.api.repositories.staff_user_repository import StaffUserRepository
 from apps.api.repositories.user_repository import UserRepository
@@ -85,6 +94,19 @@ ACTION_USER_ADDITIONAL_ROLE_ADDED = "USER_ADDITIONAL_ROLE_ADDED"
 ACTION_USER_ADDITIONAL_ROLE_REMOVED = "USER_ADDITIONAL_ROLE_REMOVED"
 ACTION_LISTING_SUSPENDED = "LISTING_SUSPENDED"
 ACTION_LISTING_RESTORED = "LISTING_RESTORED"
+ACTION_PRICE_BOARD_OVERRIDDEN = "PRICE_BOARD_OVERRIDDEN"
+
+#: The dashboard refuses to present an uncomputable metric as zero. These notes are the
+#: reason a reader sees beside the null, not an implementation detail hidden in a client.
+OFFER_CONVERSION_NOTE = (
+    "COD orders never pass through escrow, so funded orders divided by accepted offers "
+    "cannot be computed during the COD pilot."
+)
+DISPUTE_RATE_NOTE = (
+    "Disputes are a Phase 2 feature; the COD pilot has no funded-order denominator to divide by."
+)
+COD_LEDGER_NOTE = "no ledger entries — COD orders never create journals"
+NON_COD_LEDGER_NOTE = "no ledger entries — the ledger is not part of the COD pilot"
 
 #: The only account statuses the staff console may set. The other members of the account
 #: lifecycle are reached by the trader's own recovery or by a KYC decision, not by an operator
@@ -125,6 +147,48 @@ class AdminUserRow:
 
     user: User
     additional_roles: list[Role]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardMetrics:
+    """One reading of §3.3, with the nulls and their reasons kept together.
+
+    The arithmetic and the explanation are one value rather than two calls, because a client
+    that could render the number without the note would eventually do exactly that.
+    """
+
+    gmv_santim: int
+    cod_gmv_santim: int
+    completed_orders: int
+    active_farmers: int
+    offer_to_order_conversion: float | None
+    offer_to_order_conversion_note: str
+    cod_offer_to_order_conversion: float | None
+    dispute_rate: float | None
+    dispute_rate_note: str
+    nps: float | None
+    nps_surveyed_at: date | None
+    nps_note: str | None
+    ussd_share: float
+    as_of: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OrderLedgerView:
+    """An order's ledger. The entry list is empty until funded orders exist."""
+
+    order_id: uuid.UUID
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
+class PriceOverrideView:
+    """The board row an admin's override wrote."""
+
+    crop_id: int
+    region_code: str
+    day: date
+    price_santim: int
 
 
 class StaffAuthService:
@@ -345,6 +409,203 @@ class AdminService:
         self._audit = audit
         self._secrets = secrets
         self._settings = settings
+
+    # -- the numbers ------------------------------------------------------------
+
+    async def dashboard(self, *, now: datetime | None = None) -> DashboardMetrics:
+        """Read §3.3 in one transaction, including the metrics this pilot cannot compute.
+
+        The three nulls are not failures: the COD pilot has no funded orders to measure, no
+        dispute workflow, and no survey instrument. Returning zero for any of them would make
+        "we cannot see it" look like "it is zero", which is a different and worse claim.
+        """
+        moment = now or datetime.now(UTC)
+        session = self._cases.session
+        completed = (OrderStatus.DELIVERED, OrderStatus.COMPLETED)
+        subtotal = Order.quantity_kg * Order.unit_price_santim
+
+        gmv_santim = int(
+            await session.scalar(
+                select(func.coalesce(func.sum(subtotal), 0)).where(
+                    Order.payment_mode == PaymentMode.ESCROW,
+                    Order.funded_at.is_not(None),
+                )
+            )
+            or 0
+        )
+        cod_gmv_santim = int(
+            await session.scalar(
+                select(func.coalesce(func.sum(subtotal), 0)).where(
+                    Order.payment_mode == PaymentMode.COD,
+                    Order.status.in_(completed),
+                )
+            )
+            or 0
+        )
+        completed_orders = int(
+            await session.scalar(
+                select(func.count()).select_from(Order).where(Order.status.in_(completed))
+            )
+            or 0
+        )
+        active_farmers = int(
+            await session.scalar(
+                select(func.count(distinct(User.id)))
+                .select_from(User)
+                .join(Listing, Listing.seller_id == User.id)
+                .where(
+                    User.role == PrimaryRole.FARMER,
+                    Listing.created_at >= moment - timedelta(days=30),
+                )
+            )
+            or 0
+        )
+        total_listings = int(await session.scalar(select(func.count()).select_from(Listing)) or 0)
+        ussd_listings = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Listing)
+                .where(Listing.source.in_((ListingSource.USSD, ListingSource.SMS)))
+            )
+            or 0
+        )
+        accepted_offers = int(
+            await session.scalar(
+                select(func.count()).select_from(Offer).where(Offer.status == OfferStatus.ACCEPTED)
+            )
+            or 0
+        )
+        cod_completed_orders = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Order)
+                .where(
+                    Order.payment_mode == PaymentMode.COD,
+                    Order.status.in_(completed),
+                )
+            )
+            or 0
+        )
+
+        nps = self._settings.nps_latest_score
+        return DashboardMetrics(
+            gmv_santim=gmv_santim,
+            cod_gmv_santim=cod_gmv_santim,
+            completed_orders=completed_orders,
+            active_farmers=active_farmers,
+            offer_to_order_conversion=None,
+            offer_to_order_conversion_note=OFFER_CONVERSION_NOTE,
+            cod_offer_to_order_conversion=(
+                cod_completed_orders / accepted_offers if accepted_offers else None
+            ),
+            dispute_rate=None,
+            dispute_rate_note=DISPUTE_RATE_NOTE,
+            nps=nps,
+            nps_surveyed_at=self._settings.nps_surveyed_at,
+            nps_note=None if nps is not None else "NPS has not been surveyed yet.",
+            ussd_share=ussd_listings / total_listings if total_listings else 0.0,
+            as_of=moment,
+        )
+
+    async def order_ledger(self, *, order_id: uuid.UUID) -> OrderLedgerView:
+        """Read one order's journals, or explain why there are none.
+
+        Staff may read any order here; the route's dependency is what says who staff is. The
+        ledger tables are not part of the COD pilot, so the list is empty today and the note
+        names the reason rather than leaving the browser to guess.
+        """
+        order = await OrderRepository(self._cases.session).find_by_id(order_id)
+        if order is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "order"})
+        note = COD_LEDGER_NOTE if order.payment_mode == PaymentMode.COD else NON_COD_LEDGER_NOTE
+        return OrderLedgerView(order_id=order.id, note=note)
+
+    # -- the price board --------------------------------------------------------
+
+    async def override_price(
+        self,
+        *,
+        actor: StaffUser,
+        crop_id: int,
+        region_code: str,
+        day: date,
+        price_santim: int,
+        reason: str,
+        ip: str | None = None,
+    ) -> PriceOverrideView:
+        """Replace the board's computed price for one pair and day, audited.
+
+        The override is a write to the same ``price_indices`` row the overnight job writes,
+        so every reader keeps reading one table and the override is indistinguishable from a
+        computed board in shape. What makes it an override rather than a correction is the
+        audit row: the reason is part of the hashed after-state, so the explanation cannot be
+        separated from the number it explains.
+        """
+        if price_santim <= 0:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                details={"fields": {"price_santim": "must_be_positive"}},
+            )
+        cleaned_reason = reason.strip()
+        if not cleaned_reason:
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                details={"fields": {"reason": "must_not_be_blank"}},
+            )
+
+        session = self._cases.session
+        if await session.scalar(select(Crop.id).where(Crop.id == crop_id)) is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "crop"})
+        if await session.scalar(select(Region.code).where(Region.code == region_code)) is None:
+            raise ApiError(ErrorCode.NOT_FOUND, details={"resource": "region"})
+
+        current = await session.scalar(
+            select(PriceIndex).where(
+                PriceIndex.crop_id == crop_id,
+                PriceIndex.region_code == region_code,
+                PriceIndex.day == day,
+            )
+        )
+        before = None if current is None else {"price_santim": current.avg_unit_price_santim}
+
+        await PriceIndexRepository(session).publish(
+            [
+                DailyIndex(
+                    crop_id=crop_id,
+                    region_code=region_code,
+                    day=day,
+                    avg_unit_price_santim=price_santim,
+                    min_unit_price_santim=price_santim,
+                    max_unit_price_santim=price_santim,
+                    sample_size=0,
+                    insufficient_data=False,
+                )
+            ]
+        )
+        row_id = await session.scalar(
+            select(PriceIndex.id).where(
+                PriceIndex.crop_id == crop_id,
+                PriceIndex.region_code == region_code,
+                PriceIndex.day == day,
+            )
+        )
+        await self._audit.record(
+            actor_id=actor.id,
+            actor_role=actor.role.value,
+            action=ACTION_PRICE_BOARD_OVERRIDDEN,
+            target_type="price_index",
+            target_id=row_id,
+            before=before,
+            after={"price_santim": price_santim, "reason": cleaned_reason},
+            ip=ip,
+        )
+        await self._audit.commit()
+        return PriceOverrideView(
+            crop_id=crop_id,
+            region_code=region_code,
+            day=day,
+            price_santim=price_santim,
+        )
 
     # -- staff administration --------------------------------------------------
 

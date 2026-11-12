@@ -22,7 +22,7 @@ The staff surface is deliberately small and its bodies are too. Four kinds live 
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -321,3 +321,88 @@ class AuditLogResponse(BaseModel):
     after_hash: str | None
     ip: str | None
     at: datetime
+
+
+class AdminDashboardResponse(BaseModel):
+    """The seven §3.3 metrics, including the ones the COD pilot cannot compute.
+
+    A metric this dashboard cannot see is returned as null with a note rather than as zero:
+    zero is a measurement, and "the pilot has no funded orders to measure" is not the same
+    fact. The fields that are genuinely zero — GMV during a COD-only pilot — are returned as
+    zero and explained by the client, because their arithmetic is real.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    gmv_santim: int
+    cod_gmv_santim: int
+    completed_orders: int
+    active_farmers: int
+    offer_to_order_conversion: float | None
+    offer_to_order_conversion_note: str
+    cod_offer_to_order_conversion: float | None
+    dispute_rate: float | None
+    dispute_rate_note: str
+    nps: float | None
+    nps_surveyed_at: date | None
+    nps_note: str | None = None
+    ussd_share: float
+    as_of: datetime
+
+
+class OrderLedgerEntryResponse(BaseModel):
+    """One side of a balanced journal, as the order-ledger browser reads it.
+
+    The ledger tables are not part of the COD pilot, so this shape is what a funded order's
+    row will look like when one exists. An empty ``entries`` list is the honest answer today.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    journal_id: UUID
+    journal_kind: str
+    memo: str | None = None
+    account_code: str
+    entry_type: str
+    amount_santim: int
+
+
+class OrderLedgerResponse(BaseModel):
+    """An order's ledger, or an empty ledger with the reason it is empty."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: UUID
+    entries: list[OrderLedgerEntryResponse] = Field(default_factory=list)
+    note: str | None = None
+
+
+class PriceOverrideBody(BaseModel):
+    """An admin replacing the board's computed price for one crop, region and day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    price_santim: int = Field(
+        gt=0,
+        description="The override price in santim; the board's price is never negative or zero.",
+    )
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("reason_must_not_be_blank")
+        return cleaned
+
+
+class PriceOverrideResponse(BaseModel):
+    """The board row the override wrote."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    crop_id: int
+    region_code: str
+    day: date
+    price_santim: int
