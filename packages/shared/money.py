@@ -14,6 +14,13 @@ seller's payout move together in every branch so that the two always reconcile. 
 platform earns is the same in all three; only the funding side differs, which is why the split
 between `buyer_fee` and `seller_fee` is stated rather than left to be inferred from the totals.
 
+The percentages, bounds, and payer arrive together in a :class:`FeeConfig`. This module never
+reads that configuration from a database, a settings object, or a module-level default: the
+caller loads the row it means to charge under and hands it in. A money function that reached
+for configuration itself could compute two different totals for two lines of the same order,
+and a deployment whose active configuration row is missing would silently fall back to whatever
+constants happened to ship with the code.
+
 Rounding is **half-up**: a half always rounds away from zero, so 2.5 santim becomes 3 and
 3.5 becomes 4. This is stated here because it is a convention rather than a law, and because
 the obvious implementation of "round half up" in Python is not half-up at all.
@@ -36,26 +43,10 @@ from typing import Final
 #: which is a hundred what?
 SANTIM_PER_ETB: Final = 100
 
-#: Two percent of the subtotal, as the exact fraction it is. Written `2/100` rather than as
-#: 0.02 because 0.02 has no exact binary representation: the nearest double to it is a hair
-#: above the real value, so `round(subtotal * 0.02)` rounds a number that was never exactly
-#: two percent of anything.
-PLATFORM_FEE_PERCENT: Final = 2
-PLATFORM_FEE_PARTS: Final = 100
-
-#: Fifteen percent VAT, charged on the platform fee and not on the subtotal.
-VAT_PERCENT: Final = 15
-VAT_PARTS: Final = 100
-
-#: Five birr. The floor exists because two percent of a small order is less than the cost of
-#: collecting it; without it the smallest orders would carry a fee too small to be worth a
-#: ledger entry.
-PLATFORM_FEE_MINIMUM: Final = 5 * SANTIM_PER_ETB
-
-#: Five hundred birr. This is the figure that decides what a large order costs: two percent of
-#: the hundred-thousand-birr order in the worked example would be 2,000.00 ETB, and the rule
-#: caps it at 500.00.
-PLATFORM_FEE_MAXIMUM: Final = 500 * SANTIM_PER_ETB
+#: One hundred percent, in hundredths of a percent. A fee stored as ``200`` is two percent and
+#: a VAT stored as ``1500`` is fifteen percent; the stored integers are the exact fractions the
+#: arithmetic uses, so no binary floating-point approximation enters the money path.
+BASIS_POINTS: Final = 10_000
 
 
 class FeePayer(StrEnum):
@@ -70,6 +61,26 @@ class FeePayer(StrEnum):
     BUYER = "BUYER"
     SELLER = "SELLER"
     SPLIT_50 = "SPLIT_50"
+
+
+@dataclass(frozen=True, slots=True)
+class FeeConfig:
+    """The fee policy one order is charged under.
+
+    The values are the active row from the ``fee_config`` table, copied into an ordinary value
+    before they reach this module. Keeping the dataclass independent of SQLAlchemy is what lets
+    the arithmetic be unit-tested without a database and keeps the money module incapable of
+    reading a second, newer configuration halfway through a calculation.
+
+    Percentages are in basis points. The bounds are in santim and are applied after the
+    percentage is rounded, exactly as FR-602 states them.
+    """
+
+    fee_payer: FeePayer
+    platform_fee_bps: int
+    min_fee_santim: int
+    max_fee_santim: int
+    vat_bps: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,33 +137,31 @@ def clamp(value: int, lowest: int, highest: int) -> int:
     return min(max(value, lowest), highest)
 
 
-def platform_fee_for(subtotal: int) -> int:
-    """Two percent of the subtotal, bounded below by five birr and above by five hundred.
+def platform_fee_for(subtotal: int, config: FeeConfig) -> int:
+    """The configured percentage of the subtotal, bounded by the configured floor and ceiling.
 
     The bounds are part of the fee rather than a display of it, so they are applied to the
-    rounded figure: a subtotal whose two percent is 499.6 santim rounds up to 500 and meets the
-    floor exactly, and one whose two percent is 50,000.4 is charged the ceiling of 50,000. Both
-    edges are inclusive — a subtotal of exactly 25,000 santim is two percent of exactly 500 and
-    pays 500, and a subtotal of exactly 2,500,000 santim pays the ceiling rather than 50,000.4.
+    rounded figure: a fee halfway between two santim rounds up before the clamps see it. The
+    defaults in the seeded row are two percent, five birr and five hundred birr, but the
+    function reads the supplied configuration rather than those historical constants.
     """
-    two_percent = round_half_up(subtotal * PLATFORM_FEE_PERCENT, PLATFORM_FEE_PARTS)
-    return clamp(two_percent, PLATFORM_FEE_MINIMUM, PLATFORM_FEE_MAXIMUM)
+    fee = round_half_up(subtotal * config.platform_fee_bps, BASIS_POINTS)
+    return clamp(fee, config.min_fee_santim, config.max_fee_santim)
 
 
-def vat_for(platform_fee: int) -> int:
-    """Fifteen percent of the platform fee.
+def vat_for(platform_fee: int, config: FeeConfig) -> int:
+    """The configured VAT percentage of the platform fee.
 
     VAT is charged on the fee and never on the subtotal, which is what keeps the fee's own
-    bounded range meaningful: the VAT on the ceiling is 7,500 santim and not fifteen percent of
-    a hundred thousand birr. A fee that has been clamped upwards by the floor still carries its
+    bounded range meaningful. A fee that has been clamped upwards by the floor still carries its
     VAT in full, because the floor is the fee.
     """
-    return round_half_up(platform_fee * VAT_PERCENT, VAT_PARTS)
+    return round_half_up(platform_fee * config.vat_bps, BASIS_POINTS)
 
 
-def fee_vat_for(platform_fee: int) -> int:
+def fee_vat_for(platform_fee: int, config: FeeConfig) -> int:
     """The fee with its VAT on top: what the platform collects before it is divided up."""
-    return platform_fee + vat_for(platform_fee)
+    return platform_fee + vat_for(platform_fee, config)
 
 
 def order_totals(
@@ -160,9 +169,9 @@ def order_totals(
     unit_price_santim: int,
     delivery_fee: int = 0,
     *,
-    fee_payer: FeePayer = FeePayer.BUYER,
+    config: FeeConfig,
 ) -> OrderTotals:
-    """Every amount an order of this shape carries, for whichever side is paying the fee.
+    """Every amount an order of this shape carries, under the supplied fee configuration.
 
     The quantity and the unit price are taken rather than a pre-computed subtotal so that the
     multiplication happens here, once, in the one module that is allowed to do it. The delivery
@@ -170,8 +179,8 @@ def order_totals(
     the buyer's total, since it is the cost of getting the goods to the buyer rather than a
     charge on the transaction.
 
-    `fee_payer` defaults to the buyer because that is the configured default, and the argument
-    default says so where a reader of the signature will see it.
+    ``config`` is required. A default here would be a fallback, and a fallback is precisely what
+    turns a missing active configuration row into orders charged under stale constants.
     """
     for name, amount in (
         ("quantity_kg", quantity_kg),
@@ -182,13 +191,13 @@ def order_totals(
             raise ValueError(f"{name} must not be negative, got {amount}")
 
     subtotal = quantity_kg * unit_price_santim
-    platform_fee = platform_fee_for(subtotal)
-    vat = vat_for(platform_fee)
+    platform_fee = platform_fee_for(subtotal, config)
+    vat = vat_for(platform_fee, config)
     fee_vat = platform_fee + vat
 
-    if fee_payer is FeePayer.BUYER:
+    if config.fee_payer is FeePayer.BUYER:
         buyer_fee, seller_fee = fee_vat, 0
-    elif fee_payer is FeePayer.SELLER:
+    elif config.fee_payer is FeePayer.SELLER:
         buyer_fee, seller_fee = 0, fee_vat
     else:
         # The buyer's share is rounded up from the half, and the seller's is whatever is left,
@@ -210,5 +219,5 @@ def order_totals(
         seller_fee=seller_fee,
         buyer_total=subtotal + delivery_fee + buyer_fee,
         seller_payout=subtotal - seller_fee,
-        fee_payer=fee_payer,
+        fee_payer=config.fee_payer,
     )

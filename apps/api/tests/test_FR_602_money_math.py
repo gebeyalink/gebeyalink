@@ -14,17 +14,15 @@ range of orders rather than on two lucky examples.
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 # No HTTP, no database: this file exercises the arithmetic alone.
 pytestmark = pytest.mark.unit
 
-from apps.api.core.config import Settings  # noqa: E402
 from packages.shared.money import (  # noqa: E402
-    PLATFORM_FEE_MAXIMUM,
-    PLATFORM_FEE_MINIMUM,
+    FeeConfig,
     FeePayer,
     OrderTotals,
     clamp,
@@ -35,6 +33,24 @@ from packages.shared.money import (  # noqa: E402
     vat_for,
 )
 
+#: The policy FR-602 publishes and migration 0019 seeds. It lives here as a value because these
+#: tests are arithmetic without a database; production reads the same numbers from the active
+#: ``fee_config`` row rather than from this constant.
+SPEC_CONFIG = FeeConfig(
+    fee_payer=FeePayer.BUYER,
+    platform_fee_bps=200,
+    min_fee_santim=500,
+    max_fee_santim=50_000,
+    vat_bps=1_500,
+)
+PLATFORM_FEE_MINIMUM = SPEC_CONFIG.min_fee_santim
+PLATFORM_FEE_MAXIMUM = SPEC_CONFIG.max_fee_santim
+
+
+def config_for(payer: FeePayer = FeePayer.BUYER) -> FeeConfig:
+    """The published policy under one funding side."""
+    return replace(SPEC_CONFIG, fee_payer=payer)
+
 
 def test_the_buyer_pays_the_fee_on_a_hundred_thousand_birr_order() -> None:
     """A hundred thousand birr, fee payer BUYER: the fee is capped, the VAT is not.
@@ -43,7 +59,9 @@ def test_the_buyer_pays_the_fee_on_a_hundred_thousand_birr_order() -> None:
     is what the fee actually is. VAT is fifteen percent of that capped fee rather than fifteen
     percent of the two percent, and the seller still receives the subtotal untouched.
     """
-    totals = order_totals(quantity_kg=100, unit_price_santim=100_000, fee_payer=FeePayer.BUYER)
+    totals = order_totals(
+        quantity_kg=100, unit_price_santim=100_000, config=config_for(FeePayer.BUYER)
+    )
 
     assert totals.subtotal == 10_000_000
     assert totals.platform_fee == 50_000
@@ -66,7 +84,7 @@ def test_the_seller_pays_the_fee_and_the_delivery_charge_still_reaches_the_buyer
         quantity_kg=100,
         unit_price_santim=10_000,
         delivery_fee=10_000,
-        fee_payer=FeePayer.SELLER,
+        config=config_for(FeePayer.SELLER),
     )
 
     assert totals.subtotal == 1_000_000
@@ -87,9 +105,14 @@ def test_a_100_birr_delivery_does_not_change_the_fee() -> None:
     grand total into the fee instead of the subtotal, which would tax the buyer twice over for
     a delivery they already paid for.
     """
-    without = order_totals(quantity_kg=50, unit_price_santim=20_000, fee_payer=FeePayer.BUYER)
+    without = order_totals(
+        quantity_kg=50, unit_price_santim=20_000, config=config_for(FeePayer.BUYER)
+    )
     with_delivery = order_totals(
-        quantity_kg=50, unit_price_santim=20_000, delivery_fee=50_000, fee_payer=FeePayer.BUYER
+        quantity_kg=50,
+        unit_price_santim=20_000,
+        delivery_fee=50_000,
+        config=config_for(FeePayer.BUYER),
     )
 
     assert with_delivery.platform_fee == without.platform_fee
@@ -132,12 +155,12 @@ def test_a_100_birr_delivery_does_not_change_the_fee() -> None:
 )
 def test_the_fee_is_two_percent_bounded_at_both_ends(subtotal: int, fee: int) -> None:
     """The floor and the ceiling are part of the fee, not a display of it."""
-    assert platform_fee_for(subtotal) == fee
+    assert platform_fee_for(subtotal, SPEC_CONFIG) == fee
 
 
-def test_the_bounds_are_five_and_five_hundred_birr() -> None:
+def test_the_published_policy_has_five_and_five_hundred_birr_bounds() -> None:
     """Stated in birr because the minimum and the maximum are commercial decisions."""
-    assert (PLATFORM_FEE_MINIMUM, PLATFORM_FEE_MAXIMUM) == (500, 50_000)
+    assert (SPEC_CONFIG.min_fee_santim, SPEC_CONFIG.max_fee_santim) == (500, 50_000)
 
 
 @pytest.mark.parametrize(
@@ -162,12 +185,12 @@ def test_the_bounds_are_five_and_five_hundred_birr() -> None:
 )
 def test_vat_is_fifteen_percent_of_the_fee_rounded_half_up(fee: int, vat: int) -> None:
     """VAT is on the fee, never on the subtotal, and a half santim rounds up."""
-    assert vat_for(fee) == vat
+    assert vat_for(fee, SPEC_CONFIG) == vat
 
 
 def test_vat_on_the_capped_fee_is_not_vat_on_two_percent() -> None:
     """The cap has to reach the VAT too, or a capped fee would still carry a five-figure tax."""
-    assert vat_for(PLATFORM_FEE_MAXIMUM) == 7_500
+    assert vat_for(PLATFORM_FEE_MAXIMUM, SPEC_CONFIG) == 7_500
     assert round_half_up(10_000_000 * 15, 100) == 1_500_000
 
 
@@ -178,7 +201,7 @@ def test_the_vat_is_charged_on_a_fee_that_the_floor_raised() -> None:
     seventy-five. Had the VAT been taken on the unclamped two percent, a small order would pay
     a tax on a fee it was not charged.
     """
-    totals = order_totals(quantity_kg=1, unit_price_santim=1_000)
+    totals = order_totals(quantity_kg=1, unit_price_santim=1_000, config=SPEC_CONFIG)
 
     assert totals.platform_fee == 500
     assert totals.vat == 75
@@ -231,9 +254,9 @@ def test_clamp_holds_a_value_inside_its_bounds() -> None:
 def test_the_fee_with_its_vat_is_the_fee_plus_the_tax() -> None:
     """The combined figure is a sum, so it can never disagree with its two parts."""
     for subtotal in (0, 1_000, 25_000, 1_000_000, 2_500_000, 10_000_000):
-        fee = platform_fee_for(subtotal)
+        fee = platform_fee_for(subtotal, SPEC_CONFIG)
 
-        assert fee_vat_for(fee) == fee + vat_for(fee)
+        assert fee_vat_for(fee, SPEC_CONFIG) == fee + vat_for(fee, SPEC_CONFIG)
 
 
 @pytest.mark.parametrize(
@@ -261,7 +284,9 @@ def test_an_even_split_gives_the_odd_santim_to_the_buyer(
     santim that belongs to nobody is a santim the ledger cannot book. The buyer's half is
     rounded and the seller's is whatever is left, so the two always add back to the fee.
     """
-    totals = order_totals(quantity_kg=1, unit_price_santim=subtotal, fee_payer=FeePayer.SPLIT_50)
+    totals = order_totals(
+        quantity_kg=1, unit_price_santim=subtotal, config=config_for(FeePayer.SPLIT_50)
+    )
 
     assert (totals.buyer_fee, totals.seller_fee) == (expected_buyer_fee, expected_seller_fee)
     assert totals.buyer_fee + totals.seller_fee == totals.fee_vat
@@ -279,7 +304,7 @@ def test_the_whole_fee_is_one_side_or_the_other(
     fee_payer: FeePayer, expected_buyer_fee: int, expected_seller_fee: int
 ) -> None:
     """One payer means one side funds all of it; a split means neither side does."""
-    totals = order_totals(quantity_kg=100, unit_price_santim=100_000, fee_payer=fee_payer)
+    totals = order_totals(quantity_kg=100, unit_price_santim=100_000, config=config_for(fee_payer))
 
     assert (totals.buyer_fee, totals.seller_fee) == (expected_buyer_fee, expected_seller_fee)
     assert totals.buyer_fee + totals.seller_fee == totals.fee_vat
@@ -299,7 +324,10 @@ def test_the_totals_reconcile_in_every_branch(
     single worked example and fail this.
     """
     totals = order_totals(
-        quantity_kg=1, unit_price_santim=subtotal, delivery_fee=delivery_fee, fee_payer=fee_payer
+        quantity_kg=1,
+        unit_price_santim=subtotal,
+        delivery_fee=delivery_fee,
+        config=config_for(fee_payer),
     )
 
     buyer_excess = totals.buyer_total - totals.delivery_fee - totals.subtotal
@@ -318,7 +346,7 @@ def test_the_ledger_is_the_same_whichever_side_pays(fee_payer: FeePayer) -> None
     revenue figure depending on who was paying would be reporting on its own policy rather
     than on its business.
     """
-    totals = order_totals(quantity_kg=100, unit_price_santim=10_000, fee_payer=fee_payer)
+    totals = order_totals(quantity_kg=100, unit_price_santim=10_000, config=config_for(fee_payer))
 
     assert (totals.subtotal, totals.platform_fee, totals.vat, totals.fee_vat) == (
         1_000_000,
@@ -332,7 +360,10 @@ def test_delivery_is_charged_to_the_buyer_in_every_branch() -> None:
     """The delivery fee is a cost of getting goods to the buyer, so it never moves to the seller."""
     for fee_payer in FeePayer:
         with_delivery = order_totals(
-            quantity_kg=10, unit_price_santim=100_000, delivery_fee=25_000, fee_payer=fee_payer
+            quantity_kg=10,
+            unit_price_santim=100_000,
+            delivery_fee=25_000,
+            config=config_for(fee_payer),
         )
 
         assert with_delivery.buyer_total - with_delivery.subtotal - with_delivery.buyer_fee == (
@@ -343,32 +374,34 @@ def test_delivery_is_charged_to_the_buyer_in_every_branch() -> None:
 
 def test_a_zero_delivery_charge_is_allowed_and_changes_nothing_but_the_total() -> None:
     """Pickup carries no delivery charge, and a pickup order still has a buyer's total."""
-    totals = order_totals(quantity_kg=100, unit_price_santim=10_000)
+    totals = order_totals(quantity_kg=100, unit_price_santim=10_000, config=SPEC_CONFIG)
 
     assert totals.delivery_fee == 0
     assert totals.buyer_total == totals.subtotal + totals.fee_vat
 
 
-def test_the_buyer_pays_by_default() -> None:
-    """The default is the buyer, so a caller that forgets to say pays the way the spec says.
+def test_the_policy_decides_the_buyer_pays() -> None:
+    """When the active policy says BUYER, the buyer funds the fee and the seller keeps the subtotal.
 
-    Asserted on the function signature as well as on the setting, because a default that lives
-    in configuration but not in the call is a default half the codebase can forget.
+    There is no fallback in the function signature. The payer arrives in the same configuration
+    value as the percentages, so a caller cannot accidentally pair one policy's payer with
+    another policy's arithmetic.
     """
-    totals = order_totals(quantity_kg=100, unit_price_santim=100_000)
+    totals = order_totals(quantity_kg=100, unit_price_santim=100_000, config=SPEC_CONFIG)
 
     assert totals.fee_payer is FeePayer.BUYER
     assert totals.buyer_total == totals.subtotal + totals.fee_vat
     assert totals.seller_payout == totals.subtotal
 
 
-def test_the_configured_default_is_the_buyer() -> None:
-    """The setting itself defaults to BUYER, so a deployment that configures nothing still does.
+def test_a_different_policy_changes_the_arithmetic() -> None:
+    """The values in the configuration are the values in the answer, not documentation of them."""
+    cheaper = replace(SPEC_CONFIG, platform_fee_bps=100, min_fee_santim=100)
+    totals = order_totals(quantity_kg=100, unit_price_santim=10_000, config=cheaper)
 
-    Read from the model rather than from a constructed instance: building `Settings` needs a
-    database URL and a signing key, and a rule about money should not need a database to check.
-    """
-    assert Settings.model_fields["fee_payer"].default is FeePayer.BUYER
+    assert totals.platform_fee == 10_000
+    assert totals.vat == 1_500
+    assert totals.buyer_total == totals.subtotal + 11_500
 
 
 @pytest.mark.parametrize("value", ["BUYER", "SELLER", "SPLIT_50"])
@@ -397,13 +430,16 @@ def test_a_negative_amount_is_refused(
     """Money is an amount paid, so a negative one is a caller error rather than a discount."""
     with pytest.raises(ValueError, match="must not be negative"):
         order_totals(
-            quantity_kg=quantity_kg, unit_price_santim=unit_price_santim, delivery_fee=delivery_fee
+            quantity_kg=quantity_kg,
+            unit_price_santim=unit_price_santim,
+            delivery_fee=delivery_fee,
+            config=SPEC_CONFIG,
         )
 
 
 def test_the_totals_are_frozen() -> None:
     """A total that has been signed for the ledger should not be editable afterwards."""
-    totals = order_totals(quantity_kg=1, unit_price_santim=1_000)
+    totals = order_totals(quantity_kg=1, unit_price_santim=1_000, config=SPEC_CONFIG)
 
     with pytest.raises(FrozenInstanceError):
         totals.buyer_total = 0  # type: ignore[misc]
@@ -415,7 +451,7 @@ def test_a_zero_quantity_order_is_free_and_still_carries_the_fee() -> None:
     Not reachable from a real order — there is nothing to deliver — but it is the clearest
     statement of what the floor is: it is a floor on the fee, not a share of a positive amount.
     """
-    totals = order_totals(quantity_kg=0, unit_price_santim=100_000)
+    totals = order_totals(quantity_kg=0, unit_price_santim=100_000, config=SPEC_CONFIG)
 
     assert totals.subtotal == 0
     assert totals.platform_fee == PLATFORM_FEE_MINIMUM
@@ -430,7 +466,10 @@ def test_the_totals_carry_the_inputs_they_were_built_from() -> None:
     and a listing quote and an order total that disagree is a support ticket.
     """
     totals = order_totals(
-        quantity_kg=37, unit_price_santim=2_450, delivery_fee=7_500, fee_payer=FeePayer.SPLIT_50
+        quantity_kg=37,
+        unit_price_santim=2_450,
+        delivery_fee=7_500,
+        config=config_for(FeePayer.SPLIT_50),
     )
 
     assert totals.quantity_kg == 37

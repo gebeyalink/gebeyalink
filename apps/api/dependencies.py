@@ -32,11 +32,13 @@ from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
 from apps.api.repositories.order_repository import OrderRepository
+from apps.api.repositories.pending_change_repository import PendingChangeRepository
 from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.region_repository import RegionRepository
@@ -59,6 +61,7 @@ from apps.api.services.agent_service import AgentRoleAdmin, AgentService
 from apps.api.services.auth_service import AuthService
 from apps.api.services.kyc_service import KycService
 from apps.api.services.listing_service import ListingService
+from apps.api.services.maker_checker import MakerCheckerService
 from apps.api.services.offer_service import OfferService
 from apps.api.services.order_service import OrderService
 from apps.api.services.otp_service import OtpService
@@ -333,9 +336,9 @@ def get_order_service(
     it must be sure of; the whole of that is one commit or none of it, and separate sessions
     would let half of it land.
 
-    The fee payer is read once here, from configuration, and handed to the service as a value
-    rather than as a settings object, so that the service cannot reach back into configuration
-    and read a different answer for a second order in the same process.
+    The fee policy is not read here. It is a dated database row, and the service loads the row
+    in force when it is about to write an order; a long-lived process must not hold a policy it
+    saw at start-up after a checker has approved a different one.
     """
     orders = OrderRepository(db_session)
     return OrderService(
@@ -346,7 +349,7 @@ def get_order_service(
         notifications=NotificationRepository(db_session),
         users=UserRepository(db_session),
         crops=CropRepository(db_session),
-        fee_payer=settings.fee_payer,
+        fee_configs=FeeConfigRepository(db_session),
         cod_enabled=settings.cod_enabled,
         escrow_enabled=settings.escrow_enabled,
         codes=CrockfordOrderCode(orders.short_code_exists),
@@ -491,6 +494,23 @@ def get_admin_service(db_session: db_session_dep, settings: settings_dep) -> Adm
 
 
 AdminServiceDep = Annotated[AdminService, Depends(get_admin_service)]
+
+
+def get_maker_checker_service(db_session: db_session_dep) -> MakerCheckerService:
+    """The generic proposal queue and the fee applier this slice wires to it.
+
+    One session for the proposal, the fee policy it changes, and the audit row that records the
+    decision: a checker's approval that committed the policy but not the audit, or the reverse,
+    would be a state the platform cannot explain afterwards.
+    """
+    return MakerCheckerService(
+        pending=PendingChangeRepository(db_session),
+        fee_configs=FeeConfigRepository(db_session),
+        audit=AuditLogRepository(db_session),
+    )
+
+
+MakerCheckerServiceDep = Annotated[MakerCheckerService, Depends(get_maker_checker_service)]
 
 
 async def require_staff(

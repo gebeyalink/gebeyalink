@@ -23,16 +23,19 @@ The staff surface is deliberately small and its bodies are too. Four kinds live 
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from apps.api.models.kyc_case import KycDocType, KycRejectionReason, KycStatus, KycTier
 from apps.api.models.listing import ListingStatus
+from apps.api.models.pending_change import PendingChangeStatus
 from apps.api.models.staff_user import StaffRole
 from apps.api.models.user import AccountStatus, PrimaryRole, VerificationTier
 from apps.api.models.user_role import Role
 from packages.shared.i18n.languages import Language
+from packages.shared.money import FeePayer
 
 #: The ceiling on an email address, per RFC 5321. Also the column's width, stated once here so
 #: the shape and the schema agree.
@@ -406,3 +409,85 @@ class PriceOverrideResponse(BaseModel):
     region_code: str
     day: date
     price_santim: int
+
+
+class FeeConfigResponse(BaseModel):
+    """The fee policy in force, as the editor reads it.
+
+    Percentages are basis points rather than a rendered percentage. The client can show them
+    however it likes; the API carries the exact integer the arithmetic uses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    fee_payer: FeePayer
+    platform_fee_bps: int
+    min_fee_santim: int
+    max_fee_santim: int
+    vat_bps: int
+    effective_from: datetime
+
+
+class PendingFeeChangeResponse(BaseModel):
+    """One proposal in the maker/checker queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    kind: str
+    status: PendingChangeStatus
+    payload: dict[str, Any]
+    submitted_by: UUID
+    submitted_at: datetime
+    approved_by: UUID | None = None
+    approved_at: datetime | None = None
+    rejected_by: UUID | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = None
+
+
+class FeeEditorResponse(BaseModel):
+    """The current policy and the proposals waiting for a second signature."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    current: FeeConfigResponse
+    pending: list[PendingFeeChangeResponse]
+
+
+class FeeChangeBody(BaseModel):
+    """A proposed replacement fee policy, with the reason a reviewer will read."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fee_payer: FeePayer
+    platform_fee_bps: int = Field(gt=0, le=10_000)
+    min_fee_santim: int = Field(ge=0)
+    max_fee_santim: int = Field(ge=0)
+    vat_bps: int = Field(ge=0, le=10_000)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("reason_must_not_be_blank")
+        return cleaned
+
+
+class PendingChangeRejectionBody(BaseModel):
+    """Why a checker refused a proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("reason_must_not_be_blank")
+        return cleaned

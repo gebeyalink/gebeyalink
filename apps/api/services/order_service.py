@@ -21,8 +21,8 @@ no money to wait for, so it stays `CREATED`, and the reservation gains its meani
 parties confirm it (§10.2, FR-2102).
 
 The money is not a field a request may set either. Totals come from the shared money functions
-and from the listing, and `fee_payer` is snapshotted onto the row rather than read from
-configuration later: an order settled months from now has to be settled under the policy that
+and from the listing, and `fee_payer` is snapshotted onto the row rather than re-read from the
+active policy later: an order settled months from now has to be settled under the policy that
 was in force when the kilos changed hands.
 
 The funding window is enforced by whoever looks at an order, not by a job. An order waiting for
@@ -66,6 +66,7 @@ from apps.api.models.quantity_reservation import (
     ReservationState,
 )
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.listing_repository import ListingRepository, LoadedListing
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
@@ -86,7 +87,7 @@ from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.templates import load_templates, render_template
 from packages.shared.messaging.dispatcher import format_etb
 from packages.shared.messaging.queues import priority_rank
-from packages.shared.money import FeePayer, OrderTotals, order_totals
+from packages.shared.money import FeeConfig, OrderTotals, order_totals
 
 logger = logging.getLogger("gebeyalink.api")
 
@@ -226,13 +227,13 @@ class OrderTerms:
     buyer_address_woreda_id: int
     buyer_address_text: str
 
-    def money(self, fee_payer: FeePayer) -> OrderTotals:
-        """The frozen amounts for this sale, from the shared money functions."""
+    def money(self, config: FeeConfig) -> OrderTotals:
+        """The frozen amounts for this sale, under the policy the caller loaded."""
         return order_totals(
             self.quantity_kg,
             self.unit_price_santim,
             self.delivery_fee_santim,
-            fee_payer=fee_payer,
+            config=config,
         )
 
 
@@ -395,7 +396,7 @@ class OrderService:
         users: UserRepository,
         crops: CropRepository,
         *,
-        fee_payer: FeePayer,
+        fee_configs: FeeConfigRepository,
         cod_enabled: bool,
         escrow_enabled: bool,
         codes: OrderCodeSource,
@@ -409,14 +410,16 @@ class OrderService:
         self._notifications = notifications
         self._users = users
         self._crops = crops
-        self._fee_payer = fee_payer
+        self._fee_configs = fee_configs
         self._cod_enabled = cod_enabled
         self._escrow_enabled = escrow_enabled
         self._codes = codes
         self._idempotency = idempotency
-        # The shortfall a buyer must accept, handed in as a value like `fee_payer` rather than
-        # read from configuration again: one request should not see two answers to how much
-        # tolerance is being applied to its delivery.
+        # The shortfall a buyer must accept, handed in as a value rather than read from
+        # configuration again: one request should not see two answers to how much tolerance is
+        # being applied to its delivery. The fee policy is different: it is loaded once per
+        # order below, because the database row is the authority and a long-lived service must
+        # not pin the policy it happened to see at start-up.
         self._tolerance_pct = tolerance_pct
 
     async def accept(
@@ -536,12 +539,17 @@ class OrderService:
                 quantity_kg=offer.quantity_kg,
                 unit_price_santim=offer.price_santim,
             )
+            # Loaded after the listing lock and the acceptance checks, immediately before the
+            # arithmetic that uses it: this order is charged under the policy in force at the
+            # moment it is written, not one the process saw at start-up.
+            config = await self._fee_configs.current()
             order = await self._open_order(
                 listing,
                 terms,
                 buyer_id=offer.buyer_id,
                 offer_id=offer.id,
                 payment_mode=offer.payment_mode,
+                config=config,
             )
             await self._note_unfulfillable_offers(listing, available - offer.quantity_kg)
             return order
@@ -630,8 +638,11 @@ class OrderService:
                 escrow_enabled=self._escrow_enabled,
                 cod_enabled=self._cod_enabled,
             )
+            # One read of the fee policy for the whole order. The COD cap and the order totals
+            # must agree about the arithmetic even though the cap only needs the subtotal.
+            config = await self._fee_configs.current()
             if payment_mode is PaymentMode.COD:
-                subtotal = terms.money(self._fee_payer).subtotal
+                subtotal = terms.money(config).subtotal
                 if subtotal > COD_CAP_SANTIM:
                     raise ApiError(
                         ErrorCode.LIMIT_EXCEEDED,
@@ -641,7 +652,12 @@ class OrderService:
                         },
                     )
             return await self._open_order(
-                listing, terms, buyer_id=caller_id, offer_id=None, payment_mode=payment_mode
+                listing,
+                terms,
+                buyer_id=caller_id,
+                offer_id=None,
+                payment_mode=payment_mode,
+                config=config,
             )
 
         return await self._once(
@@ -1269,6 +1285,7 @@ class OrderService:
         *,
         buyer_id: UUID,
         offer_id: UUID | None,
+        config: FeeConfig,
         payment_mode: PaymentMode = PaymentMode.ESCROW,
     ) -> Order:
         """Write the order, reserve its kilos, mark the listing sold out if it was the last of it.
@@ -1283,7 +1300,7 @@ class OrderService:
         order stays `CREATED` — there is no money to wait for, so `AWAITING_FUNDING` would be a
         lie about the trade — and its hold means something only once both parties confirm it.
         """
-        totals = terms.money(self._fee_payer)
+        totals = terms.money(config)
         order = Order(
             short_code=await self._codes.draw(),
             buyer_id=buyer_id,
@@ -1301,7 +1318,7 @@ class OrderService:
             total_santim=totals.buyer_total,
             # Snapshotted, not read again at settlement: a policy change is not a change to
             # what the two parties agreed.
-            fee_payer=self._fee_payer,
+            fee_payer=config.fee_payer,
             buyer_address_woreda_id=terms.buyer_address_woreda_id,
             buyer_address_text=terms.buyer_address_text,
             pickup_code=new_pickup_code(),
