@@ -75,11 +75,13 @@ from apps.api.models import action_token as _action_token_model  # noqa: F401  (
 from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
 from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
+from apps.api.models import fee_config as _fee_config_model  # noqa: F401  (registers it)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
 from apps.api.models import notification as _notification_model  # noqa: F401  (registers it)
 from apps.api.models import offer as _offer_model  # noqa: F401  (registers the table)
 from apps.api.models import order as _order_model  # noqa: F401  (registers the table)
+from apps.api.models import pending_change as _pending_change_model  # noqa: F401
 from apps.api.models import price_index as _price_index_model  # noqa: F401  (registers it)
 from apps.api.models import profile as _profile_model  # noqa: F401  (registers the table)
 from apps.api.models import quantity_reservation as _reservation_model  # noqa: F401
@@ -95,6 +97,7 @@ from apps.api.models.notification import Notification, NotificationChannel, Noti
 from apps.api.models.region import Region
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
 from apps.api.repositories.offer_repository import OfferRepository
@@ -316,7 +319,7 @@ async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None)
             notifications=NotificationRepository(session),
             users=UserRepository(session),
             crops=CropRepository(session),
-            fee_payer=settings.fee_payer,
+            fee_configs=FeeConfigRepository(session),
             cod_enabled=settings.cod_enabled,
             escrow_enabled=settings.escrow_enabled,
             codes=CrockfordOrderCode(orders.short_code_exists),
@@ -350,7 +353,7 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
             notifications=NotificationRepository(session),
             users=UserRepository(session),
             crops=CropRepository(session),
-            fee_payer=settings.fee_payer,
+            fee_configs=FeeConfigRepository(session),
             cod_enabled=settings.cod_enabled,
             escrow_enabled=settings.escrow_enabled,
             codes=CrockfordOrderCode(orders.short_code_exists),

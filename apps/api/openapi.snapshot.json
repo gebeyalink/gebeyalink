@@ -741,6 +741,121 @@
         "title": "FarmerSummaryResponse",
         "type": "object"
       },
+      "FeeChangeBody": {
+        "additionalProperties": false,
+        "description": "A proposed replacement fee policy, with the reason a reviewer will read.",
+        "properties": {
+          "fee_payer": {
+            "$ref": "#/components/schemas/FeePayer"
+          },
+          "max_fee_santim": {
+            "minimum": 0.0,
+            "title": "Max Fee Santim",
+            "type": "integer"
+          },
+          "min_fee_santim": {
+            "minimum": 0.0,
+            "title": "Min Fee Santim",
+            "type": "integer"
+          },
+          "platform_fee_bps": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Platform Fee Bps",
+            "type": "integer"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "vat_bps": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Vat Bps",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fee_payer",
+          "platform_fee_bps",
+          "min_fee_santim",
+          "max_fee_santim",
+          "vat_bps",
+          "reason"
+        ],
+        "title": "FeeChangeBody",
+        "type": "object"
+      },
+      "FeeConfigResponse": {
+        "additionalProperties": false,
+        "description": "The fee policy in force, as the editor reads it.\n\nPercentages are basis points rather than a rendered percentage. The client can show them\nhowever it likes; the API carries the exact integer the arithmetic uses.",
+        "properties": {
+          "effective_from": {
+            "format": "date-time",
+            "title": "Effective From",
+            "type": "string"
+          },
+          "fee_payer": {
+            "$ref": "#/components/schemas/FeePayer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "max_fee_santim": {
+            "title": "Max Fee Santim",
+            "type": "integer"
+          },
+          "min_fee_santim": {
+            "title": "Min Fee Santim",
+            "type": "integer"
+          },
+          "platform_fee_bps": {
+            "title": "Platform Fee Bps",
+            "type": "integer"
+          },
+          "vat_bps": {
+            "title": "Vat Bps",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "fee_payer",
+          "platform_fee_bps",
+          "min_fee_santim",
+          "max_fee_santim",
+          "vat_bps",
+          "effective_from"
+        ],
+        "title": "FeeConfigResponse",
+        "type": "object"
+      },
+      "FeeEditorResponse": {
+        "additionalProperties": false,
+        "description": "The current policy and the proposals waiting for a second signature.",
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/FeeConfigResponse"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/PendingFeeChangeResponse"
+            },
+            "title": "Pending",
+            "type": "array"
+          }
+        },
+        "required": [
+          "current",
+          "pending"
+        ],
+        "title": "FeeEditorResponse",
+        "type": "object"
+      },
       "FeePayer": {
         "description": "Which side of the order funds the platform fee and its VAT.\n\nRead from configuration, because it is a commercial decision rather than a calculation:\nthe same arithmetic holds whichever side is chosen, and only the split moves. It is a\nstring enum so that the setting can be written `SPLIT_50` in an environment variable and\nstored in that form, without a mapping table translating it on the way in.",
         "enum": [
@@ -2321,6 +2436,135 @@
         ],
         "title": "PaymentMode",
         "type": "string"
+      },
+      "PendingChangeRejectionBody": {
+        "additionalProperties": false,
+        "description": "Why a checker refused a proposal.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "PendingChangeRejectionBody",
+        "type": "object"
+      },
+      "PendingChangeStatus": {
+        "description": "Where a proposed change is in its review lifecycle.",
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "REJECTED"
+        ],
+        "title": "PendingChangeStatus",
+        "type": "string"
+      },
+      "PendingFeeChangeResponse": {
+        "additionalProperties": false,
+        "description": "One proposal in the maker/checker queue.",
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "rejected_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected By"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PendingChangeStatus"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "title": "Submitted At",
+            "type": "string"
+          },
+          "submitted_by": {
+            "format": "uuid",
+            "title": "Submitted By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "payload",
+          "submitted_by",
+          "submitted_at"
+        ],
+        "title": "PendingFeeChangeResponse",
+        "type": "object"
       },
       "PhotoInput": {
         "additionalProperties": false,
@@ -4006,6 +4250,246 @@
           }
         },
         "summary": "Read Dashboard",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/fees": {
+      "get": {
+        "description": "The policy in force and every proposal waiting for a second signature.\n\nReading is not itself a change, so this route does not write an audit row. The editor needs\nboth halves together: what an order is charged under now, and what somebody has proposed\nchanging it to.",
+        "operationId": "read_fees_v1_admin_fees_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeeEditorResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Fees",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/fees/changes": {
+      "post": {
+        "description": "Propose a new policy. Nothing starts being charged differently yet.",
+        "operationId": "submit_fee_change_v1_admin_fees_changes_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeeChangeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFeeChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Fee Change",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/fees/changes/{change_id}/approve": {
+      "post": {
+        "description": "Apply a proposal, provided the caller did not submit it.",
+        "operationId": "approve_fee_change_v1_admin_fees_changes__change_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFeeChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Fee Change",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/fees/changes/{change_id}/reject": {
+      "post": {
+        "description": "Refuse a proposal without touching the policy in force.",
+        "operationId": "reject_fee_change_v1_admin_fees_changes__change_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingChangeRejectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFeeChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Fee Change",
         "tags": [
           "admin"
         ]

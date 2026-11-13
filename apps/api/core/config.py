@@ -18,8 +18,6 @@ from functools import lru_cache
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from packages.shared.money import FeePayer
-
 
 class Environment(StrEnum):
     """Which deployment a process is running as.
@@ -122,15 +120,8 @@ class Settings(BaseSettings):
         description="Deployment this process runs as: development, staging or production.",
     )
 
-    # Which side funds the platform fee and its VAT. A commercial decision rather than an
-    # arithmetic one: the fee, the VAT and the ledger are identical under all three, and only
-    # the split between what the buyer pays and what the seller keeps moves. The buyer pays by
-    # default, because a marketplace that quietly taxes the seller changes the price a seller
-    # sees, and one that quietly taxes the buyer changes the price a buyer sees.
-    fee_payer: FeePayer = Field(
-        default=FeePayer.BUYER,
-        description="Side of the order that funds the platform fee: BUYER, SELLER or SPLIT_50.",
-    )
+    # The fee policy itself is not here. It lives in ``fee_config`` as dated rows because it is
+    # money with a history and a maker/checker change process, not process configuration.
 
     # Whether checkout may create cash-on-delivery orders. COD is the pilot flow the platform
     # has not opened to everyone yet, so it is off unless a deployment has decided otherwise.
@@ -152,8 +143,8 @@ class Settings(BaseSettings):
     # By how much the delivered kilos may fall short of the ordered kilos before a buyer's
     # confirmation of delivery is refused (FR-2507). A crop loses weight in transit, and some
     # of that is the buyer's to accept; two percent is what a pilot will accept before handing
-    # the numbers to a dispute. Read once by the order service and handed in as a value, like
-    # `fee_payer`, so one request cannot see two answers.
+    # the numbers to a dispute. Read once by the order service and handed in as a value, so one
+    # request cannot see two answers.
     transit_shrinkage_tolerance_pct: float = Field(
         default=2.0,
         description=(

@@ -25,12 +25,14 @@ from apps.api.dependencies import (
     AuditReaderDep,
     CurrentStaffDep,
     KycReviewerDep,
+    MakerCheckerServiceDep,
     ModeratorDep,
     StaffAuthServiceDep,
     UserSearchDep,
 )
 from apps.api.models.kyc_case import KycRejectionReason, KycStatus, KycTier
 from apps.api.models.listing import Listing, ListingStatus
+from apps.api.models.pending_change import PendingChange
 from apps.api.models.user import AccountStatus
 from apps.api.schemas.admin import (
     AdminDashboardResponse,
@@ -39,12 +41,17 @@ from apps.api.schemas.admin import (
     AgentApproveBody,
     AgentDecisionResponse,
     AuditLogResponse,
+    FeeChangeBody,
+    FeeConfigResponse,
+    FeeEditorResponse,
     KycCaseAdminResponse,
     KycRejectionBody,
     ListingAdminResponse,
     ListingModerationBody,
     ListingModerationResponse,
     OrderLedgerResponse,
+    PendingChangeRejectionBody,
+    PendingFeeChangeResponse,
     PriceOverrideBody,
     PriceOverrideResponse,
     StaffCreateBody,
@@ -59,6 +66,7 @@ from apps.api.schemas.admin import (
 from apps.api.schemas.pagination import CursorPage
 from apps.api.schemas.search import RegionCode
 from apps.api.services.admin_service import AdminUserRow
+from apps.api.services.maker_checker import FeeConfigView
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -99,6 +107,40 @@ def _admin_user_response(row: AdminUserRow) -> AdminUserResponse:
         additional_roles=row.additional_roles,
         created_at=user.created_at,
         updated_at=user.updated_at,
+    )
+
+
+def _fee_config_response(config: FeeConfigView) -> FeeConfigResponse:
+    """Turn the service's current-policy view into the editor's row."""
+    return FeeConfigResponse(
+        id=config.id,
+        fee_payer=config.fee_payer,
+        platform_fee_bps=config.platform_fee_bps,
+        min_fee_santim=config.min_fee_santim,
+        max_fee_santim=config.max_fee_santim,
+        vat_bps=config.vat_bps,
+        effective_from=config.effective_from,
+    )
+
+
+def _pending_change_response(change: PendingChange) -> PendingFeeChangeResponse:
+    """Turn a queue row into the reviewer's view.
+
+    ``created_at`` is exposed as ``submitted_at`` because that is what it means for a proposal.
+    The column keeps the name every other table uses; the contract says what the instant is.
+    """
+    return PendingFeeChangeResponse(
+        id=change.id,
+        kind=change.kind,
+        status=change.status,
+        payload=change.payload,
+        submitted_by=change.submitted_by,
+        submitted_at=change.created_at,
+        approved_by=change.approved_by,
+        approved_at=change.approved_at,
+        rejected_by=change.rejected_by,
+        rejected_at=change.rejected_at,
+        rejection_reason=change.rejection_reason,
     )
 
 
@@ -466,6 +508,82 @@ async def override_price_board(
         day=row.day,
         price_santim=row.price_santim,
     )
+
+
+# -- the fee editor ------------------------------------------------------------
+
+
+@router.get("/fees", status_code=status.HTTP_200_OK)
+async def read_fees(
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> FeeEditorResponse:
+    """The policy in force and every proposal waiting for a second signature.
+
+    Reading is not itself a change, so this route does not write an audit row. The editor needs
+    both halves together: what an order is charged under now, and what somebody has proposed
+    changing it to.
+    """
+    view = await service.fee_editor()
+    return FeeEditorResponse(
+        current=_fee_config_response(view.current),
+        pending=[_pending_change_response(change) for change in view.pending],
+    )
+
+
+@router.post("/fees/changes", status_code=status.HTTP_201_CREATED)
+async def submit_fee_change(
+    body: FeeChangeBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFeeChangeResponse:
+    """Propose a new policy. Nothing starts being charged differently yet."""
+    change = await service.submit_fee_change(
+        actor=actor.staff,
+        fee_payer=body.fee_payer,
+        platform_fee_bps=body.platform_fee_bps,
+        min_fee_santim=body.min_fee_santim,
+        max_fee_santim=body.max_fee_santim,
+        vat_bps=body.vat_bps,
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return _pending_change_response(change)
+
+
+@router.post("/fees/changes/{change_id}/approve", status_code=status.HTTP_200_OK)
+async def approve_fee_change(
+    change_id: UUID,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFeeChangeResponse:
+    """Apply a proposal, provided the caller did not submit it."""
+    change = await service.approve(
+        change_id=change_id,
+        actor=actor.staff,
+        ip=_ip(request),
+    )
+    return _pending_change_response(change)
+
+
+@router.post("/fees/changes/{change_id}/reject", status_code=status.HTTP_200_OK)
+async def reject_fee_change(
+    change_id: UUID,
+    body: PendingChangeRejectionBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFeeChangeResponse:
+    """Refuse a proposal without touching the policy in force."""
+    change = await service.reject(
+        change_id=change_id,
+        actor=actor.staff,
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return _pending_change_response(change)
 
 
 # -- the KYC queue -------------------------------------------------------------

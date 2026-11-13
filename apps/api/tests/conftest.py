@@ -41,7 +41,6 @@ from apps.api.main import create_app
 from apps.api.providers.sms import RecordingSmsProvider
 from packages.shared.messaging.action_tokens import hash_token
 from packages.shared.messaging.signature import sign_gateway_body
-from packages.shared.money import FeePayer
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -723,45 +722,34 @@ def lapse_offer(postgres_url: str) -> Callable[[str], None]:
     return _lapse_offer
 
 
-@pytest.fixture(scope="session")
-def seller_pays_settings(
-    postgres_url: str, redis_url: str, signing_keys: tuple[str, str]
-) -> Settings:
-    """The same configuration with the platform fee billed to the seller.
-
-    AC-6.4 asks for the snapshot to be proven under both payers, and which side pays is
-    configuration. A test that could only ever see the default would be testing one of the two
-    policies the snapshot exists to distinguish.
-    """
-    private_pem, public_pem = signing_keys
-    return Settings(
-        database_url=postgres_url,
-        redis_url=redis_url,
-        signing_private_key=SecretStr(private_pem),
-        signing_public_key=SecretStr(public_pem),
-        signing_key_id="test-key",
-        gateway_secret=SecretStr(GATEWAY_SECRET),
-        terms_version=TERMS_VERSION,
-        totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
-        fee_payer=FeePayer.SELLER,
-        # The same reason the default settings fund escrow: the fee split is what this fixture
-        # varies, and an order that could not be created would prove nothing about who pays.
-        escrow_enabled=True,
-    )
-
-
 @pytest.fixture()
 def seller_pays_client(
-    seller_pays_settings: Settings,
+    settings: Settings,
+    postgres_url: str,
     clean_database: None,
     clean_store: None,
     sms_recorder: RecordingSmsProvider,
 ) -> Iterator[TestClient]:
-    """The application with the seller paying the platform fee."""
-    application: FastAPI = create_app(seller_pays_settings)
-    with TestClient(application) as test_client:
-        application.state.sms_provider = sms_recorder
-        yield test_client
+    """The application with the active fee policy funding the fee from the seller's side.
+
+    AC-6.4 asks for the snapshot to be proven under both payers. The payer is no longer process
+    configuration: it is a column on the active ``fee_config`` row, and the fixture arranges that
+    row around the test. The restore runs even when the test fails, so one seller-pays test
+    cannot quietly change the policy every later test reads.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+    with psycopg.connect(sync_url, autocommit=True) as connection:
+        connection.execute("UPDATE fee_config SET fee_payer = 'SELLER' WHERE effective_to IS NULL")
+    application: FastAPI = create_app(settings)
+    try:
+        with TestClient(application) as test_client:
+            application.state.sms_provider = sms_recorder
+            yield test_client
+    finally:
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE fee_config SET fee_payer = 'BUYER' WHERE effective_to IS NULL"
+            )
 
 
 @pytest.fixture()
