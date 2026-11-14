@@ -12,6 +12,7 @@ also truncates the audit log with ``TRUNCATE``, because its append-only trigger 
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import subprocess
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import psycopg
 import psycopg.errors
 import psycopg.rows
@@ -30,6 +32,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.core import staff_totp
+from apps.api.db.session import get_session_factory
+from apps.api.models.pending_change import PendingChange
+from apps.api.models.staff_user import StaffRole, StaffUser
+from apps.api.repositories.audit_log_repository import AuditLogRepository
+from apps.api.repositories.fee_config_repository import FeeConfigRepository
+from apps.api.repositories.pending_change_repository import PendingChangeRepository
+from apps.api.repositories.staff_user_repository import StaffUserRepository
+from apps.api.services.maker_checker import MakerCheckerService
+from packages.shared.errors import ApiError, ErrorCode
 
 pytestmark = [pytest.mark.integration]
 
@@ -40,6 +51,8 @@ TOTP_ENCRYPTION_KEY = "ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGk="
 
 MAKER_EMAIL = "maker-sec13@gebeyalink.example"
 CHECKER_EMAIL = "checker-sec13@gebeyalink.example"
+APPROVER_B_EMAIL = "approver-b-sec13@gebeyalink.example"
+APPROVER_C_EMAIL = "approver-c-sec13@gebeyalink.example"
 SUPPORT_EMAIL = "support-sec13@gebeyalink.example"
 STAFF_PASSWORD = "a-good-long-staff-password"
 
@@ -116,7 +129,7 @@ def _secret_from_uri(uri: str) -> bytes:
 
 @pytest.fixture(scope="module")
 def staff_secrets(postgres_url: str, redis_url: str) -> dict[str, bytes]:
-    """Three staff accounts, one of each role the tests need, with known TOTP secrets.
+    """The staff accounts the tests need, with known TOTP secrets.
 
     The accounts are seeded once for the module because each seed is a subprocess and the
     per-test fixture deliberately keeps the staff rows. ``must_change_password`` is cleared
@@ -139,6 +152,8 @@ def staff_secrets(postgres_url: str, redis_url: str) -> dict[str, bytes]:
     for email, role in (
         (MAKER_EMAIL, "ADMIN"),
         (CHECKER_EMAIL, "ADMIN"),
+        (APPROVER_B_EMAIL, "ADMIN"),
+        (APPROVER_C_EMAIL, "ADMIN"),
         (SUPPORT_EMAIL, "SUPPORT"),
     ):
         result = _run_cli(
@@ -234,6 +249,50 @@ def _submit(client: TestClient, headers: dict[str, str], **overrides: object) ->
     )
     assert response.status_code == 201, response.text
     return cast(dict[str, object], response.json())
+
+
+async def _token_async(http: httpx.AsyncClient, email: str, secret: bytes) -> str:
+    response = await http.post(
+        "/v1/admin/login",
+        json={
+            "email": email,
+            "password": STAFF_PASSWORD,
+            "totp_code": staff_totp.current_code(secret, at=datetime.now(UTC)),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["scope"] == "full", response.text
+    return cast(str, response.json()["access_token"])
+
+
+async def _staff_actor(email: str) -> StaffUser:
+    """Load one staff row, detached from the session that read it."""
+    async with get_session_factory()() as session:
+        actor = await StaffUserRepository(session).find_by_email(email)
+    assert actor is not None, email
+    return actor
+
+
+async def _approve_after_barrier(
+    barrier: asyncio.Barrier,
+    change_id: uuid.UUID,
+    actor: StaffUser,
+) -> PendingChange:
+    """Open a connection, wait for the other approver, then approve.
+
+    Opening the session before the barrier means both transactions already have a connection
+    when they are released; the barrier is what makes them contend for the proposal's row
+    rather than take turns before either has started.
+    """
+    async with get_session_factory()() as session:
+        await session.connection()
+        await barrier.wait()
+        service = MakerCheckerService(
+            pending=PendingChangeRepository(session),
+            fee_configs=FeeConfigRepository(session),
+            audit=AuditLogRepository(session),
+        )
+        return await service.approve(change_id=change_id, actor=actor, ip="198.51.100.25")
 
 
 # --------------------------------------------------------------------------- the tests
@@ -543,3 +602,68 @@ def test_the_audit_hashes_are_sha256_and_name_the_proposal(
     assert by_action[ACTION_SUBMITTED]["before_hash"] is None
     assert len(cast(str, by_action[ACTION_APPROVED]["before_hash"])) == 64
     assert len(cast(str, by_action[ACTION_APPROVED]["after_hash"])) == 64
+
+
+async def test_two_admins_racing_to_approve_apply_the_change_once(
+    concurrent_client: httpx.AsyncClient,
+    staff_secrets: dict[str, bytes],
+    sql: Callable[..., Rows],
+) -> None:
+    """Two approvals released together contend on the row lock, so only one can apply.
+
+    Without ``FOR UPDATE`` both readers would see ``PENDING`` and both would try to close the
+    policy and open a new one. The barrier makes that a race rather than two calls in a row:
+    both transactions already hold their connections before either is allowed to reach the
+    proposal's row.
+    """
+    maker_token = await _token_async(concurrent_client, MAKER_EMAIL, staff_secrets[MAKER_EMAIL])
+    submitted = await concurrent_client.post(
+        "/v1/admin/fees/changes",
+        json=_change_body(),
+        headers={"Authorization": f"Bearer {maker_token}"},
+    )
+    assert submitted.status_code == 201, submitted.text
+    submitted_body = submitted.json()
+    change_id = uuid.UUID(submitted_body["id"])
+    submitted_by = uuid.UUID(submitted_body["submitted_by"])
+
+    approver_b = await _staff_actor(APPROVER_B_EMAIL)
+    approver_c = await _staff_actor(APPROVER_C_EMAIL)
+    assert approver_b.role is StaffRole.ADMIN
+    assert approver_c.role is StaffRole.ADMIN
+    assert approver_b.id != submitted_by
+    assert approver_c.id != submitted_by
+
+    barrier = asyncio.Barrier(2)
+    results: list[PendingChange | BaseException] = list(
+        await asyncio.gather(
+            _approve_after_barrier(barrier, change_id, approver_b),
+            _approve_after_barrier(barrier, change_id, approver_c),
+            return_exceptions=True,
+        )
+    )
+    winners = [result for result in results if isinstance(result, PendingChange)]
+    losers = [result for result in results if isinstance(result, ApiError)]
+
+    assert len(winners) == 1
+    assert len(losers) == 1
+    assert losers[0].code is ErrorCode.ILLEGAL_STATE_TRANSITION
+    assert losers[0].details["reason"] == "already_reviewed"
+
+    fee_rows = sql("SELECT platform_fee_bps, effective_to FROM fee_config")
+    assert len(fee_rows) == 2
+    assert [row["platform_fee_bps"] for row in fee_rows if row["effective_to"] is None] == [250]
+    assert [row["platform_fee_bps"] for row in fee_rows if row["effective_to"] is not None] == [200]
+
+    pending = sql("SELECT status, approved_by, rejected_by FROM pending_changes")
+    assert len(pending) == 1
+    assert pending[0]["status"] == "APPROVED"
+    assert pending[0]["approved_by"] in {approver_b.id, approver_c.id}
+    assert pending[0]["rejected_by"] is None
+
+    audit = sql(
+        "SELECT actor_id FROM audit_log WHERE action = %s",
+        (ACTION_APPROVED,),
+    )
+    assert len(audit) == 1
+    assert audit[0]["actor_id"] == pending[0]["approved_by"]
