@@ -74,6 +74,7 @@ from apps.api.repositories.order_repository import OrderRepository
 from apps.api.repositories.reservation_repository import ReservationRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.schemas.order import OrderResponse
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.listing_service import transition_listing_status
 from apps.api.services.offer_service import (
@@ -383,6 +384,26 @@ def min_acceptable_kg(ordered_kg: int, tolerance_pct: float) -> int:
     return (ordered_kg * (10_000 - basis) + 9_999) // 10_000
 
 
+async def _enabled_payment_modes(
+    flags: FeatureFlagService,
+    *,
+    user_id: UUID,
+    region_code: str | None,
+) -> tuple[bool, bool]:
+    """Read both money gates for this caller, once, in the caller's transaction."""
+    escrow_enabled = await flags.is_enabled(
+        "escrow_enabled",
+        user_id=user_id,
+        region_code=region_code,
+    )
+    cod_enabled = await flags.is_enabled(
+        "cod_enabled",
+        user_id=user_id,
+        region_code=region_code,
+    )
+    return escrow_enabled, cod_enabled
+
+
 class OrderService:
     """Accepting offers, selling at the asking price, and giving stock back when a deal dies."""
 
@@ -397,8 +418,7 @@ class OrderService:
         crops: CropRepository,
         *,
         fee_configs: FeeConfigRepository,
-        cod_enabled: bool,
-        escrow_enabled: bool,
+        feature_flags: FeatureFlagService,
         codes: OrderCodeSource,
         idempotency: IdempotencyStore,
         tolerance_pct: float,
@@ -411,8 +431,7 @@ class OrderService:
         self._users = users
         self._crops = crops
         self._fee_configs = fee_configs
-        self._cod_enabled = cod_enabled
-        self._escrow_enabled = escrow_enabled
+        self._feature_flags = feature_flags
         self._codes = codes
         self._idempotency = idempotency
         # The shortfall a buyer must accept, handed in as a value rather than read from
@@ -506,10 +525,15 @@ class OrderService:
             # accept into an order it will not pay for, and the refusal leaves the offer `OPEN`
             # so the negotiation survives it — the two parties can go on to terms the platform
             # will honour rather than losing the thread to a configuration change neither made.
+            escrow_enabled, cod_enabled = await _enabled_payment_modes(
+                self._feature_flags,
+                user_id=offer.buyer_id,
+                region_code=listing.region_code,
+            )
             refuse_disabled_mode(
                 offer.payment_mode,
-                escrow_enabled=self._escrow_enabled,
-                cod_enabled=self._cod_enabled,
+                escrow_enabled=escrow_enabled,
+                cod_enabled=cod_enabled,
             )
 
             if offer.quantity_kg > available:
@@ -633,10 +657,15 @@ class OrderService:
                 unit_price_santim=listing.unit_price_santim,
             )
             payment_mode = PaymentMode(body.get("payment_mode", PaymentMode.ESCROW.value))
+            escrow_enabled, cod_enabled = await _enabled_payment_modes(
+                self._feature_flags,
+                user_id=caller_id,
+                region_code=listing.region_code,
+            )
             refuse_disabled_mode(
                 payment_mode,
-                escrow_enabled=self._escrow_enabled,
-                cod_enabled=self._cod_enabled,
+                escrow_enabled=escrow_enabled,
+                cod_enabled=cod_enabled,
             )
             # One read of the fee policy for the whole order. The COD cap and the order totals
             # must agree about the arithmetic even though the cap only needs the subtotal.

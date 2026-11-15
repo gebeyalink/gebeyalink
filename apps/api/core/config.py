@@ -120,25 +120,9 @@ class Settings(BaseSettings):
         description="Deployment this process runs as: development, staging or production.",
     )
 
-    # The fee policy itself is not here. It lives in ``fee_config`` as dated rows because it is
-    # money with a history and a maker/checker change process, not process configuration.
-
-    # Whether checkout may create cash-on-delivery orders. COD is the pilot flow the platform
-    # has not opened to everyone yet, so it is off unless a deployment has decided otherwise.
-    # The flag gates the mode's existence, not its size: a COD order above the ten-thousand-birr
-    # ceiling is refused whether or not the mode itself is enabled.
-    cod_enabled: bool = Field(
-        default=False,
-        description="Whether buyers may pay for an order on delivery instead of funding it.",
-    )
-
-    # Whether checkout may create escrow orders. Escrow is the platform's funding path, and like
-    # COD it is off unless a deployment has decided otherwise. The flag gates the mode's
-    # existence, not its arithmetic.
-    escrow_enabled: bool = Field(
-        default=False,
-        description="Whether buyers may fund an order that the platform holds until delivery.",
-    )
+    # The fee policy and the payment-mode flags are not here. They live in database tables
+    # because they are money with a history and a maker/checker change process, not process
+    # configuration. A deployment changes a flag through the reviewer queue, not a restart.
 
     # By how much the delivered kilos may fall short of the ordered kilos before a buyer's
     # confirmation of delivery is refused (FR-2507). A crop loses weight in transit, and some

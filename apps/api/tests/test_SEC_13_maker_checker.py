@@ -36,6 +36,7 @@ from apps.api.db.session import get_session_factory
 from apps.api.models.pending_change import PendingChange
 from apps.api.models.staff_user import StaffRole, StaffUser
 from apps.api.repositories.audit_log_repository import AuditLogRepository
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.pending_change_repository import PendingChangeRepository
 from apps.api.repositories.staff_user_repository import StaffUserRepository
@@ -290,6 +291,7 @@ async def _approve_after_barrier(
         service = MakerCheckerService(
             pending=PendingChangeRepository(session),
             fee_configs=FeeConfigRepository(session),
+            feature_flags=FeatureFlagRepository(session),
             audit=AuditLogRepository(session),
         )
         return await service.approve(change_id=change_id, actor=actor, ip="198.51.100.25")

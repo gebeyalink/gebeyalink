@@ -24,6 +24,7 @@ from apps.api.models import action_token as _action_token_model  # noqa: F401  (
 from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
 from apps.api.models import crop_unit as _crop_unit_model  # noqa: F401  (registers the table)
+from apps.api.models import feature_flag as _feature_flag_model  # noqa: F401  (registers it)
 from apps.api.models import fee_config as _fee_config_model  # noqa: F401  (registers it)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)

@@ -7,9 +7,9 @@ the asking price — and this file drives all four, plus the one thing an offer 
 whole negotiation: the mode is chosen when the thread opens, and a counter inherits it rather
 than restating it, so neither party can change it by answering.
 
-The flag is fixed when an application is built, so the one move that has to be seen across a
-change of flag — accepting an offer that was placed while escrow was on, after it has gone off —
-is driven by two applications over one database and one signing key. See `escrow_flag_clients`.
+The flag is a database row read per request, so the one move that has to be seen across a change
+of flag — accepting an offer placed while escrow was on, after it has gone off — is driven by
+`escrow_flag_clients`, two clients over one deployment whose table changes between the moves.
 """
 
 from __future__ import annotations
@@ -238,6 +238,7 @@ def test_escrow_enabled_accepts_escrow_offer(
 
 async def test_accept_refuses_escrow_when_the_flag_is_off_by_then(
     escrow_flag_clients: tuple[httpx.AsyncClient, httpx.AsyncClient],
+    set_feature_flags: Callable[..., None],
     sign_in_over: Callable[..., Awaitable[dict[str, str]]],
     listing_body: Callable[..., dict[str, object]],
     offer_body: Callable[..., dict[str, object]],
@@ -250,9 +251,11 @@ async def test_accept_refuses_escrow_when_the_flag_is_off_by_then(
     """An offer placed while escrow was on is refused at acceptance once escrow is off.
 
     The two clients are one deployment before and after the flag changed: they share the database
-    and the signing key, so the token the first minted is the token the second checks. The refusal
-    has to leave the offer `OPEN` — a configuration change is not the buyer's mistake, and losing
-    the thread to it would end a negotiation neither party ended — and it writes no order.
+    and the signing key, so the token the first minted is the token the second checks. The flag is
+    a table row now, so the same deployment answers differently once `set_feature_flags` turns it
+    off. The refusal has to leave the offer `OPEN` — a configuration change is not the buyer's
+    mistake, and losing the thread to it would end a negotiation neither party ended — and it
+    writes no order.
     """
     funding, unfunded = escrow_flag_clients
     seller_phone = "+251911000011"
@@ -274,6 +277,7 @@ async def test_accept_refuses_escrow_when_the_flag_is_off_by_then(
     assert placed.status_code == 201, placed.text
     offer_id = str(placed.json()["id"])
 
+    set_feature_flags(cod_enabled=False, escrow_enabled=False)
     refused = await unfunded.post(
         f"/v1/offers/{offer_id}/accept",
         headers={**seller, "Idempotency-Key": idempotency_key()},

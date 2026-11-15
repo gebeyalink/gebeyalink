@@ -67,6 +67,9 @@ class Listing:
     crop_id: int
     short_code: str
     delivery_options: tuple[str, ...]
+    # The listing's region, carried so a channel that cannot ask for a payment mode can still
+    # ask a region-targeted feature flag. None on any construction that does not need it.
+    region_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

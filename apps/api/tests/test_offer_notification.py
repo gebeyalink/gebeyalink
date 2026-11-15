@@ -58,6 +58,7 @@ async def offer_app(
     settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     """The application and an HTTP client on this test's own event loop.
@@ -65,7 +66,10 @@ async def offer_app(
     The lifespan is what builds the process's engine and Redis client and binds them to this
     loop; the drain is awaited from the test body and shares that engine, so the request that
     places the offer and the drain that sends it run on one loop rather than two.
+
+    Escrow is opened in the flag table because the offer bodies here take the default mode.
     """
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     application = create_app(settings)
     async with application.router.lifespan_context(application):
         application.state.sms_provider = sms_recorder

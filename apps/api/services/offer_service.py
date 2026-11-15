@@ -66,6 +66,7 @@ from apps.api.schemas.offer import (
     MIN_VALID_HOURS,
     OfferResponse,
 )
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.i18n.languages import Language
@@ -290,8 +291,7 @@ class OfferService:
         crops: CropRepository,
         idempotency: IdempotencyStore,
         *,
-        escrow_enabled: bool,
-        cod_enabled: bool,
+        feature_flags: FeatureFlagService,
     ) -> None:
         self._offers = offers
         self._listings = listings
@@ -299,8 +299,7 @@ class OfferService:
         self._users = users
         self._crops = crops
         self._idempotency = idempotency
-        self._escrow_enabled = escrow_enabled
-        self._cod_enabled = cod_enabled
+        self._feature_flags = feature_flags
 
     async def place(
         self, listing_id: UUID, buyer_id: UUID, body: dict[str, Any], key: str | None = None
@@ -341,11 +340,22 @@ class OfferService:
 
         terms = terms_from(body)
         # The mode is chosen here, when the thread opens, so this is where it is held to the
-        # flags. A counter never re-chooses it; see `counter`.
+        # flags. A counter never re-chooses it; see `counter`. Both gates are read from the
+        # table for this buyer and this listing's region, once, before the offer is written.
+        escrow_enabled = await self._feature_flags.is_enabled(
+            "escrow_enabled",
+            user_id=buyer_id,
+            region_code=listing.region_code,
+        )
+        cod_enabled = await self._feature_flags.is_enabled(
+            "cod_enabled",
+            user_id=buyer_id,
+            region_code=listing.region_code,
+        )
         refuse_disabled_mode(
             terms.payment_mode,
-            escrow_enabled=self._escrow_enabled,
-            cod_enabled=self._cod_enabled,
+            escrow_enabled=escrow_enabled,
+            cod_enabled=cod_enabled,
         )
         validate_offer_terms(terms, listing)
 

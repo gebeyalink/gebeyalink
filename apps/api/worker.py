@@ -75,6 +75,7 @@ from apps.api.models import action_token as _action_token_model  # noqa: F401  (
 from apps.api.models import agent_assignment as _agent_assignment_model  # noqa: F401
 from apps.api.models import audit_log as _audit_log_model  # noqa: F401  (registers it)
 from apps.api.models import crop as _crop_model  # noqa: F401  (registers the table)
+from apps.api.models import feature_flag as _feature_flag_model  # noqa: F401  (registers it)
 from apps.api.models import fee_config as _fee_config_model  # noqa: F401  (registers it)
 from apps.api.models import kyc_case as _kyc_case_model  # noqa: F401  (registers it)
 from apps.api.models import listing as _listing_model  # noqa: F401  (registers the table)
@@ -97,6 +98,7 @@ from apps.api.models.notification import Notification, NotificationChannel, Noti
 from apps.api.models.region import Region
 from apps.api.providers.sms import build_messaging_provider, log_recording_provider_startup
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.listing_repository import ListingRepository
 from apps.api.repositories.notification_repository import NotificationRepository
@@ -109,6 +111,7 @@ from apps.api.repositories.saved_search_repository import (
     SavedSearchRepository,
 )
 from apps.api.repositories.user_repository import UserRepository
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.notification_service import DrainReport, NotificationService
 from apps.api.services.order_service import OrderService
 from apps.api.services.pricing_service import PricingService
@@ -320,8 +323,7 @@ async def run_shipment_sweep(settings: Settings, *, now: datetime | None = None)
             users=UserRepository(session),
             crops=CropRepository(session),
             fee_configs=FeeConfigRepository(session),
-            cod_enabled=settings.cod_enabled,
-            escrow_enabled=settings.escrow_enabled,
+            feature_flags=FeatureFlagService(FeatureFlagRepository(session)),
             codes=CrockfordOrderCode(orders.short_code_exists),
             idempotency=IdempotencyStore(get_client()),
             tolerance_pct=settings.transit_shrinkage_tolerance_pct,
@@ -354,8 +356,7 @@ async def run_pickup_sweep(settings: Settings, *, now: datetime | None = None) -
             users=UserRepository(session),
             crops=CropRepository(session),
             fee_configs=FeeConfigRepository(session),
-            cod_enabled=settings.cod_enabled,
-            escrow_enabled=settings.escrow_enabled,
+            feature_flags=FeatureFlagService(FeatureFlagRepository(session)),
             codes=CrockfordOrderCode(orders.short_code_exists),
             idempotency=IdempotencyStore(get_client()),
             tolerance_pct=settings.transit_shrinkage_tolerance_pct,

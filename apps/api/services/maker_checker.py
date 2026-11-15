@@ -24,21 +24,43 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from apps.api.models.feature_flag import FeatureFlag
 from apps.api.models.fee_config import FeeConfig as FeeConfigRow
 from apps.api.models.pending_change import PendingChange, PendingChangeStatus
 from apps.api.models.staff_user import StaffUser
 from apps.api.repositories.audit_log_repository import AuditLogRepository
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.pending_change_repository import PendingChangeRepository
 from packages.shared.errors import ApiError, ErrorCode
 from packages.shared.money import FeeConfig, FeePayer
 
-#: The one kind this slice's applier understands. The queue itself is generic.
+#: The change kinds the appliers understand. The queue itself is generic.
 KIND_FEE_CONFIG_CHANGE = "FEE_CONFIG_CHANGE"
+KIND_FLAG_CHANGE = "FLAG_CHANGE"
 
 ACTION_FEE_CONFIG_CHANGE_SUBMITTED = "FEE_CONFIG_CHANGE_SUBMITTED"
 ACTION_FEE_CONFIG_CHANGE_APPROVED = "FEE_CONFIG_CHANGE_APPROVED"
 ACTION_FEE_CONFIG_CHANGE_REJECTED = "FEE_CONFIG_CHANGE_REJECTED"
+
+ACTION_FLAG_CHANGE_SUBMITTED = "FLAG_CHANGE_SUBMITTED"
+ACTION_FLAG_CHANGE_APPROVED = "FLAG_CHANGE_APPROVED"
+ACTION_FLAG_CHANGE_REJECTED = "FLAG_CHANGE_REJECTED"
+
+#: The audit action each kind uses at each stage. Keeping the mapping here means a new kind
+#: cannot be applied successfully and then be recorded under another kind's action by accident.
+_SUBMITTED_ACTION = {
+    KIND_FEE_CONFIG_CHANGE: ACTION_FEE_CONFIG_CHANGE_SUBMITTED,
+    KIND_FLAG_CHANGE: ACTION_FLAG_CHANGE_SUBMITTED,
+}
+_APPROVED_ACTION = {
+    KIND_FEE_CONFIG_CHANGE: ACTION_FEE_CONFIG_CHANGE_APPROVED,
+    KIND_FLAG_CHANGE: ACTION_FLAG_CHANGE_APPROVED,
+}
+_REJECTED_ACTION = {
+    KIND_FEE_CONFIG_CHANGE: ACTION_FEE_CONFIG_CHANGE_REJECTED,
+    KIND_FLAG_CHANGE: ACTION_FLAG_CHANGE_REJECTED,
+}
 
 #: A console may ask for less, but a queue that returns everything is not a queue.
 PENDING_PAGE_LIMIT = 100
@@ -65,6 +87,14 @@ class FeeEditorView:
     pending: list[PendingChange]
 
 
+@dataclass(frozen=True, slots=True)
+class FlagEditorView:
+    """Every installed flag and the proposals waiting for a second signature."""
+
+    flags: list[FeatureFlag]
+    pending: list[PendingChange]
+
+
 class MakerCheckerService:
     """Propose, approve and reject changes that require a second staff account."""
 
@@ -73,10 +103,12 @@ class MakerCheckerService:
         *,
         pending: PendingChangeRepository,
         fee_configs: FeeConfigRepository,
+        feature_flags: FeatureFlagRepository,
         audit: AuditLogRepository,
     ) -> None:
         self._pending = pending
         self._fee_configs = fee_configs
+        self._feature_flags = feature_flags
         self._audit = audit
 
     async def fee_editor(self, *, now: datetime | None = None) -> FeeEditorView:
@@ -97,7 +129,16 @@ class MakerCheckerService:
                 vat_bps=row.vat_bps,
                 effective_from=row.effective_from,
             ),
-            pending=await self._pending.pending(limit=PENDING_PAGE_LIMIT),
+            pending=await self._pending.pending(
+                kind=KIND_FEE_CONFIG_CHANGE, limit=PENDING_PAGE_LIMIT
+            ),
+        )
+
+    async def flag_editor(self) -> FlagEditorView:
+        """Every installed flag and every flag proposal still waiting."""
+        return FlagEditorView(
+            flags=await self._feature_flags.list_all(),
+            pending=await self._pending.pending(kind=KIND_FLAG_CHANGE, limit=PENDING_PAGE_LIMIT),
         )
 
     async def submit_fee_change(
@@ -136,11 +177,62 @@ class MakerCheckerService:
         await self._audit.record(
             actor_id=actor.id,
             actor_role=actor.role.value,
-            action=ACTION_FEE_CONFIG_CHANGE_SUBMITTED,
+            action=_SUBMITTED_ACTION[KIND_FEE_CONFIG_CHANGE],
             target_type="pending_change",
             target_id=change.id,
             before=None,
             after=_change_state(change),
+            ip=ip,
+        )
+        await self._pending.commit()
+        return change
+
+    async def submit_flag_change(
+        self,
+        *,
+        actor: StaffUser,
+        name: str,
+        enabled: bool,
+        percentage_rollout: int | None,
+        region_targeting: list[str] | None,
+        reason: str,
+        ip: str | None = None,
+    ) -> PendingChange:
+        """Record a proposed flag state. The flag itself does not move until approval."""
+        cleaned_name, cleaned_reason = _validate_flag_change(
+            name=name,
+            percentage_rollout=percentage_rollout,
+            region_targeting=region_targeting,
+            reason=reason,
+        )
+        if await self._feature_flags.get(cleaned_name) is None:
+            raise ApiError(
+                ErrorCode.NOT_FOUND,
+                details={"resource": "feature_flag", "name": cleaned_name},
+            )
+
+        # The four fields are exactly what the applier needs. The reviewer's rationale is in the
+        # audit row rather than the payload, so a stored proposal cannot grow a field the applier
+        # silently ignores.
+        payload: dict[str, Any] = {
+            "name": cleaned_name,
+            "enabled": enabled,
+            "percentage_rollout": percentage_rollout,
+            "region_targeting": region_targeting,
+        }
+        change = await self._pending.add(
+            kind=KIND_FLAG_CHANGE,
+            payload=payload,
+            submitted_by=actor.id,
+        )
+        await self._audit.record(
+            actor_id=actor.id,
+            actor_role=actor.role.value,
+            action=ACTION_FLAG_CHANGE_SUBMITTED,
+            target_type="pending_change",
+            target_id=change.id,
+            before=None,
+            after={**_change_state(change), "reason": cleaned_reason},
             ip=ip,
         )
         await self._pending.commit()
@@ -171,7 +263,11 @@ class MakerCheckerService:
                 actor=actor,
                 at=moment,
             )
-        else:  # pragma: no cover - only the fee kind can be submitted in this slice
+            applied_state = {"fee_config_id": str(applied.id)}
+        elif change.kind == KIND_FLAG_CHANGE:
+            flag = await self._apply_flag_change(change.payload)
+            applied_state = {"feature_flag_id": str(flag.id)}
+        else:  # pragma: no cover - only the kinds above can be submitted
             raise ApiError(
                 ErrorCode.INTERNAL_ERROR,
                 details={
@@ -187,12 +283,12 @@ class MakerCheckerService:
         after = {
             **_change_state(change),
             "approved_at": moment.isoformat(),
-            "fee_config_id": str(applied.id),
+            **applied_state,
         }
         await self._audit.record(
             actor_id=actor.id,
             actor_role=actor.role.value,
-            action=ACTION_FEE_CONFIG_CHANGE_APPROVED,
+            action=_APPROVED_ACTION[change.kind],
             target_type="pending_change",
             target_id=change.id,
             before=before,
@@ -238,7 +334,7 @@ class MakerCheckerService:
         await self._audit.record(
             actor_id=actor.id,
             actor_role=actor.role.value,
-            action=ACTION_FEE_CONFIG_CHANGE_REJECTED,
+            action=_REJECTED_ACTION[change.kind],
             target_type="pending_change",
             target_id=change.id,
             before=before,
@@ -269,6 +365,16 @@ class MakerCheckerService:
             effective_from=at,
             created_by=actor.id,
             reason=reason,
+        )
+
+    async def _apply_flag_change(self, payload: dict[str, Any]) -> FeatureFlag:
+        """Write the approved flag state. The proposal's lock is still held by the caller."""
+        name, enabled, percentage_rollout, region_targeting = _flag_change_from_payload(payload)
+        return await self._feature_flags.upsert(
+            name,
+            enabled=enabled,
+            percentage_rollout=percentage_rollout,
+            region_targeting=region_targeting,
         )
 
     @staticmethod
@@ -363,6 +469,70 @@ def _fee_change_from_payload(payload: dict[str, Any]) -> tuple[FeeConfig, str]:
         ),
         reason,
     )
+
+
+def _validate_flag_change(
+    *,
+    name: str,
+    percentage_rollout: int | None,
+    region_targeting: list[str] | None,
+    reason: str,
+) -> tuple[str, str]:
+    """The flag change a reviewer is entitled to see, or the fields that make it invalid."""
+    fields: dict[str, str] = {}
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        fields["name"] = "must_not_be_blank"
+    if percentage_rollout is not None and (
+        isinstance(percentage_rollout, bool) or percentage_rollout < 0 or percentage_rollout > 100
+    ):
+        fields["percentage_rollout"] = "must_be_between_0_and_100"
+    if region_targeting is not None and (
+        not region_targeting
+        or any(not isinstance(region, str) or not region.strip() for region in region_targeting)
+    ):
+        fields["region_targeting"] = "must_be_a_non_empty_list_of_region_codes"
+    cleaned_reason = reason.strip()
+    if not cleaned_reason:
+        fields["reason"] = "must_not_be_blank"
+    if fields:
+        raise ApiError(ErrorCode.VALIDATION_ERROR, details={"fields": fields})
+    return cleaned_name, cleaned_reason
+
+
+def _flag_change_from_payload(
+    payload: dict[str, Any],
+) -> tuple[str, bool, int | None, list[str] | None]:
+    """Read a stored flag payload defensively; a malformed row is an internal error, not a 422."""
+    try:
+        name = str(payload["name"])
+        enabled = payload["enabled"]
+        percentage_rollout = payload.get("percentage_rollout")
+        region_targeting = payload.get("region_targeting")
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool")
+        if percentage_rollout is not None and (
+            isinstance(percentage_rollout, bool) or not isinstance(percentage_rollout, int)
+        ):
+            raise TypeError("percentage_rollout must be an int or null")
+        if region_targeting is not None:
+            if not isinstance(region_targeting, (list, tuple)):
+                raise TypeError("region_targeting must be a list or null")
+            region_targeting = [str(region) for region in region_targeting]
+        cleaned_name, _ = _validate_flag_change(
+            name=name,
+            percentage_rollout=percentage_rollout,
+            region_targeting=region_targeting,
+            # The reviewer's reason lives in the audit row, not in this payload. This value is
+            # only here to run the same structural validation the submit path used.
+            reason="stored flag change",
+        )
+    except (KeyError, TypeError, ValueError, ApiError) as exc:
+        raise ApiError(
+            ErrorCode.INTERNAL_ERROR,
+            details={"reason": "invalid_flag_change_payload"},
+        ) from exc
+    return cleaned_name, enabled, percentage_rollout, region_targeting
 
 
 def _change_state(change: PendingChange) -> dict[str, Any]:

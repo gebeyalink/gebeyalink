@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.db.session import get_session_factory
 from apps.api.repositories.audit_log_repository import AuditLogRepository
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.pending_change_repository import PendingChangeRepository
 from apps.api.repositories.staff_user_repository import StaffUserRepository
@@ -158,6 +159,7 @@ async def _submit_and_approve_fee_change(
         service = MakerCheckerService(
             pending=PendingChangeRepository(session),
             fee_configs=FeeConfigRepository(session),
+            feature_flags=FeatureFlagRepository(session),
             audit=AuditLogRepository(session),
         )
         change = await service.submit_fee_change(
@@ -177,6 +179,7 @@ async def _submit_and_approve_fee_change(
         service = MakerCheckerService(
             pending=PendingChangeRepository(session),
             fee_configs=FeeConfigRepository(session),
+            feature_flags=FeatureFlagRepository(session),
             audit=AuditLogRepository(session),
         )
         await service.approve(change_id=change_id, actor=checker)

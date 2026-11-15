@@ -3,7 +3,7 @@
 The repository is deliberately small. It knows how to append a proposal, read one under a row
 lock, list what is waiting, and commit the transaction the service owns. It does not know what
 any payload means: applying a fee change belongs to the fee applier, and applying a feature flag
-change will belong to a different one.
+change belongs to the flag applier.
 """
 
 from __future__ import annotations
@@ -46,14 +46,18 @@ class PendingChangeRepository:
         statement = select(PendingChange).where(PendingChange.id == change_id).with_for_update()
         return await self._session.scalar(statement)
 
-    async def pending(self, *, limit: int = 100) -> list[PendingChange]:
-        """The waiting proposals, oldest first, for the console's review list."""
-        statement = (
-            select(PendingChange)
-            .where(PendingChange.status == PendingChangeStatus.PENDING)
-            .order_by(PendingChange.created_at.asc(), PendingChange.id.asc())
-            .limit(limit)
-        )
+    async def pending(self, *, kind: str | None = None, limit: int = 100) -> list[PendingChange]:
+        """The waiting proposals, oldest first, for the console's review list.
+
+        ``kind`` narrows the queue to one editor's proposals. Both editors read the same table,
+        and a fee reviewer must not be shown a flag change they cannot judge.
+        """
+        statement = select(PendingChange).where(PendingChange.status == PendingChangeStatus.PENDING)
+        if kind is not None:
+            statement = statement.where(PendingChange.kind == kind)
+        statement = statement.order_by(
+            PendingChange.created_at.asc(), PendingChange.id.asc()
+        ).limit(limit)
         result = await self._session.execute(statement)
         return list(result.scalars().all())
 
