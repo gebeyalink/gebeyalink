@@ -32,6 +32,7 @@ from apps.api.repositories.action_token_repository import ActionTokenRepository
 from apps.api.repositories.agent_assignment_repository import AgentAssignmentRepository
 from apps.api.repositories.audit_log_repository import AuditLogRepository
 from apps.api.repositories.crop_repository import CropRepository
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.repositories.fee_config_repository import FeeConfigRepository
 from apps.api.repositories.kyc_case_repository import KycCaseRepository
 from apps.api.repositories.listing_repository import ListingRepository
@@ -59,6 +60,7 @@ from apps.api.services.admin_service import (
 )
 from apps.api.services.agent_service import AgentRoleAdmin, AgentService
 from apps.api.services.auth_service import AuthService
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.kyc_service import KycService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.maker_checker import MakerCheckerService
@@ -299,7 +301,20 @@ def get_saved_search_service(db_session: db_session_dep) -> SavedSearchService:
 SavedSearchServiceDep = Annotated[SavedSearchService, Depends(get_saved_search_service)]
 
 
-def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> OfferService:
+def get_feature_flag_service(db_session: db_session_dep) -> FeatureFlagService:
+    """The feature flags as a read model, sharing the request's transaction.
+
+    The flags are database rows now, so every reader asks this service rather than holding a
+    process value. Sharing the session means a mode decision and the order or offer written
+    under it are one transaction, and an approved change is visible at the next read.
+    """
+    return FeatureFlagService(FeatureFlagRepository(db_session))
+
+
+FeatureFlagServiceDep = Annotated[FeatureFlagService, Depends(get_feature_flag_service)]
+
+
+def get_offer_service(db_session: db_session_dep) -> OfferService:
     """Bids on a listing, and the listing they are bounded by.
 
     One session for all five repositories, and that is not tidiness. Placing a bid writes the offer
@@ -307,9 +322,8 @@ def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> Off
     the message names; the whole of that is one commit or none of it, so everything that writes
     beside the offer shares the session the offer is written on.
 
-    Both payment-mode flags are read here and handed in as values, on the same reasoning as the
-    order service below: the service decides which modes exist without reaching back into
-    configuration for a second answer.
+    The payment-mode gates are read from the flag table per placement, for the buyer and the
+    listing's region, so a switch approved between two bids is the switch the second bid sees.
     """
     return OfferService(
         offers=OfferRepository(db_session),
@@ -318,8 +332,7 @@ def get_offer_service(db_session: db_session_dep, settings: settings_dep) -> Off
         users=UserRepository(db_session),
         crops=CropRepository(db_session),
         idempotency=IdempotencyStore(get_client()),
-        escrow_enabled=settings.escrow_enabled,
-        cod_enabled=settings.cod_enabled,
+        feature_flags=get_feature_flag_service(db_session),
     )
 
 
@@ -336,9 +349,9 @@ def get_order_service(
     it must be sure of; the whole of that is one commit or none of it, and separate sessions
     would let half of it land.
 
-    The fee policy is not read here. It is a dated database row, and the service loads the row
-    in force when it is about to write an order; a long-lived process must not hold a policy it
-    saw at start-up after a checker has approved a different one.
+    The fee policy and the feature flags are not read here. Both are database rows, and the
+    service loads them when it is about to write an order; a long-lived process must not hold a
+    policy or a switch it saw at start-up after a checker has approved a different one.
     """
     orders = OrderRepository(db_session)
     return OrderService(
@@ -350,8 +363,7 @@ def get_order_service(
         users=UserRepository(db_session),
         crops=CropRepository(db_session),
         fee_configs=FeeConfigRepository(db_session),
-        cod_enabled=settings.cod_enabled,
-        escrow_enabled=settings.escrow_enabled,
+        feature_flags=get_feature_flag_service(db_session),
         codes=CrockfordOrderCode(orders.short_code_exists),
         idempotency=IdempotencyStore(get_client()),
         tolerance_pct=settings.transit_shrinkage_tolerance_pct,
@@ -381,8 +393,9 @@ def get_sms_gateway(
         orders=OrderRepository(db_session),
         action_tokens=ActionTokenRepository(db_session),
         listing_service=get_listing_service(db_session),
-        offer_service=get_offer_service(db_session, settings),
+        offer_service=get_offer_service(db_session),
         order_service=get_order_service(db_session, settings, redis),
+        feature_flags=get_feature_flag_service(db_session),
         settings=settings,
     )
 
@@ -410,9 +423,10 @@ def get_ussd_gateway(
         regions=RegionRepository(db_session),
         woredas=WoredaRepository(db_session),
         search=SearchRepository(db_session),
-        offer_service=get_offer_service(db_session, settings),
+        offer_service=get_offer_service(db_session),
         order_service=get_order_service(db_session, settings, redis),
         listing_service=get_listing_service(db_session),
+        feature_flags=get_feature_flag_service(db_session),
         settings=settings,
     )
 
@@ -497,15 +511,16 @@ AdminServiceDep = Annotated[AdminService, Depends(get_admin_service)]
 
 
 def get_maker_checker_service(db_session: db_session_dep) -> MakerCheckerService:
-    """The generic proposal queue and the fee applier this slice wires to it.
+    """The generic proposal queue and the fee and flag appliers wired to it.
 
-    One session for the proposal, the fee policy it changes, and the audit row that records the
-    decision: a checker's approval that committed the policy but not the audit, or the reverse,
-    would be a state the platform cannot explain afterwards.
+    One session for the proposal, the policy or flag it changes, and the audit row that records
+    the decision: a checker's approval that committed the change but not the audit, or the
+    reverse, would be a state the platform cannot explain afterwards.
     """
     return MakerCheckerService(
         pending=PendingChangeRepository(db_session),
         fee_configs=FeeConfigRepository(db_session),
+        feature_flags=FeatureFlagRepository(db_session),
         audit=AuditLogRepository(db_session),
     )
 

@@ -30,6 +30,7 @@ from apps.api.dependencies import (
     StaffAuthServiceDep,
     UserSearchDep,
 )
+from apps.api.models.feature_flag import FeatureFlag
 from apps.api.models.kyc_case import KycRejectionReason, KycStatus, KycTier
 from apps.api.models.listing import Listing, ListingStatus
 from apps.api.models.pending_change import PendingChange
@@ -44,6 +45,9 @@ from apps.api.schemas.admin import (
     FeeChangeBody,
     FeeConfigResponse,
     FeeEditorResponse,
+    FlagChangeBody,
+    FlagEditorResponse,
+    FlagResponse,
     KycCaseAdminResponse,
     KycRejectionBody,
     ListingAdminResponse,
@@ -52,6 +56,7 @@ from apps.api.schemas.admin import (
     OrderLedgerResponse,
     PendingChangeRejectionBody,
     PendingFeeChangeResponse,
+    PendingFlagChangeResponse,
     PriceOverrideBody,
     PriceOverrideResponse,
     StaffCreateBody,
@@ -123,6 +128,20 @@ def _fee_config_response(config: FeeConfigView) -> FeeConfigResponse:
     )
 
 
+def _flag_response(flag: FeatureFlag) -> FlagResponse:
+    """Turn a stored flag into the editor's row."""
+    return FlagResponse(
+        id=flag.id,
+        name=flag.name,
+        enabled=flag.enabled,
+        percentage_rollout=flag.percentage_rollout,
+        region_targeting=flag.region_targeting,
+        description=flag.description,
+        created_at=flag.created_at,
+        updated_at=flag.updated_at,
+    )
+
+
 def _pending_change_response(change: PendingChange) -> PendingFeeChangeResponse:
     """Turn a queue row into the reviewer's view.
 
@@ -130,6 +149,23 @@ def _pending_change_response(change: PendingChange) -> PendingFeeChangeResponse:
     The column keeps the name every other table uses; the contract says what the instant is.
     """
     return PendingFeeChangeResponse(
+        id=change.id,
+        kind=change.kind,
+        status=change.status,
+        payload=change.payload,
+        submitted_by=change.submitted_by,
+        submitted_at=change.created_at,
+        approved_by=change.approved_by,
+        approved_at=change.approved_at,
+        rejected_by=change.rejected_by,
+        rejected_at=change.rejected_at,
+        rejection_reason=change.rejection_reason,
+    )
+
+
+def _pending_flag_change_response(change: PendingChange) -> PendingFlagChangeResponse:
+    """Turn a queue row into the flag reviewer's view."""
+    return PendingFlagChangeResponse(
         id=change.id,
         kind=change.kind,
         status=change.status,
@@ -584,6 +620,80 @@ async def reject_fee_change(
         ip=_ip(request),
     )
     return _pending_change_response(change)
+
+
+# -- the feature-flag editor ---------------------------------------------------
+
+
+@router.get("/flags", status_code=status.HTTP_200_OK)
+async def read_flags(
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> FlagEditorResponse:
+    """Every installed flag and every proposal waiting for a second signature."""
+    view = await service.flag_editor()
+    return FlagEditorResponse(
+        flags=[_flag_response(flag) for flag in view.flags],
+        pending=[_pending_flag_change_response(change) for change in view.pending],
+    )
+
+
+@router.post("/flags/changes", status_code=status.HTTP_201_CREATED)
+async def submit_flag_change(
+    body: FlagChangeBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFlagChangeResponse:
+    """Propose a flag state. Nothing switches until a different admin approves it."""
+    change = await service.submit_flag_change(
+        actor=actor.staff,
+        name=body.name,
+        enabled=body.enabled,
+        percentage_rollout=body.percentage_rollout,
+        region_targeting=(
+            [str(region) for region in body.region_targeting]
+            if body.region_targeting is not None
+            else None
+        ),
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return _pending_flag_change_response(change)
+
+
+@router.post("/flags/changes/{change_id}/approve", status_code=status.HTTP_200_OK)
+async def approve_flag_change(
+    change_id: UUID,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFlagChangeResponse:
+    """Apply a proposed flag state, provided the caller did not submit it."""
+    change = await service.approve(
+        change_id=change_id,
+        actor=actor.staff,
+        ip=_ip(request),
+    )
+    return _pending_flag_change_response(change)
+
+
+@router.post("/flags/changes/{change_id}/reject", status_code=status.HTTP_200_OK)
+async def reject_flag_change(
+    change_id: UUID,
+    body: PendingChangeRejectionBody,
+    request: Request,
+    actor: AdminOnlyDep,
+    service: MakerCheckerServiceDep,
+) -> PendingFlagChangeResponse:
+    """Refuse a proposed flag state without switching anything."""
+    change = await service.reject(
+        change_id=change_id,
+        actor=actor.staff,
+        reason=body.reason,
+        ip=_ip(request),
+    )
+    return _pending_flag_change_response(change)
 
 
 # -- the KYC queue -------------------------------------------------------------

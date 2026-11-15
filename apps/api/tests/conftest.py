@@ -20,7 +20,6 @@ import sys
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import AsyncExitStack
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
@@ -226,10 +225,6 @@ def settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
-        # Escrow is the platform's funding path, so the tests that create orders the way most
-        # deployments will have it on. The COD configuration below is the exception that leaves
-        # it off, because the two modes are the same switch seen from two sides.
-        escrow_enabled=True,
     )
 
 
@@ -338,6 +333,36 @@ def clean_database(postgres_url: str) -> Iterator[None]:
 
 
 @pytest.fixture()
+def set_feature_flags(postgres_url: str) -> Callable[..., None]:
+    """Arrange the two payment-mode flags in the database for a test.
+
+    A flag is no longer process configuration: the same application reads whatever the table
+    says at the moment of the request. Tests that need a mode open therefore write the row
+    rather than build a second application with a different setting. The fixture only changes
+    ``enabled``; the rollout and targeting columns stay as the new flag tests arranged them.
+    """
+    sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+
+    def _set(*, cod_enabled: bool | None = None, escrow_enabled: bool | None = None) -> None:
+        values = {"cod_enabled": cod_enabled, "escrow_enabled": escrow_enabled}
+        with psycopg.connect(sync_url, autocommit=True) as connection:
+            for name, enabled in values.items():
+                if enabled is None:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO feature_flags (name, enabled, description)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE
+                    SET enabled = EXCLUDED.enabled, updated_at = now()
+                    """,
+                    (name, enabled, f"Feature flag {name}."),
+                )
+
+    return _set
+
+
+@pytest.fixture()
 def clean_store(redis_url: str) -> Iterator[None]:
     """Empty Redis so counters and sessions never leak between tests."""
     client = SyncRedis.from_url(redis_url)
@@ -361,9 +386,14 @@ def sms_recorder() -> Iterator[RecordingSmsProvider]:
 
 @pytest.fixture()
 def client(
-    settings: Settings, clean_database: None, clean_store: None, sms_recorder: RecordingSmsProvider
+    settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    set_feature_flags: Callable[..., None],
+    sms_recorder: RecordingSmsProvider,
 ) -> Iterator[TestClient]:
-    """The application, wired to this run's throwaway services."""
+    """The application, with escrow open and COD closed, as the old settings fixture had it."""
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     application: FastAPI = create_app(settings)
     with TestClient(application) as test_client:
         # Installed after the lifespan has run: startup builds the configured backend, and
@@ -728,6 +758,7 @@ def seller_pays_client(
     postgres_url: str,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> Iterator[TestClient]:
     """The application with the active fee policy funding the fee from the seller's side.
@@ -738,6 +769,7 @@ def seller_pays_client(
     cannot quietly change the policy every later test reads.
     """
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     with psycopg.connect(sync_url, autocommit=True) as connection:
         connection.execute("UPDATE fee_config SET fee_payer = 'SELLER' WHERE effective_to IS NULL")
     application: FastAPI = create_app(settings)
@@ -805,11 +837,10 @@ def seller_pays_signed_in(
 
 @pytest.fixture(scope="session")
 def cod_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
-    """The same configuration with cash-on-delivery switched on.
+    """The same configuration, kept for tests that need a separate settings object.
 
-    FR-2101's COD route is behind a flag, and a test that could only ever see the flag off would
-    be testing the refusal rather than the flow. This is the configuration a deployment opens to
-    run the pilot, which is exactly what the COD tests need to drive.
+    The payment-mode flags are no longer fields here. `cod_client` arranges the rows in the
+    database instead, which is the only place the application reads them from now.
     """
     private_pem, public_pem = signing_keys
     return Settings(
@@ -821,7 +852,6 @@ def cod_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
-        cod_enabled=True,
     )
 
 
@@ -830,9 +860,11 @@ def cod_client(
     cod_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> Iterator[TestClient]:
-    """The application with cash-on-delivery switched on."""
+    """The application with cash-on-delivery switched on in the flag table."""
+    set_feature_flags(cod_enabled=True, escrow_enabled=False)
     application: FastAPI = create_app(cod_settings)
     with TestClient(application) as test_client:
         application.state.sms_provider = sms_recorder
@@ -913,7 +945,11 @@ def cod_signed_in_as_buyer(
 
 @pytest.fixture()
 async def concurrent_client(
-    settings: Settings, clean_database: None, clean_store: None, sms_recorder: RecordingSmsProvider
+    settings: Settings,
+    clean_database: None,
+    clean_store: None,
+    set_feature_flags: Callable[..., None],
+    sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """An HTTP client that can have two requests genuinely in flight at the same time.
 
@@ -925,7 +961,11 @@ async def concurrent_client(
 
     The application's lifespan runs inside the test's own event loop, which is what keeps the
     engine and the store belonging to the loop that is using them.
+
+    The flag table is arranged with escrow open and COD closed before the application starts,
+    matching the old default settings the concurrency tests were written against.
     """
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     application: FastAPI = create_app(settings)
     async with application.router.lifespan_context(application):
         application.state.sms_provider = sms_recorder
@@ -967,27 +1007,25 @@ async def signed_in_concurrently(
 @pytest.fixture()
 async def escrow_flag_clients(
     settings: Settings,
-    cod_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, httpx.AsyncClient]]:
-    """Two applications over one database: one that funds escrow and one that does not.
+    """Two clients over one application, for a test that flips the flag between requests.
 
-    The escrow flag is fixed when an application is built, so a test that needs it to differ
-    between a bid being placed and the bid being accepted has to be a test of two applications.
-    Both lifespans run inside this test's own event loop, which is what keeps the process-wide
-    engine and store belonging to the loop that is using them - driving the second app from a
-    loop of its own would leave it querying a pool owned by the first. The two applications share
-    this run's signing key (every settings fixture derives from the one session-scoped
-    `signing_keys`), so a token minted by one is accepted by the other; that is what lets the
-    pair stand in for a single deployment before and after the flag was turned off.
+    The two clients share this run's signing key, so a token minted by one is accepted by the
+    other. Both lifespans run inside this test's own event loop, which keeps the process-wide
+    engine and store on the loop using them.
 
-    The first client funds escrow, the default configuration. The second funds COD instead, and
-    its escrow flag is therefore off.
+    The flags are read per request now, so the database row is what changes between the bid and
+    the acceptance; the two clients remain a convenient way to keep the funding and unfunded
+    halves of the test apart. The fixture starts with escrow open and COD closed, the old
+    default.
     """
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     funding: FastAPI = create_app(settings)
-    unfunded: FastAPI = create_app(cod_settings)
+    unfunded: FastAPI = create_app(settings)
     async with funding.router.lifespan_context(funding):
         funding.state.sms_provider = sms_recorder
         async with unfunded.router.lifespan_context(unfunded):
@@ -1007,11 +1045,10 @@ async def escrow_flag_clients(
 def both_modes_settings(
     postgres_url: str, redis_url: str, signing_keys: tuple[str, str]
 ) -> Settings:
-    """The configuration with both funding modes open.
+    """The same settings, kept for tests that build their own application object.
 
-    Escrow and cash-on-delivery are two flags, not one, and the accept-time rule is about each
-    of them independently and about both at once. A test of that rule needs the "both open"
-    end of the matrix, which neither the default settings nor the COD settings provide.
+    The "both modes open" state is now the flag table's, not this object's. A test using this
+    fixture arranges both rows with `set_feature_flags` before its first request.
     """
     private_pem, public_pem = signing_keys
     return Settings(
@@ -1023,18 +1060,14 @@ def both_modes_settings(
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
-        escrow_enabled=True,
-        cod_enabled=True,
     )
 
 
 @pytest.fixture(scope="session")
 def no_modes_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str, str]) -> Settings:
-    """The configuration that funds neither mode.
+    """The same settings, kept for tests that build their own application object.
 
-    A deployment that has opened nothing. The feature-phone adapters still send cash-on-delivery
-    on the trader's behalf when escrow is off, so this is the configuration in which the domain's
-    own refusal is what stops the bid - the refusal the channel reply has to carry back.
+    A test that needs neither mode open arranges both flag rows false.
     """
     private_pem, public_pem = signing_keys
     return Settings(
@@ -1046,8 +1079,6 @@ def no_modes_settings(postgres_url: str, redis_url: str, signing_keys: tuple[str
         gateway_secret=SecretStr(GATEWAY_SECRET),
         terms_version=TERMS_VERSION,
         totp_encryption_key=SecretStr(TOTP_ENCRYPTION_KEY),
-        escrow_enabled=False,
-        cod_enabled=False,
     )
 
 
@@ -1056,9 +1087,11 @@ def no_modes_client(
     no_modes_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> Iterator[TestClient]:
-    """The application with neither funding mode open."""
+    """The application with neither funding mode open in the flag table."""
+    set_feature_flags(cod_enabled=False, escrow_enabled=False)
     application: FastAPI = create_app(no_modes_settings)
     with TestClient(application) as test_client:
         application.state.sms_provider = sms_recorder
@@ -1098,47 +1131,30 @@ def no_modes_signed_in(
 @pytest.fixture()
 async def mode_clients(
     settings: Settings,
-    cod_settings: Settings,
-    both_modes_settings: Settings,
-    no_modes_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[dict[str, httpx.AsyncClient]]:
-    """Four applications over one database, one per combination of the two funding flags.
+    """One application, with the old four mode names kept for the flag-matrix tests.
 
-    A flag is fixed when an application is built, so a test that needs it to differ between a bid
-    being placed and the bid being accepted is a test of more than one application. Four
-    combinations means four applications: ``both`` (escrow and COD), ``escrow`` (escrow only),
-    ``cod`` (COD only) and ``none`` (neither). All four share this run's database and signing key,
-    so a token minted by one is the token the others check and an offer placed under one is the
-    row the others read - which is what lets the four stand in for one deployment before, during
-    and after its flags changed.
+    The flags are database rows read per request now, so four applications would all see the
+    same table at the same moment. The clients therefore all point at one deployment; a test
+    that needs the state to move writes the flag rows between its requests. The names remain so
+    the test reads as the matrix it is testing (both, escrow, cod, none) rather than as a
+    sequence of anonymous calls.
 
-    This is the two-application fixture A2b's accept-time test uses, generalised to the whole
-    matrix: the same one-database, one-signing-key, one-event-loop shape, with the number of
-    applications the matrix needs rather than the number a single flip needs.
-
-    The lifespans run inside this test's own event loop, which is what keeps the process-wide
-    engine and store belonging to the loop that is using them.
+    The lifespan runs inside this test's own event loop, which keeps the process-wide engine and
+    store belonging to the loop using them.
     """
-    builds: dict[str, FastAPI] = {
-        "both": create_app(both_modes_settings),
-        "escrow": create_app(settings),
-        "cod": create_app(cod_settings),
-        "none": create_app(no_modes_settings),
-    }
-    async with AsyncExitStack() as stack:
-        clients: dict[str, httpx.AsyncClient] = {}
-        for name, application in builds.items():
-            await stack.enter_async_context(application.router.lifespan_context(application))
-            application.state.sms_provider = sms_recorder
-            clients[name] = await stack.enter_async_context(
-                httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=application), base_url=f"http://{name}.test"
-                )
-            )
-        yield clients
+    set_feature_flags(cod_enabled=True, escrow_enabled=True)
+    application: FastAPI = create_app(settings)
+    async with application.router.lifespan_context(application):
+        application.state.sms_provider = sms_recorder
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://modes.test"
+        ) as client:
+            yield dict.fromkeys(("both", "escrow", "cod", "none"), client)
 
 
 @pytest.fixture()

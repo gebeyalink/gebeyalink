@@ -56,6 +56,7 @@ from apps.api.repositories.user_repository import UserRepository
 from apps.api.repositories.woreda_repository import WoredaRepository
 from apps.api.schemas.search import SearchSort
 from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.listing_service import effective_status as effective_listing_status
 from apps.api.services.offer_service import OfferService
@@ -148,6 +149,7 @@ class UssdGateway:
         offer_service: OfferService,
         order_service: OrderService,
         listing_service: ListingService,
+        feature_flags: FeatureFlagService,
         settings: Settings,
     ) -> None:
         self._users = users
@@ -163,6 +165,7 @@ class UssdGateway:
         self._offer_service = offer_service
         self._order_service = order_service
         self._listing_service = listing_service
+        self._feature_flags = feature_flags
         self._settings = settings
 
     # -- who is dialling ----------------------------------------------------
@@ -559,6 +562,7 @@ class UssdGateway:
         context: dict[str, Any] = {
             "selected_listing_id": listing_id,
             "selected_listing_code": (loaded.listing.short_code if loaded is not None else ""),
+            "selected_listing_region": (loaded.listing.region_code if loaded is not None else None),
             "selected_listing_index": self._picked_index(state, "listing_ids", text),
         }
         index = context["selected_listing_index"]
@@ -768,8 +772,15 @@ class UssdGateway:
         }
         # The tree asks for a weight and a price and has no step for a payment mode, so the
         # adapter takes the choice a one-line menu cannot offer: the one mode the deployment
-        # funds when escrow is off, and nothing when escrow is on, leaving the default.
-        mode = adapter_offer_payment_mode(self._settings)
+        # funds when escrow is off, and nothing when escrow is on, leaving the default. The
+        # region comes from the listing the buyer selected, so a region-targeted flag is read
+        # against the sale rather than against the handset's profile.
+        selected_region = state.context.get("selected_listing_region")
+        mode = await adapter_offer_payment_mode(
+            self._feature_flags,
+            user_id=_as_uuid(state.user_id),
+            region_code=selected_region if isinstance(selected_region, str) else None,
+        )
         if mode is not None:
             body["payment_mode"] = mode
         key = f"{session_id}:offer_place:{self._entity_ref(state, action)}"

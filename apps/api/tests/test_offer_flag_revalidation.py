@@ -5,10 +5,9 @@ and the answer. The rule is that acceptance re-reads them: a mode that was funde
 was placed and is not funded when the seller says yes is refused by name, with no order written,
 and the offer is left where it was because a configuration change is not the buyer's mistake.
 
-The flags are fixed when an application is built, so a test that needs them to differ across the
-two moves is a test of more than one application. These four tests use `mode_clients`, four
-applications over one database and one signing key - one for each combination of the two flags -
-so the offer is genuinely placed under one deployment and genuinely answered under another. The
+The flags are database rows read per request, so these four tests use `mode_clients`, one
+application reached through names for the old four-flag matrix. The offer is placed, the row is
+changed with `set_feature_flags`, and the same deployment answers under the new arrangement. The
 four cases are the matrix: each flag alone, both at once, and the positive control where nothing
 moved.
 """
@@ -70,6 +69,7 @@ async def _accept(
 
 async def test_an_escrow_bid_is_refused_when_escrow_is_off_by_acceptance(
     mode_clients: dict[str, httpx.AsyncClient],
+    set_feature_flags: Callable[..., None],
     sign_in_over: Callable[..., Awaitable[dict[str, str]]],
     listing_body: Callable[..., dict[str, object]],
     offer_body: Callable[..., dict[str, object]],
@@ -92,6 +92,7 @@ async def test_an_escrow_bid_is_refused_when_escrow_is_off_by_acceptance(
         both, seller, buyer, listing_body, offer_body, payment_mode="ESCROW"
     )
 
+    set_feature_flags(cod_enabled=True, escrow_enabled=False)
     refused = await _accept(cod_only, seller, offer_id, order_body, idempotency_key)
 
     assert refused.status_code == 422, refused.text
@@ -104,6 +105,7 @@ async def test_an_escrow_bid_is_refused_when_escrow_is_off_by_acceptance(
 
 async def test_a_cod_bid_is_refused_when_cod_is_off_by_acceptance(
     mode_clients: dict[str, httpx.AsyncClient],
+    set_feature_flags: Callable[..., None],
     sign_in_over: Callable[..., Awaitable[dict[str, str]]],
     listing_body: Callable[..., dict[str, object]],
     offer_body: Callable[..., dict[str, object]],
@@ -121,6 +123,7 @@ async def test_a_cod_bid_is_refused_when_cod_is_off_by_acceptance(
         both, seller, buyer, listing_body, offer_body, payment_mode="COD"
     )
 
+    set_feature_flags(cod_enabled=False, escrow_enabled=True)
     refused = await _accept(escrow_only, seller, offer_id, order_body, idempotency_key)
 
     assert refused.status_code == 422, refused.text
@@ -133,6 +136,7 @@ async def test_a_cod_bid_is_refused_when_cod_is_off_by_acceptance(
 
 async def test_a_bid_is_refused_when_both_modes_have_closed(
     mode_clients: dict[str, httpx.AsyncClient],
+    set_feature_flags: Callable[..., None],
     sign_in_over: Callable[..., Awaitable[dict[str, str]]],
     listing_body: Callable[..., dict[str, object]],
     offer_body: Callable[..., dict[str, object]],
@@ -155,6 +159,7 @@ async def test_a_bid_is_refused_when_both_modes_have_closed(
         both, seller, buyer, listing_body, offer_body, payment_mode="ESCROW"
     )
 
+    set_feature_flags(cod_enabled=False, escrow_enabled=False)
     refused = await _accept(none, seller, offer_id, order_body, idempotency_key)
 
     assert refused.status_code == 422, refused.text

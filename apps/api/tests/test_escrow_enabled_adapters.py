@@ -15,6 +15,7 @@ accept path reads the mode the offer already carries rather than taking one from
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlencode
 
@@ -22,12 +23,13 @@ import httpx
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 
-from apps.api.core.config import Settings
+from apps.api.models.feature_flag import FeatureFlag
 from apps.api.models.order import PaymentMode
 from apps.api.providers.sms import RecordingSmsProvider
+from apps.api.repositories.feature_flag_repository import FeatureFlagRepository
 from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
+from apps.api.services.feature_flag_service import FeatureFlagService
 from packages.shared.messaging.signature import sign_gateway_body
 
 SELLER = "+251911000001"
@@ -39,27 +41,33 @@ COUNTER_KG = 500
 COUNTER_PRICE_SANTIM = 3_300_000
 
 
-def _inert_settings(*, escrow_enabled: bool) -> Settings:
-    """Configuration pointing nowhere, for the one test that starts nothing.
+class _OneFlagRepository(FeatureFlagRepository):
+    """A flag repository holding one row, for the unit test that starts no database."""
 
-    The helper reads a flag and returns a value and touches no service, so the unit test that
-    holds it passes a settings object rather than booting an application to obtain one.
-    """
-    return Settings(
-        database_url="postgresql+psycopg://nobody@127.0.0.1:1/nothing",
-        redis_url="redis://127.0.0.1:1/0",
-        signing_private_key=SecretStr("unused-outside-the-application"),
-        signing_public_key=SecretStr("unused-outside-the-application"),
-        signing_key_id="test-key",
-        gateway_secret=SecretStr("test-gateway-secret"),
-        terms_version="2026-01-01",
-        totp_encryption_key=SecretStr("ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWZnaGk="),
-        escrow_enabled=escrow_enabled,
+    def __init__(self, *, enabled: bool) -> None:
+        self._row = FeatureFlag(
+            name="escrow_enabled",
+            enabled=enabled,
+            percentage_rollout=None,
+            region_targeting=None,
+        )
+
+    async def get(self, name: str) -> FeatureFlag | None:
+        return self._row if name == self._row.name else None
+
+
+async def _adapter_mode(*, escrow_enabled: bool) -> PaymentMode | None:
+    """Ask the adapter against one arranged flag row, with no application around it."""
+    flags = FeatureFlagService(_OneFlagRepository(enabled=escrow_enabled))
+    return await adapter_offer_payment_mode(
+        flags,
+        user_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        region_code="OR",
     )
 
 
 @pytest.mark.unit
-def test_the_adapter_sends_cod_only_when_escrow_is_off() -> None:
+async def test_the_adapter_sends_cod_only_when_escrow_is_off() -> None:
     """The one condition both adapters share, written once.
 
     With escrow off, cash-on-delivery is the only mode the deployment funds, so the adapter sends
@@ -67,8 +75,8 @@ def test_the_adapter_sends_cod_only_when_escrow_is_off() -> None:
     sends nothing and the offer's own default applies. If this read were wrong the two channels
     would fail differently from each other, which is exactly what one helper exists to prevent.
     """
-    assert adapter_offer_payment_mode(_inert_settings(escrow_enabled=False)) is PaymentMode.COD
-    assert adapter_offer_payment_mode(_inert_settings(escrow_enabled=True)) is None
+    assert await _adapter_mode(escrow_enabled=False) is PaymentMode.COD
+    assert await _adapter_mode(escrow_enabled=True) is None
 
 
 def _as_seller(client: TestClient, signed_in: Callable[..., dict[str, str]]) -> dict[str, str]:
@@ -309,6 +317,7 @@ async def _send_sms(
 @pytest.mark.integration
 async def test_an_sms_yes_accept_refuses_a_cod_offer_once_cod_is_off(
     escrow_flag_clients: tuple[httpx.AsyncClient, httpx.AsyncClient],
+    set_feature_flags: Callable[..., None],
     sign_in_over: Callable[..., Awaitable[dict[str, str]]],
     listing_body: Callable[..., dict[str, object]],
     offer_body: Callable[..., dict[str, object]],
@@ -331,6 +340,7 @@ async def test_an_sms_yes_accept_refuses_a_cod_offer_once_cod_is_off(
     seller_phone = "+251911000011"
     buyer_phone = "+251911000013"
 
+    set_feature_flags(cod_enabled=True, escrow_enabled=False)
     seller = await sign_in_over(unfunded, seller_phone)
     buyer = await sign_in_over(unfunded, buyer_phone)
     sync_url = postgres_url.replace("postgresql+psycopg://", "postgresql://")
@@ -366,6 +376,7 @@ async def test_an_sms_yes_accept_refuses_a_cod_offer_once_cod_is_off(
 
     token = issue_action_token(buyer_phone, f"offer_answer:{counter_id}")
 
+    set_feature_flags(cod_enabled=False, escrow_enabled=False)
     response = await _send_sms(funding, gateway_secret, f"YES {token}", from_phone=buyer_phone)
     assert response.status_code == 200
     assert response.content == b""

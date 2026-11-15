@@ -61,15 +61,17 @@ async def board_app(
     both_modes_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient, Settings]]:
     """The both-modes application and a client on this test's own event loop.
 
-    Both funding modes are open so one file can drive the COD pilot's loop and the escrow path
-    the acceptance events are shared with. The lifespan is what builds the process's engine and
-    Redis client and binds them to this loop, so the request that writes an event and the worker
-    body that settles a lapsed window share one engine rather than two.
+    Both funding modes are opened in the flag table so one file can drive the COD pilot's loop
+    and the escrow path the acceptance events are shared with. The lifespan is what builds the
+    process's engine and Redis client and binds them to this loop, so the request that writes an
+    event and the worker body that settles a lapsed window share one engine rather than two.
     """
+    set_feature_flags(cod_enabled=True, escrow_enabled=True)
     application = create_app(both_modes_settings)
     async with application.router.lifespan_context(application):
         application.state.sms_provider = sms_recorder

@@ -34,6 +34,7 @@ from apps.api.models.pending_change import PendingChangeStatus
 from apps.api.models.staff_user import StaffRole
 from apps.api.models.user import AccountStatus, PrimaryRole, VerificationTier
 from apps.api.models.user_role import Role
+from apps.api.schemas.search import RegionCode
 from packages.shared.i18n.languages import Language
 from packages.shared.money import FeePayer
 
@@ -454,6 +455,76 @@ class FeeEditorResponse(BaseModel):
 
     current: FeeConfigResponse
     pending: list[PendingFeeChangeResponse]
+
+
+class FlagResponse(BaseModel):
+    """One feature flag as the admin editor reads it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    name: str
+    enabled: bool
+    percentage_rollout: int | None = None
+    region_targeting: list[str] | None = None
+    description: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PendingFlagChangeResponse(BaseModel):
+    """One proposed flag change in the maker/checker queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    kind: str
+    status: PendingChangeStatus
+    payload: dict[str, Any]
+    submitted_by: UUID
+    submitted_at: datetime
+    approved_by: UUID | None = None
+    approved_at: datetime | None = None
+    rejected_by: UUID | None = None
+    rejected_at: datetime | None = None
+    rejection_reason: str | None = None
+
+
+class FlagEditorResponse(BaseModel):
+    """Every installed flag and the proposals waiting for a second signature."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    flags: list[FlagResponse]
+    pending: list[PendingFlagChangeResponse]
+
+
+class FlagChangeBody(BaseModel):
+    """A proposed flag state, with the reason a reviewer will read."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    enabled: bool
+    percentage_rollout: int | None = Field(default=None, ge=0, le=100)
+    region_targeting: list[RegionCode] | None = Field(default=None, min_length=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("name_must_not_be_blank")
+        return cleaned
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("reason_must_not_be_blank")
+        return cleaned
 
 
 class FeeChangeBody(BaseModel):

@@ -866,6 +866,178 @@
         "title": "FeePayer",
         "type": "string"
       },
+      "FlagChangeBody": {
+        "additionalProperties": false,
+        "description": "A proposed flag state, with the reason a reviewer will read.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "percentage_rollout": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percentage Rollout"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "region_targeting": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "AA",
+                    "AF",
+                    "AM",
+                    "BE",
+                    "DD",
+                    "GA",
+                    "HA",
+                    "OR",
+                    "SI",
+                    "SO",
+                    "SW",
+                    "SN",
+                    "TI"
+                  ],
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Targeting"
+          }
+        },
+        "required": [
+          "name",
+          "enabled",
+          "reason"
+        ],
+        "title": "FlagChangeBody",
+        "type": "object"
+      },
+      "FlagEditorResponse": {
+        "additionalProperties": false,
+        "description": "Every installed flag and the proposals waiting for a second signature.",
+        "properties": {
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/FlagResponse"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/PendingFlagChangeResponse"
+            },
+            "title": "Pending",
+            "type": "array"
+          }
+        },
+        "required": [
+          "flags",
+          "pending"
+        ],
+        "title": "FlagEditorResponse",
+        "type": "object"
+      },
+      "FlagResponse": {
+        "additionalProperties": false,
+        "description": "One feature flag as the admin editor reads it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "percentage_rollout": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percentage Rollout"
+          },
+          "region_targeting": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Targeting"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FlagResponse",
+        "type": "object"
+      },
       "GpsPoint": {
         "additionalProperties": false,
         "description": "A place, given as the trader would say it.",
@@ -2564,6 +2736,108 @@
           "submitted_at"
         ],
         "title": "PendingFeeChangeResponse",
+        "type": "object"
+      },
+      "PendingFlagChangeResponse": {
+        "additionalProperties": false,
+        "description": "One proposed flag change in the maker/checker queue.",
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "rejected_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected By"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PendingChangeStatus"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "title": "Submitted At",
+            "type": "string"
+          },
+          "submitted_by": {
+            "format": "uuid",
+            "title": "Submitted By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "payload",
+          "submitted_by",
+          "submitted_at"
+        ],
+        "title": "PendingFlagChangeResponse",
         "type": "object"
       },
       "PhotoInput": {
@@ -4490,6 +4764,246 @@
           }
         },
         "summary": "Reject Fee Change",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/flags": {
+      "get": {
+        "description": "Every installed flag and every proposal waiting for a second signature.",
+        "operationId": "read_flags_v1_admin_flags_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlagEditorResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Flags",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/flags/changes": {
+      "post": {
+        "description": "Propose a flag state. Nothing switches until a different admin approves it.",
+        "operationId": "submit_flag_change_v1_admin_flags_changes_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagChangeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFlagChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Flag Change",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/flags/changes/{change_id}/approve": {
+      "post": {
+        "description": "Apply a proposed flag state, provided the caller did not submit it.",
+        "operationId": "approve_flag_change_v1_admin_flags_changes__change_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFlagChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Flag Change",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/flags/changes/{change_id}/reject": {
+      "post": {
+        "description": "Refuse a proposed flag state without switching anything.",
+        "operationId": "reject_flag_change_v1_admin_flags_changes__change_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "change_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Change Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PendingChangeRejectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingFlagChangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Flag Change",
         "tags": [
           "admin"
         ]

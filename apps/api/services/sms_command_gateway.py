@@ -33,6 +33,7 @@ from apps.api.repositories.price_index_repository import PriceIndexRepository
 from apps.api.repositories.profile_repository import ProfileRepository
 from apps.api.repositories.user_repository import UserRepository
 from apps.api.services.adapter_offer_mode import adapter_offer_payment_mode
+from apps.api.services.feature_flag_service import FeatureFlagService
 from apps.api.services.listing_service import ListingService
 from apps.api.services.offer_service import OfferService
 from apps.api.services.offer_service import effective_status as effective_offer_status
@@ -75,6 +76,7 @@ class SmsCommandGateway:
         listing_service: ListingService,
         offer_service: OfferService,
         order_service: OrderService,
+        feature_flags: FeatureFlagService,
         settings: Settings,
     ) -> None:
         self._users = users
@@ -88,6 +90,7 @@ class SmsCommandGateway:
         self._listing_service = listing_service
         self._offer_service = offer_service
         self._order_service = order_service
+        self._feature_flags = feature_flags
         self._settings = settings
 
     async def resolve_trader(self, phone_e164: str) -> Trader | None:
@@ -183,7 +186,11 @@ class SmsCommandGateway:
         applies. The trader still chooses weight and price; they never choose this.
         """
         body: dict[str, Any] = {"quantity_kg": quantity_kg, "price_santim": price_santim}
-        mode = adapter_offer_payment_mode(self._settings)
+        mode = await adapter_offer_payment_mode(
+            self._feature_flags,
+            user_id=_as_uuid(buyer.id),
+            region_code=listing.region_code,
+        )
         if mode is not None:
             body["payment_mode"] = mode
         await self._offer_service.place(
@@ -247,6 +254,7 @@ def _listing(row: ListingRow) -> Listing:
         crop_id=row.crop_id,
         short_code=row.short_code,
         delivery_options=tuple(option.value for option in row.delivery_options),
+        region_code=row.region_code,
     )
 
 

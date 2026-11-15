@@ -38,15 +38,17 @@ async def expiry_app(
     both_modes_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: RecordingSmsProvider,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient, Settings]]:
     """The both-modes application and a client on this test's own event loop.
 
-    Both funding modes are open so a test that places an offer does not trip over the mode flag
-    instead of the rule it is proving. The lifespan binds the engine to this test's loop, which
-    is what lets the request that creates the listing and the worker body that sweeps it share
-    one engine rather than two.
+    Both funding modes are opened in the flag table so a test that places an offer does not trip
+    over the mode flag instead of the rule it is proving. The lifespan binds the engine to this
+    test's loop, which is what lets the request that creates the listing and the worker body
+    that sweeps it share one engine rather than two.
     """
+    set_feature_flags(cod_enabled=True, escrow_enabled=True)
     application = create_app(both_modes_settings)
     async with application.router.lifespan_context(application):
         application.state.sms_provider = sms_recorder

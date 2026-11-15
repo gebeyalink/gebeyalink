@@ -55,15 +55,18 @@ async def cod_app(
     cod_settings: Settings,
     clean_database: None,
     clean_store: None,
+    set_feature_flags: Callable[..., None],
     sms_recorder: Any,
 ) -> Any:
     """The COD-enabled application, running inside the test's own event loop.
 
-    The async shape is load-bearing. The engine and the store are process-global singletons bound
-    to the loop their application's lifespan started on, so the worker's sweep and the requests it
-    stands beside must share one loop. Driving this application from a synchronous client would
-    leave the sweep querying a connection pool owned by a portal thread.
+    The COD flag is opened in the table before the application starts. The async shape is
+    load-bearing. The engine and the store are process-global singletons bound to the loop their
+    application's lifespan started on, so the worker's sweep and the requests it stands beside
+    must share one loop. Driving this application from a synchronous client would leave the
+    sweep querying a connection pool owned by a portal thread.
     """
+    set_feature_flags(cod_enabled=True, escrow_enabled=False)
     application: FastAPI = create_app(cod_settings)
     async with application.router.lifespan_context(application):
         application.state.sms_provider = sms_recorder
